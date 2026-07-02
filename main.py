@@ -1,9 +1,10 @@
 from flask import (
     Flask, render_template, request, redirect, send_file, abort,
-    url_for, flash, jsonify, make_response, send_from_directory
+    url_for, flash, jsonify, make_response, send_from_directory, session
 )
 import os
 import io
+import hmac
 import subprocess
 import pandas as pd
 from datetime import date, datetime, timedelta
@@ -99,10 +100,15 @@ def manila_time_filter(value):
 
     return s
 
-app.secret_key = 'your_secret_key_here'  # Required for flashing messages
+# Session secret: required for signed session cookies (admin login) and
+# flash messages. Set SECRET_KEY in prod; random per-process fallback for dev.
+app.secret_key = os.environ.get("SECRET_KEY") or os.urandom(32)
 
 SUPPLIER_API_TOKEN = os.environ.get("SUPPLIER_API_TOKEN", "unifleet2025mvp")  # Default token
-ADMIN_KEY = os.environ.get("ADMIN_KEY", "unifleet-admin")
+# No weak default: key auth is disabled unless ADMIN_KEY is set in the env.
+ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
+# Password for the admin login page. Login is disabled unless set.
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 UPLOAD_FOLDER = str(data_paths.UPLOADS_DIR)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -190,15 +196,24 @@ def _fmt_money(v):
         return ""
 
 def _check_admin_key(req):
+    # Key auth only works when ADMIN_KEY is configured; an unset key must
+    # never authenticate (guards against empty-string matches).
+    if not ADMIN_KEY:
+        return False
     key = req.args.get("key") or req.headers.get("X-Admin-Key")
-    return key == ADMIN_KEY
+    return bool(key) and hmac.compare_digest(str(key), ADMIN_KEY)
+
+def require_admin(req):
+    """True if the request is an authenticated admin: either a logged-in
+    session, or the legacy ?key= / X-Admin-Key fallback."""
+    return bool(session.get("admin")) or _check_admin_key(req)
 
 # =========================
 # Home / Dashboard
 # =========================
 @app.route('/')
 def home():
-    return redirect("/form")
+    return redirect("/book")
 
 # F2.6: serve QR PNGs (and other generated assets) from the volume.
 # Templates and download links should reference
@@ -416,6 +431,13 @@ def register():
         clean = re.sub(r'[^A-Za-z]', '', company_name.upper())
         account_code = (clean[:4] if len(clean) >= 4 else ''.join(random.choices(string.ascii_uppercase, k=4)))
 
+        # Collision-safe: if the derived code already belongs to a customer,
+        # generate an alternate unique code instead of overwriting them.
+        _attempts = 0
+        while repo.customer_exists(account_code) and _attempts < 10:
+            account_code = ''.join(random.choices(string.ascii_uppercase, k=4))
+            _attempts += 1
+
         def sanitize(v):
             return str(v).strip() if v else ''
 
@@ -431,6 +453,14 @@ def register():
             'refuel_locations': '',
             'hq_locations': ''
         }
+
+        # Dual-write (transition): persist to Postgres via the repo. On
+        # failure, keep going so the CSV append below still records the
+        # signup (do not lose the registration).
+        try:
+            repo.create_customer(new_row)
+        except Exception as e:
+            print(f"⚠️ create_customer (Postgres) failed for {account_code}: {e}")
 
         customers_path = str(data_paths.CUSTOMERS_CSV)
         if os.path.isfile(customers_path):
@@ -456,6 +486,64 @@ def register_success():
 @app.route('/test_success')
 def test_success():
     return render_template('register_success.html', account_code="TEST")
+
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    if request.method == 'POST':
+        pw = request.form.get('password', '')
+        if ADMIN_PASSWORD and hmac.compare_digest(pw, ADMIN_PASSWORD):
+            session['admin'] = True
+            return redirect(url_for('admin_prices'))
+        flash("Invalid password.", "error")
+        return render_template('admin_login.html')
+    return render_template('admin_login.html')
+
+@app.route('/admin/logout')
+def admin_logout():
+    session.pop('admin', None)
+    return redirect(url_for('admin_login'))
+
+@app.route('/register-vehicle', methods=['GET', 'POST'])
+def register_vehicle():
+    if request.method == 'GET':
+        return render_template('register_vehicle.html')
+
+    account_code = request.form.get('account_code', '').strip().upper()
+    driver_data = {
+        'driver_name': (request.form.get('driver_name') or '').strip(),
+        'vehicle_plate': (request.form.get('vehicle_plate') or '').strip(),
+        'truck_make': (request.form.get('truck_make') or '').strip(),
+        'truck_model': (request.form.get('truck_model') or '').strip(),
+        'number_of_wheels': (request.form.get('number_of_wheels') or '').strip(),
+        'fuel_type': (request.form.get('fuel_type') or 'Diesel').strip() or 'Diesel',
+    }
+
+    # Validate account_code against the customer store (Postgres).
+    if not repo.customer_exists(account_code):
+        flash("Account code not found. Please register your company first.", "error")
+        return render_template('register_vehicle.html', form_values=request.form)
+
+    # Required fields.
+    if not driver_data['driver_name'] or not driver_data['vehicle_plate']:
+        flash("Driver name and plate number are required.", "error")
+        return render_template('register_vehicle.html', form_values=request.form)
+
+    # Save preset, dedup by plate (parity with the booking-time write).
+    preset_path = str(data_paths.preset_csv_path(account_code))
+    existing = pd.read_csv(preset_path, encoding='utf-8-sig') if os.path.isfile(preset_path) else pd.DataFrame()
+    plate_key = driver_data['vehicle_plate'].strip().upper()
+    exists = (
+        'vehicle_plate' in existing.columns
+        and existing['vehicle_plate'].astype(str).str.strip().str.upper().eq(plate_key).any()
+    )
+    if not exists:
+        updated = pd.concat([existing, pd.DataFrame([driver_data])], ignore_index=True)
+        updated.to_csv(preset_path, index=False, encoding='utf-8-sig')
+        flash(f"Vehicle {driver_data['vehicle_plate']} registered.", "success")
+    else:
+        flash(f"Vehicle {driver_data['vehicle_plate']} is already registered.", "info")
+
+    return redirect(url_for('register_vehicle'))
 
 @app.route('/book', methods=['GET', 'POST'])
 def book():
@@ -547,16 +635,31 @@ def book():
 
     if request.method == 'POST':
         account_code = request.form.get('account_code', '').strip().upper()
+
+        # Resolve customer: Postgres first, CSV fallback (transition safety
+        # net). A DB miss or a transient DB error degrades to the CSV read
+        # so bookings keep working during the migration.
+        customer = None
         try:
-            df = pd.read_csv(customers_path, encoding='utf-8')
-        except pd.errors.ParserError:
-            return "<h2>Error: 'customers.csv' is malformed.</h2>", 500
-        df.columns = df.columns.str.replace('\ufeff', '').str.strip().str.lower()
-        df['account_code'] = df['account_code'].astype(str).str.strip().str.upper()
-        rows = df[df['account_code'] == account_code]
+            customer = repo.get_customer(account_code)
+        except Exception as e:
+            print(f"\u26a0\ufe0f get_customer (Postgres) failed for {account_code}: {e}")
+            customer = None
+        if customer is None:
+            try:
+                df = pd.read_csv(customers_path, encoding='utf-8')
+                df.columns = df.columns.str.replace('\ufeff', '').str.strip().str.lower()
+                df['account_code'] = df['account_code'].astype(str).str.strip().str.upper()
+                _rows = df[df['account_code'] == account_code]
+                if not _rows.empty:
+                    customer = _rows.iloc[0].to_dict()
+            except pd.errors.ParserError:
+                return "<h2>Error: 'customers.csv' is malformed.</h2>", 500
+            except FileNotFoundError:
+                customer = None
 
         if not request.form.get('station'):
-            if rows.empty:
+            if customer is None:
                 return render_template(
                     'book.html',
                     customer=None,
@@ -566,7 +669,7 @@ def book():
                     station_table_updated_at=station_table_updated_at,
                     min_refuel=min_refuel
                 )
-            base = rows.iloc[0].to_dict()
+            base = customer
             preset_path = str(data_paths.preset_csv_path(account_code))
             presets = pd.read_csv(preset_path, encoding='utf-8-sig').to_dict(orient='records') if os.path.isfile(preset_path) else []
             return render_template(
@@ -583,7 +686,7 @@ def book():
         use_new = driver_mode == 'new'
         if driver_mode == 'preset' and not request.form.get('driver_select'):
             flash("Please select a preset or switch to 'Add New Driver'", "error")
-            base = rows.iloc[0].to_dict()
+            base = customer
             preset_path = str(data_paths.preset_csv_path(account_code))
             presets = pd.read_csv(preset_path, encoding='utf-8-sig').to_dict(orient='records') if os.path.isfile(preset_path) else []
             return render_template(
@@ -624,7 +727,7 @@ def book():
             refuel_dt_mnl = datetime.strptime(refuel_dt_str, "%Y-%m-%dT%H:%M").replace(tzinfo=manila)
             if refuel_dt_mnl < min_refuel_dt:
                 flash("Refuel Date & Time must be at least 24 hours from now (Asia/Manila).", "error")
-                base = rows.iloc[0].to_dict() if not rows.empty else None
+                base = customer
                 preset_path = str(data_paths.preset_csv_path(account_code))
                 presets = pd.read_csv(preset_path, encoding='utf-8-sig').to_dict(orient='records') if os.path.isfile(preset_path) else []
                 return render_template(
@@ -640,7 +743,7 @@ def book():
         except Exception:
             # If parsing fails, treat as invalid
             flash("Please enter a valid Refuel Date & Time (YYYY-MM-DDTHH:MM).", "error")
-            base = rows.iloc[0].to_dict() if not rows.empty else None
+            base = customer
             preset_path = str(data_paths.preset_csv_path(account_code))
             presets = pd.read_csv(preset_path, encoding='utf-8-sig').to_dict(orient='records') if os.path.isfile(preset_path) else []
             return render_template(
@@ -933,8 +1036,8 @@ discount_store = DiscountStore()
 
 @app.route("/admin/prices")
 def admin_prices():
-    if not _check_admin_key(request):
-        return abort(403)
+    if not require_admin(request):
+        return redirect(url_for('admin_login'))
     stations = price_store.list_stations()
     stations = sorted(stations, key=lambda s: (s.get("brand",""), s.get("name","")))
     discounts = discount_store.get_all()
@@ -942,7 +1045,7 @@ def admin_prices():
 
 @app.route("/admin/prices/update", methods=["POST"])
 def admin_prices_update():
-    if not _check_admin_key(request):
+    if not require_admin(request):
         return jsonify({"ok": False, "error": "forbidden"}), 403
     try:
         payload = request.get_json(force=True) or {}
@@ -985,8 +1088,8 @@ def api_prices_list():
 # =========================
 @app.route("/admin/discounts/update", methods=["POST"])
 def admin_discounts_update():
-    if not _check_admin_key(request):
-        return abort(403)
+    if not require_admin(request):
+        return redirect(url_for('admin_login'))
 
     key = request.args.get("key", "").strip()
     station = (request.form.get("station") or "").strip()

@@ -64,6 +64,28 @@ def _nullable(v):
     return v
 
 
+def _clean_str(v):
+    """Strip a value to a string; empty/None → None."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s or None
+
+
+def _nullable_int(v):
+    """Coerce a CSV-world value to int, or None. Mirrors the migrate
+    script's fleet_size handling: blanks/garbage → None."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        return int(float(s))
+    except (ValueError, TypeError):
+        return None
+
+
 def _now_or(v):
     """If v is missing or empty, return current UTC time; else return v."""
     if v is None or v == "":
@@ -389,3 +411,71 @@ class PostgresRepo:
                 if cur.rowcount == 0:
                     raise KeyError(f"voucher not found: {voucher_id}")
             conn.commit()
+
+    # ============================================================
+    # Customers (CT1)
+    # ============================================================
+
+    def create_customer(self, data: Dict) -> Dict:
+        """Upsert a customer keyed on account_code (upper-normalized).
+
+        Mirrors the migrate script's ON CONFLICT DO UPDATE so a re-register
+        refreshes the existing row. Returns the stored row as a dict.
+        """
+        d = data or {}
+        code = str(d.get("account_code") or "").strip().upper()
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO customers
+                        (account_code, contact_name, contact_number, email,
+                         company_name, fleet_size, areas, refuel_locations,
+                         hq_locations)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (account_code) DO UPDATE
+                    SET contact_name     = EXCLUDED.contact_name,
+                        contact_number   = EXCLUDED.contact_number,
+                        email            = EXCLUDED.email,
+                        company_name     = EXCLUDED.company_name,
+                        fleet_size       = EXCLUDED.fleet_size,
+                        areas            = EXCLUDED.areas,
+                        refuel_locations = EXCLUDED.refuel_locations,
+                        hq_locations     = EXCLUDED.hq_locations
+                    """,
+                    (
+                        code or None,
+                        _clean_str(d.get("contact_name")),
+                        _clean_str(d.get("contact_number")),
+                        _clean_str(d.get("email")),
+                        _clean_str(d.get("company_name")),
+                        _nullable_int(d.get("fleet_size")),
+                        _clean_str(d.get("areas")),
+                        _clean_str(d.get("refuel_locations")),
+                        _clean_str(d.get("hq_locations")),
+                    ),
+                )
+            conn.commit()
+        return self.get_customer(code)
+
+    def get_customer(self, account_code: str) -> Optional[Dict]:
+        """Fetch a customer by account_code (case-insensitive). None if absent."""
+        code = str(account_code or "").strip().upper()
+        with self._pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "SELECT * FROM customers WHERE account_code = %s",
+                    (code,),
+                )
+                return cur.fetchone()
+
+    def customer_exists(self, account_code: str) -> bool:
+        """True if a customer with this account_code (case-insensitive) exists."""
+        code = str(account_code or "").strip().upper()
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM customers WHERE account_code = %s LIMIT 1",
+                    (code,),
+                )
+                return cur.fetchone() is not None

@@ -12,6 +12,26 @@ from db.postgres_repo import PostgresRepo
 MASTER_CSV = str(data_paths.LEGACY_MASTER_VOUCHERS_CSV)
 SQLITE_PATH = str(data_paths.LEGACY_UNIFLEET_DB)
 
+# Customer columns mirror the Postgres `customers` table (minus the
+# auto-managed created_at). Order matches data/customers.csv.
+CUSTOMER_COLUMNS = [
+    "account_code", "contact_name", "contact_number", "email",
+    "company_name", "fleet_size", "areas", "refuel_locations", "hq_locations",
+]
+
+
+def _coerce_fleet_size(v):
+    """Coerce a CSV-world value to int, or None (parity with PostgresRepo)."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        return int(float(s))
+    except (ValueError, TypeError):
+        return None
+
 def _ensure_dirs():
     data_paths.ensure_dirs()
 
@@ -208,6 +228,64 @@ class CSVRepo:
         self._write(df)
 
         return row
+
+    # ===== Customers (CT1) =====
+
+    def _read_customers(self) -> pd.DataFrame:
+        path = str(data_paths.CUSTOMERS_CSV)
+        if not os.path.exists(path):
+            return pd.DataFrame(columns=CUSTOMER_COLUMNS)
+        df = pd.read_csv(path, dtype=str, encoding="utf-8-sig").fillna("")
+        for c in CUSTOMER_COLUMNS:
+            if c not in df.columns:
+                df[c] = ""
+        return df
+
+    def create_customer(self, data: Dict) -> Dict:
+        """Upsert a customer keyed on account_code (upper-normalized) in
+        customers.csv. Returns the stored row as a dict (fleet_size as int)."""
+        d = data or {}
+        code = str(d.get("account_code") or "").strip().upper()
+        row = {c: "" for c in CUSTOMER_COLUMNS}
+        for k, v in d.items():
+            if k in row:
+                row[k] = "" if v is None else str(v).strip()
+        row["account_code"] = code
+
+        df = self._read_customers()
+        if not df.empty:
+            mask = df["account_code"].astype(str).str.strip().str.upper() == code
+        else:
+            mask = pd.Series([], dtype=bool)
+
+        if mask.any():
+            for c in CUSTOMER_COLUMNS:
+                df.loc[mask, c] = row[c]
+        else:
+            df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+
+        df[CUSTOMER_COLUMNS].to_csv(
+            str(data_paths.CUSTOMERS_CSV), index=False, encoding="utf-8-sig"
+        )
+        return self.get_customer(code)
+
+    def get_customer(self, account_code: str) -> Optional[Dict]:
+        """Fetch a customer by account_code (case-insensitive). None if absent."""
+        code = str(account_code or "").strip().upper()
+        df = self._read_customers()
+        if df.empty:
+            return None
+        rows = df[df["account_code"].astype(str).str.strip().str.upper() == code]
+        if rows.empty:
+            return None
+        d = rows.iloc[0].to_dict()
+        out = {c: d.get(c, "") for c in CUSTOMER_COLUMNS}
+        out["fleet_size"] = _coerce_fleet_size(out.get("fleet_size"))
+        return out
+
+    def customer_exists(self, account_code: str) -> bool:
+        """True if a customer with this account_code (case-insensitive) exists."""
+        return self.get_customer(account_code) is not None
 
 class DBRepo:
     def __init__(self):

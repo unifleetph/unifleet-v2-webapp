@@ -168,6 +168,10 @@
       <input type="text" name="account_code" id="account_code" maxlength="4" class="full-width-input" required>
       <button type="submit">Continue</button>
     </form>
+    <p class="note" style="margin-top: 0.8rem;">
+      Need to register a vehicle first?
+      <a href="{{ url_for('register_vehicle') }}">Register Vehicle</a>
+    </p>
     {% endif %}
 
     {% if customer %}
@@ -293,15 +297,8 @@
         <label for="number_of_wheels">Number of Wheels on Vehicle</label>
         <input type="number" name="number_of_wheels" class="full-width-input">
 
-        <label for="fuel_type">Fuel Type</label>
-        <input
-          type="text"
-          name="fuel_type"
-          value="Diesel"
-          class="full-width-input"
-          readonly
-          title="Fuel type is fixed to Diesel"
-        />
+        <!-- Fuel type fixed to Diesel for now; selection will move to the Booking page -->
+        <input type="hidden" name="fuel_type" value="Diesel">
 
         <label for="truck_make">Vehicle Make</label>
         <input type="text" name="truck_make" class="full-width-input">
