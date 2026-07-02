@@ -1,0 +1,237 @@
+{
+  "timestamp": "2026-07-02T18:15:12.506076+00:00",
+  "dsn_redacted": "postgresql://unifleet:***@db:5432/unifleet",
+  "data_dir": "data",
+  "sources": {
+    "data/stations.csv": 10,
+    "data/station_prices.json": 10,
+    "price_store._DEFAULT_STATIONS": 10,
+    "data/customers.csv": 10,
+    "data/ops_audit_log.csv": 48
+  },
+  "results": {
+    "stations": {
+      "source": "stations.csv + price_store._DEFAULT_STATIONS + station_prices.json",
+      "rows_in_source": 20,
+      "rows_in_db_before": 19,
+      "rows_in_db_after": 19,
+      "delta": 0,
+      "anomalies": []
+    },
+    "customers": {
+      "source": "customers.csv",
+      "rows_in_source": 10,
+      "rows_kept_after_dedup": 9,
+      "rows_dropped": 1,
+      "rows_in_db_before": 9,
+      "rows_in_db_after": 9,
+      "delta": 0,
+      "anomalies": [
+        {
+          "table": "customers",
+          "type": "duplicate_account_code",
+          "code": "JAML",
+          "rows_dropped": [
+            8
+          ],
+          "resolution": "kept last occurrence"
+        }
+      ]
+    },
+    "audit_log": {
+      "source": "ops_audit_log.csv",
+      "rows_in_source": 48,
+      "missing_voucher_fks": 27,
+      "rows_in_db_before": 49,
+      "rows_in_db_after": 48,
+      "delta": -1,
+      "anomalies": [
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250908-0F0S8",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250908-ZK9HR",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250910-7UONW",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250910-D6ZTX",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250910-WJKIJ",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250910-XF7OT",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250911-6P59G",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250911-BS231",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250911-I1APD",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250911-MHGAW",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250911-MJS8J",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250911-MY1RU",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250911-QKFHW",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250911-T1CR9",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250911-WR05T",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250913-M6NRE",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250913-TC5DO",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20250930-6Z17P",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20251007-NNTFY",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20251007-OQZD0",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20251219-EMXQG",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20251222-55GLS",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20251222-YP2ED",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20260412-12BDW",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20260412-1T92Z",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF-20260412-F5NQZ",
+          "resolution": "set voucher_id=NULL"
+        },
+        {
+          "table": "audit_log",
+          "type": "missing_voucher_fk",
+          "voucher_id": "UF2025080218320000",
+          "resolution": "set voucher_id=NULL"
+        }
+      ]
+    }
+  },
+  "invariants": [
+    {
+      "name": "every prices row has a matching stations row",
+      "passed": true,
+      "details": {}
+    },
+    {
+      "name": "every customer.account_code is unique",
+      "passed": true,
+      "details": {}
+    },
+    {
+      "name": "every audit_log row has a non-empty action",
+      "passed": true,
+      "details": {}
+    },
+    {
+      "name": "every audit_log.voucher_id either NULL or exists in vouchers",
+      "passed": true,
+      "details": {}
+    }
+  ],
+  "all_invariants_passed": true
+}
