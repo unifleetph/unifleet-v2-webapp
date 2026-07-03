@@ -98,6 +98,25 @@
       font-size: 0.92rem;
       color: #555;
     }
+
+    .payment-qr {
+      text-align: center;
+      margin: 16px 0 4px;
+    }
+    .payment-qr img {
+      width: 220px;
+      max-width: 70%;
+      height: auto;
+      border: 1px solid #e3e6ea;
+      border-radius: 10px;
+      padding: 8px;
+      background: #fff;
+    }
+    .payment-qr .qr-caption {
+      margin-top: 8px;
+      font-size: 0.92rem;
+      color: #555;
+    }
   </style>
 </head>
 <body>
@@ -123,6 +142,12 @@
             <strong>Account Number:</strong>
             <span id="gotyme-account">{{ payment_info.gotyme.account_number }}</span>
           </p>
+
+          <div class="payment-qr">
+            <img src="{{ url_for('static', filename='payment_qr.png') }}"
+                 alt="UniFleet GoTyme payment QR code">
+            <div class="qr-caption">Scan with your banking app (InstaPay / PESONet) to pay.</div>
+          </div>
         </div>
 
       <div class="btn-row">
