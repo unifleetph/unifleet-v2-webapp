@@ -74,3 +74,27 @@ def test_legacy_key_fallback_still_works(client):
     """GET /admin/prices?key=<ADMIN_KEY> authenticates without a session."""
     r = client.get("/admin/prices?key=testkey")
     assert r.status_code == 200
+
+
+# ============================================================
+# Admin dashboard (/admin, formerly /form) is gated
+# ============================================================
+
+def test_admin_dashboard_requires_auth(client):
+    """GET /admin with no session/key redirects to login."""
+    r = client.get("/admin")
+    assert r.status_code == 302
+    assert "/admin/login" in r.headers["Location"]
+
+
+def test_admin_dashboard_key_fallback(client):
+    """GET /admin?key=<ADMIN_KEY> loads the dashboard."""
+    r = client.get("/admin?key=testkey")
+    assert r.status_code == 200
+
+
+def test_admin_dashboard_session_access(client):
+    """After login, /admin loads."""
+    client.post("/admin/login", data={"password": "s3cret"})
+    r = client.get("/admin")
+    assert r.status_code == 200

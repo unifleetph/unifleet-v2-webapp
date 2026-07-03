@@ -223,8 +223,11 @@ def home():
 def serve_qr_asset(filename):
     return send_from_directory(str(data_paths.QR_DIR), filename)
 
-@app.route('/form')
-def form():
+@app.route('/admin')
+def admin():
+    # Admin dashboard — gated by session login or legacy ?key= fallback.
+    if not require_admin(request):
+        return redirect(url_for('admin_login'))
     # existing voucher table data
     try:
         vouchers = repo.list_recent_vouchers(limit=50)
@@ -247,7 +250,7 @@ def form():
 
 
     return render_template(
-        "form.html",
+        "admin.html",
         today=date.today().isoformat(),
         vouchers=vouchers,
         ops_token=OPS_TOKEN,
@@ -255,7 +258,7 @@ def form():
         selected_station_ids=selected_station_ids,
     )
 
-# -------------- (CSV upload route stays; you’ll remove visually in form.html soon) --------------
+# -------------- (CSV upload route stays; you’ll remove visually in admin.html soon) --------------
 @app.route('/upload_csv', methods=['POST'])
 def upload_csv():
     uploaded_file = request.files['csv_file']
@@ -265,7 +268,7 @@ def upload_csv():
         result = subprocess.run(["python3", "generate_voucher.py"], capture_output=True, text=True)
         print(result.stdout)
         print(result.stderr)
-    return redirect("/form")
+    return redirect(url_for('admin'))
 
 @app.route('/delete_png/<voucher_id>', methods=['POST'])
 def delete_png(voucher_id):
@@ -273,7 +276,7 @@ def delete_png(voucher_id):
         for path in [str(data_paths.qr_png_path(voucher_id)), str(data_paths.official_qr_png_path(voucher_id))]:
             if os.path.exists(path):
                 os.remove(path)
-        return redirect(url_for('form'))
+        return redirect(url_for('admin'))
     except Exception as e:
         print(f"❌ Error deleting PNGs for {voucher_id}: {e}")
         return f"<h2>Error deleting PNGs for {voucher_id}: {str(e)}</h2>", 500
@@ -421,7 +424,7 @@ def ops_set_status(voucher_id, new_status):
     append_audit("ops_set_status", voucher_id, prev, new_status, f"token_ok={int(bool(not OPS_TOKEN or request.args.get('token','')==OPS_TOKEN))}")
 
     # Redirect back to caller, defaulting to /form
-    next_url = request.args.get("next") or request.referrer or url_for("form")
+    next_url = request.args.get("next") or request.referrer or url_for("admin")
     return redirect(next_url)
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -1230,7 +1233,7 @@ def save_pdf_prefs():
         # keep prior cookie value (empty string if none existed)
         cookie_val = request.cookies.get("pdf_station_ids", "")
 
-    resp = make_response(redirect(url_for("form")))
+    resp = make_response(redirect(url_for("admin")))
     # IMPORTANT: set a path so cookie is sent back on /form and /supplier-sheet.pdf
     print("Setting cookie:", cookie_val)
     resp.set_cookie(

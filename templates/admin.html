@@ -244,7 +244,7 @@
         <a href="/register" target="_blank">Register</a>
         <a href="/book" target="_blank">Book</a>
         <a href="/export_supplier_csv" download>Download Supplier CSV</a>
-        <a href="/admin/prices?key=unifleet-admin" target="_blank">Admin Prices</a>
+        <a href="/admin/prices" target="_blank">Admin Prices</a>
 
 
     </div>
@@ -327,7 +327,7 @@
                   {% if row['status'] == 'Unverified' %}
                     <a
                       class="verify-button"
-                      href="/ops/voucher/{{ row['voucher_id'] }}/status/Unredeemed?next={{ url_for('form') }}{% if ops_token %}&token={{ ops_token }}{% endif %}">
+                      href="/ops/voucher/{{ row['voucher_id'] }}/status/Unredeemed?next={{ url_for('admin') }}{% if ops_token %}&token={{ ops_token }}{% endif %}">
                       Verify
                     </a>
                   {% else %}
