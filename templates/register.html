@@ -63,8 +63,20 @@
     }
 
     .inline-checkbox input[type="checkbox"] {
-      margin-top: 0.3rem;
+      width: auto;            /* don't inherit the 100% form-input width */
+      flex: 0 0 auto;
+      margin: 0.15rem 0 0;    /* nudge to align with first line of text */
       transform: scale(1.1);
+    }
+
+    /* Override the global `form label { display:block; margin-top:1rem }`
+       so the acknowledgement text sits inline beside the checkbox. */
+    .inline-checkbox label {
+      display: inline;
+      margin: 0;
+      font-weight: 400;
+      line-height: 1.4;
+      text-align: left;
     }
 
     button[type="submit"] {
