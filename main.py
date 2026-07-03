@@ -570,8 +570,6 @@ def book():
             key=lambda x: str(x.get("name", "")).lower()
         )
 
-        station_names = [s.get("name", "") for s in station_objs]
-
         # Build read-only station table with discounts
         discounts = discount_store.get_all() or {}
 
@@ -588,18 +586,17 @@ def book():
 
         latest_updated_at = 0
 
+        # Only surface stations that currently have an available discount
+        # (> 0). Stations with no/zero discount are hidden from both the
+        # dropdown (station_names) and the pricing table (station_table).
+        station_names = []
+
         for s in station_objs:
             station_name = s.get("name", "")
             station_updated_at = int(s.get("updated_at") or 0)
-            if station_updated_at > latest_updated_at:
-                latest_updated_at = station_updated_at
 
-            discount_value = None
-
-            # Match discount by exact name first
+            # Match discount by exact name first, then normalized fallback
             val = discounts.get(station_name)
-
-            # Fallback to normalized matching
             if val is None:
                 target_norm = _norm_dashes(station_name)
                 target_slug = _slug(station_name)
@@ -608,21 +605,28 @@ def book():
                         val = v
                         break
 
-            if val is not None:
-                try:
-                    discount_value = f"{float(val):.2f}"
-                except Exception:
-                    discount_value = None
+            try:
+                discount_num = float(val) if val is not None else 0.0
+            except Exception:
+                discount_num = 0.0
+
+            # Hide stations with no available discount.
+            if discount_num <= 0:
+                continue
+
+            if station_updated_at > latest_updated_at:
+                latest_updated_at = station_updated_at
 
             try:
                 price_value = f"{float(s.get('price_php_per_liter') or 0):.2f}"
             except Exception:
                 price_value = "0.00"
 
+            station_names.append(station_name)
             station_table.append({
                 "name": station_name,
                 "price_php_per_liter": price_value,
-                "discount_per_liter": discount_value,
+                "discount_per_liter": f"{discount_num:.2f}",
             })
 
         if latest_updated_at > 0:
