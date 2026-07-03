@@ -30,12 +30,34 @@ def test_login_page_renders(client):
 
 
 def test_correct_password_grants_session(client):
-    """Correct password -> 302 to /admin/prices, then /admin/prices is 200."""
+    """Correct password with no next -> 302 to /admin (dashboard)."""
     r = client.post("/admin/login", data={"password": "s3cret"})
     assert r.status_code == 302
-    assert r.headers["Location"].endswith("/admin/prices")
-    r2 = client.get("/admin/prices")
+    assert r.headers["Location"].endswith("/admin")
+    r2 = client.get("/admin")
     assert r2.status_code == 200
+
+
+def test_login_redirects_to_next(client):
+    """Login honors a safe ?next= target (the page the user was headed to)."""
+    r = client.post("/admin/login", data={"password": "s3cret", "next": "/admin/prices"})
+    assert r.status_code == 302
+    assert r.headers["Location"].endswith("/admin/prices")
+
+
+def test_login_rejects_open_redirect(client):
+    """An off-site next is ignored; falls back to /admin."""
+    r = client.post("/admin/login", data={"password": "s3cret", "next": "//evil.com"})
+    assert r.status_code == 302
+    assert "evil.com" not in r.headers["Location"]
+    assert r.headers["Location"].endswith("/admin")
+
+
+def test_guard_passes_next_to_login(client):
+    """Hitting /admin unauthenticated redirects to login carrying next=/admin."""
+    r = client.get("/admin")
+    assert r.status_code == 302
+    assert "next=%2Fadmin" in r.headers["Location"] or "next=/admin" in r.headers["Location"]
 
 
 def test_wrong_password_rejected(client):

@@ -70,6 +70,7 @@
     {% endwith %}
 
     <form method="POST" action="{{ url_for('admin_login') }}">
+      <input type="hidden" name="next" value="{{ next or '' }}">
       <label for="password">Password</label>
       <input type="password" name="password" id="password" required autofocus>
       <button type="submit">Log In</button>

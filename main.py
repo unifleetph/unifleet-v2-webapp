@@ -227,7 +227,7 @@ def serve_qr_asset(filename):
 def admin():
     # Admin dashboard — gated by session login or legacy ?key= fallback.
     if not require_admin(request):
-        return redirect(url_for('admin_login'))
+        return redirect(url_for('admin_login', next=request.path))
     # existing voucher table data
     try:
         vouchers = repo.list_recent_vouchers(limit=50)
@@ -490,16 +490,22 @@ def register_success():
 def test_success():
     return render_template('register_success.html', account_code="TEST")
 
+def _safe_next(target):
+    """Only allow same-site relative redirects (guards open-redirect)."""
+    return bool(target) and target.startswith('/') and not target.startswith('//')
+
 @app.route('/admin/login', methods=['GET', 'POST'])
 def admin_login():
+    # Where to land after login: the page the user was headed to, else /admin.
+    nxt = request.values.get('next', '')
     if request.method == 'POST':
         pw = request.form.get('password', '')
         if ADMIN_PASSWORD and hmac.compare_digest(pw, ADMIN_PASSWORD):
             session['admin'] = True
-            return redirect(url_for('admin_prices'))
+            return redirect(nxt if _safe_next(nxt) else url_for('admin'))
         flash("Invalid password.", "error")
-        return render_template('admin_login.html')
-    return render_template('admin_login.html')
+        return render_template('admin_login.html', next=nxt)
+    return render_template('admin_login.html', next=nxt)
 
 @app.route('/admin/logout')
 def admin_logout():
@@ -1040,7 +1046,7 @@ discount_store = DiscountStore()
 @app.route("/admin/prices")
 def admin_prices():
     if not require_admin(request):
-        return redirect(url_for('admin_login'))
+        return redirect(url_for('admin_login', next=request.path))
     stations = price_store.list_stations()
     stations = sorted(stations, key=lambda s: (s.get("brand",""), s.get("name","")))
     discounts = discount_store.get_all()
