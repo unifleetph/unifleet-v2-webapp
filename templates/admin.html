@@ -311,7 +311,7 @@
           </tr>
         </thead>
 
-        <tbody>
+        <tbody id="vouchersBody">
             {% for row in vouchers %}
             <tr>
                 <td><a href="/redeem/{{ row['voucher_id'] }}" target="_blank">{{ row['voucher_id'] }}</a></td>
@@ -398,6 +398,29 @@
                 row.style.display = rowText.includes(input) ? "" : "none";
             });
         }
+
+        // Auto-refresh the vouchers table so new bookings appear without a
+        // manual reload. Re-fetches this page and swaps only the tbody, so
+        // the search box and PDF filter panel keep their state.
+        async function refreshVouchers() {
+            if (document.hidden) return;  // skip while tab is backgrounded
+            try {
+                const resp = await fetch(window.location.href, { cache: "no-store" });
+                if (!resp.ok) return;
+                const html = await resp.text();
+                const doc = new DOMParser().parseFromString(html, "text/html");
+                const fresh = doc.getElementById("vouchersBody");
+                const current = document.getElementById("vouchersBody");
+                if (fresh && current && fresh.innerHTML !== current.innerHTML) {
+                    current.innerHTML = fresh.innerHTML;
+                    const search = document.getElementById("searchInput");
+                    if (search && search.value) filterTable();
+                }
+            } catch (e) {
+                /* transient network error — try again next tick */
+            }
+        }
+        setInterval(refreshVouchers, 20000);
 
         // Supplier PDF: select/clear helpers
         (function () {
