@@ -137,6 +137,72 @@
       font-weight: 600;
       color: #1f2d3d;
     }
+
+    /* Live discount calculator preview / confirmation summary */
+    .cost-preview {
+      margin: 0.5rem 0 1rem;
+      border: 1px solid #cfe0f5;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #ffffff;
+    }
+
+    .cost-preview-title {
+      padding: 0.8rem 1rem;
+      background: #eaf3ff;
+      border-bottom: 1px solid #dbe7f5;
+      font-weight: 700;
+      color: #0054a6;
+    }
+
+    .cost-preview-body {
+      padding: 0.4rem 1rem 0.9rem;
+    }
+
+    .cost-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid #eef3f8;
+      font-size: 0.95rem;
+    }
+
+    .cost-row:last-child {
+      border-bottom: none;
+    }
+
+    .cost-row .cost-label {
+      color: #4a5a6a;
+    }
+
+    .cost-row .cost-amount {
+      font-weight: 600;
+      color: #1f2d3d;
+    }
+
+    .cost-row.cost-discount .cost-amount {
+      color: #ff5c00;
+    }
+
+    .cost-row.cost-total {
+      margin-top: 0.2rem;
+      padding-top: 0.7rem;
+      border-top: 2px solid #dbe7f5;
+    }
+
+    .cost-row.cost-total .cost-label,
+    .cost-row.cost-total .cost-amount {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #0054a6;
+    }
+
+    .cost-preview-note {
+      margin-top: 0.6rem;
+      font-size: 0.85rem;
+      color: #6b7785;
+    }
   </style>
 </head>
 <body>
@@ -250,6 +316,41 @@
         <p style="margin-top: 0.6rem;">Your driver receives more value — no extra cost to you.</p>
       </details>
 
+      <!-- Live discount calculator preview / booking summary -->
+      <div id="cost_preview" class="cost-preview" style="display: none;">
+        <div class="cost-preview-title">Your Booking Summary</div>
+        <div class="cost-preview-body">
+          <div class="cost-row">
+            <span class="cost-label">Station</span>
+            <span class="cost-amount" id="cp_station">—</span>
+          </div>
+          <div class="cost-row">
+            <span class="cost-label">Live diesel price</span>
+            <span class="cost-amount" id="cp_price">—</span>
+          </div>
+          <div class="cost-row">
+            <span class="cost-label">You pay (prepaid)</span>
+            <span class="cost-amount" id="cp_amount">—</span>
+          </div>
+          <div class="cost-row">
+            <span class="cost-label">Estimated volume</span>
+            <span class="cost-amount" id="cp_liters">—</span>
+          </div>
+          <div class="cost-row cost-discount">
+            <span class="cost-label">Discount rebate</span>
+            <span class="cost-amount" id="cp_discount">—</span>
+          </div>
+          <div class="cost-row cost-total">
+            <span class="cost-label">Voucher total</span>
+            <span class="cost-amount" id="cp_total">—</span>
+          </div>
+          <div class="cost-preview-note">
+            Estimate based on the current live price &amp; discount. Final volume
+            settles at the pump on your refuel date.
+          </div>
+        </div>
+      </div>
+
       <label for="refuel_datetime">Refuel Date & Time</label>
       <input
         type="datetime-local"
@@ -334,6 +435,58 @@
 
     modeSelect.addEventListener('change', toggleDriverMode);
     window.addEventListener('load', toggleDriverMode); // Initial load
+  </script>
+
+  <!-- Live discount calculator: computes liters, rebate & voucher total -->
+  <script>
+    window.__STATION_TABLE__ = {{ station_table | tojson }};
+
+    (function () {
+      var pricing = {};
+      (window.__STATION_TABLE__ || []).forEach(function (s) {
+        pricing[s.name] = {
+          price: parseFloat(s.price_php_per_liter) || 0,
+          discount: parseFloat(s.discount_per_liter) || 0
+        };
+      });
+
+      var stationSel = document.getElementById('station');
+      var amountInput = document.querySelector('input[name="requested_amount_php"]');
+      var box = document.getElementById('cost_preview');
+      if (!stationSel || !amountInput || !box) return;
+
+      function peso(n) {
+        return '₱' + n.toLocaleString('en-PH', {
+          minimumFractionDigits: 2, maximumFractionDigits: 2
+        });
+      }
+
+      function updatePreview() {
+        var name = stationSel.value;
+        var amount = parseFloat(amountInput.value);
+        var info = pricing[name];
+        if (!info || !info.price || !amount || amount <= 0) {
+          box.style.display = 'none';
+          return;
+        }
+        var liters = amount / info.price;
+        var discount = liters * info.discount;
+        var total = amount + discount;
+
+        document.getElementById('cp_station').textContent = name;
+        document.getElementById('cp_price').textContent = peso(info.price) + '/L';
+        document.getElementById('cp_amount').textContent = peso(amount);
+        document.getElementById('cp_liters').textContent =
+          '~' + liters.toLocaleString('en-PH', { maximumFractionDigits: 1 }) + ' L';
+        document.getElementById('cp_discount').textContent = '+' + peso(discount);
+        document.getElementById('cp_total').textContent = peso(total);
+        box.style.display = 'block';
+      }
+
+      stationSel.addEventListener('change', updatePreview);
+      amountInput.addEventListener('input', updatePreview);
+      window.addEventListener('load', updatePreview);
+    })();
   </script>
 
   {% if not presets %}
