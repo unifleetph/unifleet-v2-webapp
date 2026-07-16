@@ -31,7 +31,7 @@ from discount_store import DiscountStore, DiscountValueError
 
 # Customer lookup: fuzzy name search (T3, ARCH-customer-details-page)
 from rapidfuzz import process, fuzz
-from models import VOUCHER_COLUMNS
+from models import VOUCHER_COLUMNS, FUEL_TYPES
 
 # F2.4: audit log is now Postgres-backed (audit_log.audit_log table)
 from audit_log import append_audit
@@ -685,10 +685,49 @@ def book():
         station_table = []
         station_table_updated_at = ""
 
+    # ---- Per-fuel-type station data (T4, F3.1) ----
+    # New, parallel to the flat station_names/station_table above (which
+    # stay in place for the current template — T5 rewires book.html to
+    # consume this instead). Availability is price-gated only (T2's
+    # list_stations already excludes unpriced stations); missing discount
+    # just means ₱0, not unavailable.
+    station_table_by_fuel = {}
+    for _ft in FUEL_TYPES:
+        try:
+            ft_stations = price_store.list_stations(_ft)
+            ft_discounts = discount_store.get_all(_ft) or {}
+            station_table_by_fuel[_ft] = [
+                {
+                    "id": s.get("id"),
+                    "name": s.get("name"),
+                    "price_php_per_liter": f"{float(s.get('price_php_per_liter') or 0):.2f}",
+                    "discount_per_liter": f"{float(ft_discounts.get(s.get('name')) or 0):.2f}",
+                }
+                for s in ft_stations
+            ]
+        except Exception as e:
+            print(f"⚠️ Error loading stations for fuel_type={_ft}: {e}")
+            station_table_by_fuel[_ft] = []
+
     # Compute Manila "now + 24h" for form hint and validation baseline
     manila = ZoneInfo("Asia/Manila")
     min_refuel_dt = (datetime.now(manila) + timedelta(hours=24))
     min_refuel = min_refuel_dt.strftime("%Y-%m-%dT%H:%M")
+
+    def _load_presets(account_code):
+        """Load a customer's driver/vehicle presets for the template.
+
+        F3.1 (T4): a preset's stored fuel_type is blanked when it's the
+        legacy sentinel "Diesel" (pre-dates the 3-fuel-type model) \u2014 the
+        Fuel Type field should start unset for those, not silently map
+        to "Biodiesel" (ARCH R5).
+        """
+        preset_path = str(data_paths.preset_csv_path(account_code))
+        presets = pd.read_csv(preset_path, encoding='utf-8-sig').to_dict(orient='records') if os.path.isfile(preset_path) else []
+        for p in presets:
+            if p.get('fuel_type') == 'Diesel':
+                p['fuel_type'] = ''
+        return presets
 
     if request.method == 'POST':
         account_code = request.form.get('account_code', '').strip().upper()
@@ -724,11 +763,11 @@ def book():
                     station_names=station_names,
                     station_table=station_table,
                     station_table_updated_at=station_table_updated_at,
+                    station_table_by_fuel=station_table_by_fuel,
                     min_refuel=min_refuel
                 )
             base = customer
-            preset_path = str(data_paths.preset_csv_path(account_code))
-            presets = pd.read_csv(preset_path, encoding='utf-8-sig').to_dict(orient='records') if os.path.isfile(preset_path) else []
+            presets = _load_presets(account_code)
             return render_template(
                 'book.html',
                 customer=base,
@@ -736,6 +775,7 @@ def book():
                 station_names=station_names,
                 station_table=station_table,
                 station_table_updated_at=station_table_updated_at,
+                station_table_by_fuel=station_table_by_fuel,
                 min_refuel=min_refuel
             )
 
@@ -744,8 +784,7 @@ def book():
         if driver_mode == 'preset' and not request.form.get('driver_select'):
             flash("Please select a preset or switch to 'Add New Driver'", "error")
             base = customer
-            preset_path = str(data_paths.preset_csv_path(account_code))
-            presets = pd.read_csv(preset_path, encoding='utf-8-sig').to_dict(orient='records') if os.path.isfile(preset_path) else []
+            presets = _load_presets(account_code)
             return render_template(
                 'book.html',
                 customer=base,
@@ -753,9 +792,16 @@ def book():
                 station_names=station_names,
                 station_table=station_table,
                 station_table_updated_at=station_table_updated_at,
+                station_table_by_fuel=station_table_by_fuel,
                 form_values=request.form,
                 min_refuel=min_refuel
             )
+
+        # F3.1 (T4): fuel_type is an independent, booking-level field \u2014
+        # decoupled from driver_data. It pre-fills from the selected
+        # preset client-side (T5), but the submitted value here is always
+        # the source of truth, whether from a preset or a new driver.
+        fuel_type = (request.form.get('fuel_type') or '').strip()
 
         if use_new:
             driver_data = {
@@ -764,7 +810,7 @@ def book():
                 'truck_make': request.form.get('truck_make'),
                 'truck_model': request.form.get('truck_model'),
                 'number_of_wheels': request.form.get('number_of_wheels'),
-                'fuel_type': request.form.get('fuel_type')
+                'fuel_type': fuel_type,
             }
         else:
             parts = request.form.get('driver_select').split('|')
@@ -774,7 +820,6 @@ def book():
                 'truck_make': parts[2],
                 'truck_model': parts[3],
                 'number_of_wheels': parts[4],
-                'fuel_type': parts[5]
             }
 
         # === NEW: Validate refuel_datetime >= now+24h (Asia/Manila) ===
@@ -785,8 +830,7 @@ def book():
             if refuel_dt_mnl < min_refuel_dt:
                 flash("Refuel Date & Time must be at least 24 hours from now (Asia/Manila).", "error")
                 base = customer
-                preset_path = str(data_paths.preset_csv_path(account_code))
-                presets = pd.read_csv(preset_path, encoding='utf-8-sig').to_dict(orient='records') if os.path.isfile(preset_path) else []
+                presets = _load_presets(account_code)
                 return render_template(
                     'book.html',
                     customer=base,
@@ -794,6 +838,7 @@ def book():
                     station_names=station_names,
                     station_table=station_table,
                     station_table_updated_at=station_table_updated_at,
+                    station_table_by_fuel=station_table_by_fuel,
                     form_values=request.form,
                     min_refuel=min_refuel
                 )
@@ -801,8 +846,7 @@ def book():
             # If parsing fails, treat as invalid
             flash("Please enter a valid Refuel Date & Time (YYYY-MM-DDTHH:MM).", "error")
             base = customer
-            preset_path = str(data_paths.preset_csv_path(account_code))
-            presets = pd.read_csv(preset_path, encoding='utf-8-sig').to_dict(orient='records') if os.path.isfile(preset_path) else []
+            presets = _load_presets(account_code)
             return render_template(
                 'book.html',
                 customer=base,
@@ -810,6 +854,7 @@ def book():
                 station_names=station_names,
                 station_table=station_table,
                 station_table_updated_at=station_table_updated_at,
+                station_table_by_fuel=station_table_by_fuel,
                 form_values=request.form,
                 min_refuel=min_refuel
             )
@@ -886,7 +931,7 @@ def book():
             'truck_make': driver_data['truck_make'],
             'truck_model': driver_data['truck_model'],
             'number_of_wheels': driver_data['number_of_wheels'],
-            'fuel_type': driver_data['fuel_type'],
+            'fuel_type': fuel_type,  # F3.1: independent booking-level field, not driver_data (T3 owns validation)
 
             'contact_name': request.form.get('contact_number').split('–')[0].strip(),
             'contact_number': request.form.get('contact_number').split('–')[-1].strip(),
@@ -931,6 +976,7 @@ def book():
         station_names=station_names,
         station_table=station_table,
         station_table_updated_at=station_table_updated_at,
+        station_table_by_fuel=station_table_by_fuel,
         min_refuel=min_refuel
     )
 @app.route('/discount-locator')

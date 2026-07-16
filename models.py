@@ -2,6 +2,12 @@
 
 import data_paths  # F2.6: paths come from data_paths
 
+# F3.1 (fuel-types-expansion): the 3 canonical fuel types, used everywhere
+# a fuel type value is stored or selected. Short form — expanded to full
+# display names ("Premium Gasoline", "Unleaded Gasoline") only at the PDF
+# render layer.
+FUEL_TYPES = ["Biodiesel", "Premium", "Unleaded"]
+
 VOUCHER_COLUMNS = [
     "voucher_id",
     "account_code",

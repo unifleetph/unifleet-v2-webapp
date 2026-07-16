@@ -499,7 +499,7 @@ Add `fuel_type` to `models.VOUCHER_COLUMNS` (the single fix that makes both CSV 
 
 ## Task T4: `/book` Route — Fuel Type Field Resolution & Per-Fuel Station Data Prep
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** test-after
 > **Effort:** m
 > **Priority:** critical
@@ -559,6 +559,7 @@ Within `/book`'s handler, parse the new independent Fuel Type form field (decoup
 
 **Modified files:**
 - `main.py` (`/book` handler: new top-level `fuel_type` field parsing; default/prefill resolution; `driver_data`'s `'preset'` branch no longer includes `fuel_type`; `'new'` branch's `driver_data['fuel_type']` sourced from the same top-level field; per-fuel-type station data built and passed to every `render_template('book.html', ...)` call site)
+- `models.py` (`FUEL_TYPES = ["Biodiesel", "Premium", "Unleaded"]` constant — reassigned here from T3 due to a circular-dependency note in the original task specs: T3 depends on T4, but T4 needs this constant, so it lands with whichever task actually runs first)
 
 **Must NOT modify:**
 - The price-existence validation/rejection logic (T3's scope)
