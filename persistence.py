@@ -287,6 +287,19 @@ class CSVRepo:
         """True if a customer with this account_code (case-insensitive) exists."""
         return self.get_customer(account_code) is not None
 
+    def list_customers(self) -> List[Dict]:
+        """Return every stored customer, fleet_size coerced to int (parity
+        with get_customer)."""
+        df = self._read_customers()
+        if df.empty:
+            return []
+        out = []
+        for _, row in df.iterrows():
+            d = {c: row.get(c, "") for c in CUSTOMER_COLUMNS}
+            d["fleet_size"] = _coerce_fleet_size(d.get("fleet_size"))
+            out.append(d)
+        return out
+
 class DBRepo:
     def __init__(self):
         _ensure_dirs()

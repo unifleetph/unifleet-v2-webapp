@@ -479,3 +479,10 @@ class PostgresRepo:
                     (code,),
                 )
                 return cur.fetchone() is not None
+
+    def list_customers(self) -> List[Dict]:
+        """Return every stored customer."""
+        with self._pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("SELECT * FROM customers")
+                return cur.fetchall()

@@ -92,3 +92,37 @@ def test_fleet_size_coercion(csv_repo):
     csv_repo.create_customer({**SAMPLE, "account_code": "BLNK", "fleet_size": ""})
     assert csv_repo.get_customer("NUMC")["fleet_size"] == 12
     assert csv_repo.get_customer("BLNK")["fleet_size"] is None
+
+
+# ============================================================
+# list_customers (T2, ARCH-customer-details-page)
+# ============================================================
+
+def test_list_customers_returns_all_with_fleet_size_coerced(csv_repo):
+    """Every stored customer is returned, fleet_size coerced to int."""
+    csv_repo.create_customer({**SAMPLE, "account_code": "HARR", "fleet_size": "12"})
+    csv_repo.create_customer({**SAMPLE, "account_code": "ABCD", "fleet_size": "5"})
+
+    got = csv_repo.list_customers()
+
+    codes = {c["account_code"] for c in got}
+    assert codes == {"HARR", "ABCD"}
+    fleet_sizes = {c["account_code"]: c["fleet_size"] for c in got}
+    assert fleet_sizes["HARR"] == 12
+    assert fleet_sizes["ABCD"] == 5
+
+
+def test_list_customers_empty_returns_empty_list(csv_repo):
+    """No customers stored -> []."""
+    assert csv_repo.list_customers() == []
+
+
+def test_list_customers_tolerates_blank_optional_fields(csv_repo):
+    """A customer with blank fleet_size/areas still appears, not crashing."""
+    csv_repo.create_customer({**SAMPLE, "account_code": "BLNK", "fleet_size": "", "areas": ""})
+
+    got = csv_repo.list_customers()
+
+    assert len(got) == 1
+    assert got[0]["account_code"] == "BLNK"
+    assert got[0]["fleet_size"] is None

@@ -257,7 +257,7 @@ Add `"account_code"` to `models.VOUCHER_COLUMNS` (fixes the CSV-mode gap where i
 
 ## Task T2: `list_customers()` on Both Repos
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** high

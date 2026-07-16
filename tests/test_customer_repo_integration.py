@@ -124,3 +124,31 @@ def test_fleet_size_coercion(schema_db):
         repo.close()
     assert num["fleet_size"] == 12
     assert blk["fleet_size"] is None
+
+
+# ============================================================
+# list_customers (T2, ARCH-customer-details-page)
+# ============================================================
+
+def test_list_customers_returns_all(schema_db):
+    """Every stored customer is returned via SELECT * FROM customers."""
+    repo = PostgresRepo(dsn=schema_db)
+    try:
+        repo.create_customer({**SAMPLE, "account_code": "HARR"})
+        repo.create_customer({**SAMPLE, "account_code": "ABCD"})
+        got = repo.list_customers()
+    finally:
+        repo.close()
+
+    codes = {c["account_code"] for c in got}
+    assert codes == {"HARR", "ABCD"}
+
+
+def test_list_customers_empty_returns_empty_list(schema_db):
+    """No customers stored -> []."""
+    repo = PostgresRepo(dsn=schema_db)
+    try:
+        got = repo.list_customers()
+    finally:
+        repo.close()
+    assert got == []
