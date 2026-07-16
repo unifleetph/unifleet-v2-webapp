@@ -594,48 +594,6 @@ def admin_logout():
     session.pop('admin', None)
     return redirect(url_for('admin_login'))
 
-@app.route('/register-vehicle', methods=['GET', 'POST'])
-def register_vehicle():
-    if request.method == 'GET':
-        return render_template('register_vehicle.html')
-
-    account_code = request.form.get('account_code', '').strip().upper()
-    driver_data = {
-        'driver_name': (request.form.get('driver_name') or '').strip(),
-        'vehicle_plate': (request.form.get('vehicle_plate') or '').strip(),
-        'truck_make': (request.form.get('truck_make') or '').strip(),
-        'truck_model': (request.form.get('truck_model') or '').strip(),
-        'number_of_wheels': (request.form.get('number_of_wheels') or '').strip(),
-        'fuel_type': (request.form.get('fuel_type') or 'Diesel').strip() or 'Diesel',
-    }
-
-    # Validate account_code against the customer store (Postgres).
-    if not repo.customer_exists(account_code):
-        flash("Account code not found. Please register your company first.", "error")
-        return render_template('register_vehicle.html', form_values=request.form)
-
-    # Required fields.
-    if not driver_data['driver_name'] or not driver_data['vehicle_plate']:
-        flash("Driver name and plate number are required.", "error")
-        return render_template('register_vehicle.html', form_values=request.form)
-
-    # Save preset, dedup by plate (parity with the booking-time write).
-    preset_path = str(data_paths.preset_csv_path(account_code))
-    existing = pd.read_csv(preset_path, encoding='utf-8-sig') if os.path.isfile(preset_path) else pd.DataFrame()
-    plate_key = driver_data['vehicle_plate'].strip().upper()
-    exists = (
-        'vehicle_plate' in existing.columns
-        and existing['vehicle_plate'].astype(str).str.strip().str.upper().eq(plate_key).any()
-    )
-    if not exists:
-        updated = pd.concat([existing, pd.DataFrame([driver_data])], ignore_index=True)
-        updated.to_csv(preset_path, index=False, encoding='utf-8-sig')
-        flash(f"Vehicle {driver_data['vehicle_plate']} registered.", "success")
-    else:
-        flash(f"Vehicle {driver_data['vehicle_plate']} is already registered.", "info")
-
-    return redirect(url_for('register_vehicle'))
-
 @app.route('/book', methods=['GET', 'POST'])
 def book():
     customers_path = str(data_paths.CUSTOMERS_CSV)
