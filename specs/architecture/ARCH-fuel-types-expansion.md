@@ -570,7 +570,7 @@ Within `/book`'s handler, parse the new independent Fuel Type form field (decoup
 
 ## Task T5: `/book` Template & Client-Side JS Filtering
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** ui
 > **Effort:** m
 > **Priority:** critical

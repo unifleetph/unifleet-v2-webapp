@@ -1,9 +1,19 @@
 """
-tests/test_book_station_filter.py — /book hides stations with no discount.
+tests/test_book_station_filter.py — /book station availability is
+price-gated only (T5, ARCH-fuel-types-expansion, ARCH decision A7).
 
-Stations whose current discount is 0 / missing must not appear in the
-station dropdown or the Live Pricing & Discounts table.
+Supersedes the pre-F3.1 version of this file, which asserted stations
+with no/zero discount were hidden — the opposite of the confirmed
+design: availability depends only on whether a price row exists for
+the (station, fuel_type) combo; a missing discount just means ₱0,
+never hides the station. Since the station <select> is now populated
+client-side (T5), these assertions target the server-rendered
+window.__STATION_TABLE__ JSON embed and the price×discount reference
+tables, not a rendered <option> list.
 """
+
+import json
+import re
 
 import pytest
 
@@ -22,14 +32,17 @@ CUST = {
     "hq_locations": "",
 }
 
-STATIONS = [
+# price_store.list_stations(fuel_type) already only returns stations
+# with a price row for that fuel type — "no price" means absent from
+# this list entirely, not present-with-zero.
+PRICED_STATIONS = [
     {"id": "disc", "name": "EcoOil - EDSA Mandaluyong", "brand": "EcoOil",
      "price_php_per_liter": 60.0, "updated_at": 0},
     {"id": "nodisc", "name": "EcoOil - Bulacan", "brand": "EcoOil",
-     "price_php_per_liter": 0.0, "updated_at": 0},
-    {"id": "zero", "name": "Cleanfuel - Valenzuela", "brand": "Cleanfuel",
-     "price_php_per_liter": 60.0, "updated_at": 0},
+     "price_php_per_liter": 58.0, "updated_at": 0},
 ]
+
+DISCOUNTS = {"EcoOil - EDSA Mandaluyong": 2.0}  # Bulacan has no discount row
 
 
 class RepoStub:
@@ -43,28 +56,46 @@ class RepoStub:
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setattr(main, "repo", RepoStub())
-    # TEMP (T2 bridge, F3.1): lambdas accept-and-ignore a fuel_type arg
-    # since main.py's call sites now pass "Biodiesel" positionally.
-    # T4/T5 will rewrite this whole file's assertions for the price-gate
-    # behavior reversal (ARCH A7) — this is only a signature-compat patch.
-    monkeypatch.setattr(main.price_store, "list_stations",
-                        lambda *a, **kw: [dict(s) for s in STATIONS])
-    # Only EDSA Mandaluyong has a positive discount; Cleanfuel is 0.
-    monkeypatch.setattr(main.discount_store, "get_all",
-                        lambda *a, **kw: {"EcoOil - EDSA Mandaluyong": 2.0,
-                                           "Cleanfuel - Valenzuela": 0.0})
+    monkeypatch.setattr(
+        main.price_store, "list_stations",
+        lambda fuel_type: [dict(s) for s in PRICED_STATIONS] if fuel_type == "Biodiesel" else []
+    )
+    monkeypatch.setattr(
+        main.discount_store, "get_all",
+        lambda fuel_type: dict(DISCOUNTS) if fuel_type == "Biodiesel" else {}
+    )
     main.app.config.update(TESTING=True)
     return main.app.test_client()
 
 
-def test_hides_stations_without_discount(client):
+def _station_table(resp_data):
+    m = re.search(r"window\.__STATION_TABLE__ = (\{.*?\});", resp_data.decode("utf-8"), re.DOTALL)
+    assert m, "window.__STATION_TABLE__ not found"
+    return json.loads(m.group(1))
+
+
+def test_priced_station_with_no_discount_still_shown(client):
+    """Availability is price-gated only — a missing discount never
+    hides a station."""
     r = client.post("/book", data={"account_code": "HARR"})
     assert r.status_code == 200
-    assert b"EcoOil - EDSA Mandaluyong" in r.data      # has discount -> shown
-    assert b"EcoOil - Bulacan" not in r.data           # no discount -> hidden
-    assert b"Cleanfuel - Valenzuela" not in r.data     # zero discount -> hidden
+    biodiesel = _station_table(r.data)["Biodiesel"]
+    names = {s["name"] for s in biodiesel}
+    assert "EcoOil - EDSA Mandaluyong" in names
+    assert "EcoOil - Bulacan" in names  # no discount, but still shown
 
 
-def test_discounted_station_present_in_dropdown(client):
+def test_station_with_no_price_row_is_hidden(client):
+    """A fuel type with zero priced stations (Premium, in this stub)
+    has an empty entry — nothing spuriously appears."""
     r = client.post("/book", data={"account_code": "HARR"})
-    assert b'<option value="EcoOil - EDSA Mandaluyong">' in r.data
+    premium = _station_table(r.data)["Premium"]
+    assert premium == []
+
+
+def test_discount_reference_table_shows_dash_for_missing_discount(client):
+    r = client.post("/book", data={"account_code": "HARR"})
+    body = r.data.decode("utf-8")
+    # EDSA Mandaluyong has a discount; Bulacan doesn't (renders "—")
+    assert "EcoOil - EDSA Mandaluyong" in body
+    assert "EcoOil - Bulacan" in body

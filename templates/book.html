@@ -138,6 +138,22 @@
       color: #1f2d3d;
     }
 
+    /* Fuel-type reference tables (T5, F3.1): each is its own <details>,
+       independently collapsible, not synced to the current selection. */
+    .fuel-table-group {
+      margin-top: 1rem;
+    }
+
+    .fuel-table-group summary {
+      font-weight: 700;
+      color: #0054a6;
+    }
+
+    .fuel-table-group .discount-table-wrap {
+      margin-top: 0.5rem;
+      border: none;
+    }
+
     /* Live discount calculator preview / confirmation summary */
     .cost-preview {
       margin: 0.5rem 0 1rem;
@@ -249,67 +265,121 @@
       <label for="contact_number">Name & Mobile Number [for Voucher Delivery]</label>
       <input type="text" name="contact_number" value="{{ customer.contact_name }} – {{ customer.contact_number }}" class="full-width-input" required>
 
+      <!-- Driver & Vehicle (reordered before Station, T5/F3.1 — the
+           Station list is filtered by the selected Fuel Type below,
+           so Fuel Type must be resolved first). -->
+      <hr style="margin: 2rem 0;">
+
+      <h3 style="color: #0054a6;">Driver & Vehicle</h3>
+
+      <label for="driver_mode">Choose Mode</label>
+      <select name="driver_mode" id="driver_mode" class="full-width-input" required>
+        <option value="preset">Use Existing Preset</option>
+        <option value="new">Add New Driver</option>
+      </select>
+
+      <!-- Preset Dropdown -->
+      <div id="preset_fields">
+        <label for="driver_select">Select from Existing Presets</label>
+        <select name="driver_select" id="driver_select" class="full-width-input">
+          {% for row in presets %}
+          <option value="{{ row.driver_name }}|{{ row.vehicle_plate }}|{{ row.truck_make }}|{{ row.truck_model }}|{{ row.number_of_wheels }}|{{ row.fuel_type }}">
+            {{ row.driver_name }} – {{ row.vehicle_plate }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <!-- New Driver Inputs -->
+      <div id="new_driver_fields" style="display: none;">
+        <p class="note">Enter details for new driver and vehicle:</p>
+
+        <label for="driver_name">Driver FULL NAME</label>
+        <input type="text" name="driver_name" class="full-width-input">
+
+        <label for="number_of_wheels">Number of Wheels on Vehicle</label>
+        <input type="number" name="number_of_wheels" class="full-width-input">
+
+        <label for="truck_make">Vehicle Make</label>
+        <input type="text" name="truck_make" class="full-width-input">
+
+        <label for="truck_model">Vehicle Model</label>
+        <input type="text" name="truck_model" class="full-width-input">
+
+        <label for="vehicle_plate">Plate Number of Vehicle</label>
+        <input type="text" name="vehicle_plate" class="full-width-input">
+      </div>
+
+      <!-- Fuel Type: single, independent booking-level field (T4/T5,
+           F3.1) — pre-filled from the selected preset's stored default
+           (blank for legacy "Diesel" presets), always overridable. -->
+      <label for="fuel_type">Fuel Type</label>
+      <select name="fuel_type" id="fuel_type" class="full-width-input" required>
+        <option value="" disabled selected>Select fuel type</option>
+        {% for ft in ['Biodiesel', 'Premium', 'Unleaded'] %}
+          <option value="{{ ft }}">{{ ft }}</option>
+        {% endfor %}
+      </select>
+
       <label for="station">Select a Station</label>
       <select name="station" id="station" class="full-width-input" required>
-        {% for name in station_names %}
-          <option value="{{ name }}">{{ name }}</option>
-        {% endfor %}
+        <!-- Populated client-side (populateStations()) based on the
+             selected Fuel Type — see window.__STATION_TABLE__ below. -->
       </select>
 
       <div style="background-color: #e6f0fb; padding: 1.5rem; border-radius: 8px; margin: 1.5rem 0;">
         <h3 style="margin-top: 0; color: #0054a6;">How to Find Discounts</h3>
         <ol style="margin-bottom: 1rem; padding-left: 1.5rem;">
-          <li>Find a station on the map below</li>
-          <li>Review the live station price and discount table</li>
-          <li>Select station in drop down</li>
+          <li>Choose your fuel type above</li>
+          <li>Review the live station price and discount table for that fuel type</li>
+          <li>Select station in the dropdown</li>
         </ol>
 
-        {% if station_table %}
-        <div class="discount-table-wrap">
-          <div class="discount-table-header">
-            <strong>Live Station Pricing & Discounts</strong><br>
-            Last updated:
-            <strong>{{ station_table_updated_at if station_table_updated_at else '—' }}</strong>
-            <span style="color:#6b7785;">(Asia/Manila)</span>
+        <!-- 3 stacked, independently collapsible price×discount tables —
+             one per fuel type, not synced to the current selection. -->
+        {% for ft in ['Biodiesel', 'Premium', 'Unleaded'] %}
+        <details class="fuel-table-group" data-fuel-type="{{ ft }}">
+          <summary>{{ ft }} — Live Pricing &amp; Discounts</summary>
+          <div class="discount-table-wrap">
+            <table class="discount-table">
+              <thead>
+                <tr>
+                  <th>Station</th>
+                  <th>Price</th>
+                  <th>Discount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in station_table_by_fuel.get(ft, []) %}
+                <tr>
+                  <td>{{ row.name }}</td>
+                  <td class="price-value">₱{{ row.price_php_per_liter }}</td>
+                  <td class="discount-value">
+                    {% if row.discount_per_liter not in [None, '', 'nan', '0.00'] %}
+                      ₱{{ row.discount_per_liter }}/L
+                    {% else %}
+                      —
+                    {% endif %}
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
           </div>
-          <table class="discount-table">
-            <thead>
-              <tr>
-                <th>Station</th>
-                <th>Price</th>
-                <th>Discount</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for row in station_table %}
-              <tr>
-                <td>{{ row.name }}</td>
-                <td class="price-value">₱{{ row.price_php_per_liter }}</td>
-                <td class="discount-value">
-                  {% if row.discount_per_liter not in [None, '', 'nan'] %}
-                    ₱{{ row.discount_per_liter }}/L
-                  {% else %}
-                    —
-                  {% endif %}
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        {% endif %}
+        </details>
+        {% endfor %}
 
         <iframe src="https://www.google.com/maps/d/u/0/embed?mid=1YTyyRvSx1Fan8bbrnRsMBZuIDbrVC7Y&ehbc=2E312F" loading="lazy"></iframe>
       </div>
 
-      <label for="requested_amount_php">Prepaid Diesel Amount (in PHP) [Discount Applied Later]</label>
+      <label for="requested_amount_php">Prepaid Fuel Amount (in PHP) [Discount Applied Later]</label>
       <input type="number" name="requested_amount_php" class="full-width-input" required
       value="{{ form_values.requested_amount_php if form_values else '' }}">
 
       <details>
         <summary>How Discounts Work</summary>
         <p>You pay the prepaid amount — and we add a rebate on top based on your selected station’s discount.</p>
-        <p><strong>Example:</strong> You book ₱10,000 at a station with ₱2.50/L discount and a live diesel price of ₱51.30/L.</p>
+        <p><strong>Example:</strong> You book ₱10,000 at a station with ₱2.50/L discount and a live fuel price of ₱51.30/L.</p>
         <p>→ That’s ~195 liters (₱10,000 ÷ 51.30)</p>
         <p>→ Discount = 195L × ₱2.50 = ₱487.50</p>
         <p><strong>Voucher total:</strong> ₱10,000 + ₱487.50 = ₱10,487.50</p>
@@ -325,7 +395,7 @@
             <span class="cost-amount" id="cp_station">—</span>
           </div>
           <div class="cost-row">
-            <span class="cost-label">Live diesel price</span>
+            <span class="cost-label">Live fuel price</span>
             <span class="cost-amount" id="cp_price">—</span>
           </div>
           <div class="cost-row">
@@ -365,52 +435,6 @@
         Must be at least <strong>24 hours</strong> from now (Asia/Manila).
       </div>
 
-
-      <hr style="margin: 2rem 0;">
-
-      <h3 style="color: #0054a6;">Driver & Vehicle</h3>
-
-      <label for="driver_mode">Choose Mode</label>
-      <select name="driver_mode" id="driver_mode" class="full-width-input" required>
-        <option value="preset">Use Existing Preset</option>
-        <option value="new">Add New Driver</option>
-      </select>
-
-      <!-- Preset Dropdown -->
-      <div id="preset_fields">
-        <label for="driver_select">Select from Existing Presets</label>
-        <select name="driver_select" id="driver_select" class="full-width-input">
-          {% for row in presets %}
-          <option value="{{ row.driver_name }}|{{ row.vehicle_plate }}|{{ row.truck_make }}|{{ row.truck_model }}|{{ row.number_of_wheels }}|{{ row.fuel_type }}">
-            {{ row.driver_name }} – {{ row.vehicle_plate }}
-          </option>
-          {% endfor %}
-        </select>
-      </div>
-
-      <!-- New Driver Inputs -->
-      <div id="new_driver_fields" style="display: none;">
-        <p class="note">Enter details for new driver and vehicle:</p>
-
-        <label for="driver_name">Driver FULL NAME</label>
-        <input type="text" name="driver_name" class="full-width-input">
-
-        <label for="number_of_wheels">Number of Wheels on Vehicle</label>
-        <input type="number" name="number_of_wheels" class="full-width-input">
-
-        <!-- Fuel type fixed to Diesel for now; selection will move to the Booking page -->
-        <input type="hidden" name="fuel_type" value="Diesel">
-
-        <label for="truck_make">Vehicle Make</label>
-        <input type="text" name="truck_make" class="full-width-input">
-
-        <label for="truck_model">Vehicle Model</label>
-        <input type="text" name="truck_model" class="full-width-input">
-
-        <label for="vehicle_plate">Plate Number of Vehicle</label>
-        <input type="text" name="vehicle_plate" class="full-width-input">
-      </div>
-
       <button type="submit">Submit Booking</button>
     </form>
     {% endif %}
@@ -437,23 +461,72 @@
     window.addEventListener('load', toggleDriverMode); // Initial load
   </script>
 
-  <!-- Live discount calculator: computes liters, rebate & voucher total -->
+  <!-- Fuel-type-aware station filtering + live discount calculator
+       (T5, F3.1). window.__STATION_TABLE__ is now keyed by fuel type;
+       changing Fuel Type re-populates the Station <select> client-side,
+       no page reload. -->
   <script>
-    window.__STATION_TABLE__ = {{ station_table | tojson }};
+    window.__STATION_TABLE__ = {{ station_table_by_fuel | tojson }};
+    var VALID_FUEL_TYPES = ['Biodiesel', 'Premium', 'Unleaded'];
 
     (function () {
-      var pricing = {};
-      (window.__STATION_TABLE__ || []).forEach(function (s) {
-        pricing[s.name] = {
-          price: parseFloat(s.price_php_per_liter) || 0,
-          discount: parseFloat(s.discount_per_liter) || 0
-        };
-      });
-
+      var fuelSelect = document.getElementById('fuel_type');
       var stationSel = document.getElementById('station');
+      var driverSelect = document.getElementById('driver_select');
       var amountInput = document.querySelector('input[name="requested_amount_php"]');
       var box = document.getElementById('cost_preview');
-      if (!stationSel || !amountInput || !box) return;
+      if (!fuelSelect || !stationSel) return;
+
+      function currentStations() {
+        return (window.__STATION_TABLE__ || {})[fuelSelect.value] || [];
+      }
+
+      function populateStations() {
+        var stations = currentStations();
+        var previousValue = stationSel.value;
+        stationSel.innerHTML = '';
+        stations.forEach(function (s) {
+          var opt = document.createElement('option');
+          opt.value = s.name;
+          opt.textContent = s.name;
+          stationSel.appendChild(opt);
+        });
+        // If the previously-selected station isn't valid for the newly
+        // selected fuel type, the selection resets (first available
+        // option, or nothing) rather than silently keeping a stale,
+        // invalid station.
+        var stillValid = stations.some(function (s) { return s.name === previousValue; });
+        if (stillValid) {
+          stationSel.value = previousValue;
+        }
+        updatePreview();
+      }
+
+      function onFuelTypeChange() {
+        populateStations();
+      }
+
+      fuelSelect.addEventListener('change', onFuelTypeChange);
+
+      // Preset selection pre-fills Fuel Type from the preset's stored
+      // default (parts[5] of the option value) — blank/unset for legacy
+      // "Diesel" presets or any value outside the 3 canonical types.
+      if (driverSelect) {
+        function prefillFuelTypeFromPreset() {
+          var parts = (driverSelect.value || '').split('|');
+          var presetFuelType = parts[5] || '';
+          if (VALID_FUEL_TYPES.indexOf(presetFuelType) !== -1) {
+            fuelSelect.value = presetFuelType;
+          } else {
+            fuelSelect.value = '';
+          }
+          populateStations();
+        }
+        driverSelect.addEventListener('change', prefillFuelTypeFromPreset);
+        window.addEventListener('load', prefillFuelTypeFromPreset);
+      } else {
+        window.addEventListener('load', populateStations);
+      }
 
       function peso(n) {
         return '₱' + n.toLocaleString('en-PH', {
@@ -462,6 +535,16 @@
       }
 
       function updatePreview() {
+        if (!amountInput || !box) return;
+        var stations = currentStations();
+        var pricing = {};
+        stations.forEach(function (s) {
+          pricing[s.name] = {
+            price: parseFloat(s.price_php_per_liter) || 0,
+            discount: parseFloat(s.discount_per_liter) || 0
+          };
+        });
+
         var name = stationSel.value;
         var amount = parseFloat(amountInput.value);
         var info = pricing[name];
@@ -484,8 +567,7 @@
       }
 
       stationSel.addEventListener('change', updatePreview);
-      amountInput.addEventListener('input', updatePreview);
-      window.addEventListener('load', updatePreview);
+      if (amountInput) amountInput.addEventListener('input', updatePreview);
     })();
   </script>
 
@@ -498,6 +580,5 @@
     </script>
   {% endif %}
 
-  
 </body>
 </html>
