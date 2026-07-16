@@ -29,6 +29,10 @@ except Exception as _e:
 # NEW: discounts storage
 from discount_store import DiscountStore, DiscountValueError
 
+# Customer lookup: fuzzy name search (T3, ARCH-customer-details-page)
+from rapidfuzz import process, fuzz
+from models import VOUCHER_COLUMNS
+
 # F2.4: audit log is now Postgres-backed (audit_log.audit_log table)
 from audit_log import append_audit
 
@@ -257,6 +261,84 @@ def admin():
         station_options=stations,
         selected_station_ids=selected_station_ids,
     )
+
+# =========================
+# Admin: Customer Lookup (T3, ARCH-customer-details-page)
+# =========================
+@app.route('/admin/customers')
+def admin_customers():
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    query = (request.args.get('q') or '').strip()
+    if not query:
+        return render_template('admin_customer_lookup.html', state=None, query=query)
+
+    customer = repo.get_customer(query)
+    matches = None
+    if customer is None:
+        customers = repo.list_customers()
+        choices = {
+            c['account_code']: f"{c.get('contact_name', '')} {c.get('company_name', '')}"
+            for c in customers
+        }
+        results = process.extract(
+            query, choices, scorer=fuzz.WRatio, limit=None, score_cutoff=60
+        )
+        rank = {code: i for i, (_, _, code) in enumerate(results)}
+        matches = sorted(
+            (c for c in customers if c['account_code'] in rank),
+            key=lambda c: rank[c['account_code']],
+        )
+        if len(matches) == 1:
+            customer = matches[0]
+            matches = None
+        elif len(matches) == 0:
+            return render_template('admin_customer_lookup.html', state='not_found', query=query)
+        else:
+            return render_template(
+                'admin_customer_lookup.html', state='picklist', query=query, matches=matches
+            )
+
+    bookings = [
+        v for v in repo.list_all_vouchers()
+        if str(v.get('account_code') or '').strip().upper() == customer['account_code'].strip().upper()
+    ]
+    return render_template(
+        'admin_customer_lookup.html',
+        state='detail',
+        query=query,
+        customer=customer,
+        bookings=bookings,
+    )
+
+@app.route('/admin/customers/export')
+def admin_customer_export():
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    account_code = (request.args.get('account_code') or '').strip()
+    customer = repo.get_customer(account_code)
+    if customer is None:
+        abort(404)
+
+    bookings = [
+        v for v in repo.list_all_vouchers()
+        if str(v.get('account_code') or '').strip().upper() == customer['account_code'].strip().upper()
+    ]
+    export_path = str(data_paths.EXPORTS_DIR / f"customer_{customer['account_code']}_bookings.csv")
+    pd.DataFrame(bookings, columns=VOUCHER_COLUMNS).to_csv(export_path, index=False, encoding='utf-8-sig')
+    return send_file(export_path, as_attachment=True)
+
+@app.route('/admin/bookings/export')
+def admin_bookings_export():
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    bookings = repo.list_all_vouchers()
+    export_path = str(data_paths.EXPORTS_DIR / "all_customers_bookings.csv")
+    pd.DataFrame(bookings, columns=VOUCHER_COLUMNS).to_csv(export_path, index=False, encoding='utf-8-sig')
+    return send_file(export_path, as_attachment=True)
 
 # -------------- (CSV upload route stays; you’ll remove visually in admin.html soon) --------------
 @app.route('/upload_csv', methods=['POST'])

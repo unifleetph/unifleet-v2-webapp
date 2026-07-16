@@ -319,7 +319,7 @@ Add `list_customers()` to `CSVRepo` and `PostgresRepo` — neither has it today.
 
 ## Task T3: `/admin/customers` Route Logic
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** test-after
 > **Effort:** m
 > **Priority:** high
@@ -381,6 +381,7 @@ Implement the 3 new routes in `main.py`: `/admin/customers` (search resolution a
 
 **New files:**
 - `tests/test_admin_customers.py`
+- `templates/admin_customer_lookup.html` (minimal placeholder — bare structure for the 3 states + booking history, sufficient for T3's own route tests; substantially rewritten/polished by T4 — footprint amendment agreed during T3 implementation, since testing the routes end-to-end needs a renderable template)
 
 **Modified files:**
 - `main.py` (`/admin/customers`, `/admin/customers/export`, `/admin/bookings/export`)

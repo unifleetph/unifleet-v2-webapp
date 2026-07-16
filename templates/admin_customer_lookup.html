@@ -1,0 +1,67 @@
+<!-- templates/admin_customer_lookup.html
+     Minimal placeholder (T3, ARCH-customer-details-page) — sufficient for
+     T3's route-logic tests. Polished by T4. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>UniFleet — Admin: Customer Lookup</title>
+</head>
+<body>
+  <h1>Customer Lookup</h1>
+
+  <form method="GET" action="{{ url_for('admin_customers') }}">
+    <input type="text" name="q" value="{{ query or '' }}" placeholder="Account code or name">
+    <button type="submit">Search</button>
+  </form>
+
+  {% if state == 'not_found' %}
+    <p class="not-found">No customer found for "{{ query }}".</p>
+  {% elif state == 'picklist' %}
+    <ul class="picklist">
+      {% for m in matches %}
+      <li>
+        <a href="{{ url_for('admin_customers', q=m.account_code) }}">
+          {{ m.contact_name }} — {{ m.account_code }} — {{ m.company_name }}
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+  {% elif state == 'detail' %}
+    <section class="customer-detail">
+      <p><strong>Account Code:</strong> {{ customer.account_code }}</p>
+      <p><strong>Contact Name:</strong> {{ customer.contact_name }}</p>
+      <p><strong>Contact Number:</strong> {{ customer.contact_number }}</p>
+      <p><strong>Email:</strong> {{ customer.email }}</p>
+      <p><strong>Company Name:</strong> {{ customer.company_name }}</p>
+      <p><strong>Fleet Size:</strong> {{ customer.fleet_size }}</p>
+      <p><strong>Areas:</strong> {{ customer.areas }}</p>
+    </section>
+
+    <a href="{{ url_for('admin_customer_export', account_code=customer.account_code) }}">Export Bookings CSV</a>
+
+    <table class="booking-history">
+      <thead>
+        <tr>
+          <th>Voucher ID</th>
+          <th>Station</th>
+          <th>Amount</th>
+          <th>Status</th>
+          <th>Date</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in bookings %}
+        <tr>
+          <td>{{ b.voucher_id }}</td>
+          <td>{{ b.station }}</td>
+          <td>{{ b.requested_amount_php }}</td>
+          <td>{{ b.status }}</td>
+          <td>{{ b.transaction_date }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</body>
+</html>
