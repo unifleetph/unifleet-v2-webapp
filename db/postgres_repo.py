@@ -29,10 +29,10 @@ from psycopg_pool import ConnectionPool
 from models import VOUCHER_COLUMNS
 
 
-# VOUCHER_COLUMNS has 27 names; the schema has 29 (the 2 extras are
-# the FK columns station_id and account_code). We pass through the
-# FK columns when the caller provides them, else NULL.
-_FK_COLUMNS = ("station_id", "account_code")
+# account_code now lives in VOUCHER_COLUMNS (T1, ARCH-customer-details-page)
+# so only station_id remains a schema-only FK column here. We pass it
+# through when the caller provides it, else NULL.
+_FK_COLUMNS = ("station_id",)
 _VOUCHER_INSERT_COLUMNS = VOUCHER_COLUMNS + list(_FK_COLUMNS)
 
 # Columns that the DB schema marks NOT NULL DEFAULT NOW() — when the
@@ -334,11 +334,11 @@ class PostgresRepo:
         row["created_at"] = row.get("created_at") or now
         row["updated_at"] = row.get("updated_at") or now
 
-        # Pass through FK columns if the caller supplied them
+        # Pass through the remaining schema-only FK column if supplied.
+        # account_code no longer needs this — it's in VOUCHER_COLUMNS now,
+        # so the overlay loop above already handles it.
         if data and data.get("station_id") is not None:
             row["station_id"] = data["station_id"]
-        if data and data.get("account_code") is not None:
-            row["account_code"] = data["account_code"]
 
         # Insert (uses append_vouchers for the UPSERT semantics)
         self.append_vouchers([row])

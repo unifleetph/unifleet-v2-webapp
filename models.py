@@ -4,6 +4,7 @@ import data_paths  # F2.6: paths come from data_paths
 
 VOUCHER_COLUMNS = [
     "voucher_id",
+    "account_code",
     "station",
     "requested_amount_php",
     "liters_requested",
