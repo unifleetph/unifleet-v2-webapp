@@ -213,3 +213,43 @@ def test_global_export_zero_bookings_returns_headers_only(client, monkeypatch):
     r = client.get("/admin/bookings/export")
 
     assert r.status_code == 200
+
+
+# ============================================================
+# T4 — template & nav testable seams
+# ============================================================
+
+def test_admin_dashboard_has_customer_lookup_link(client):
+    _login(client)
+    r = client.get("/admin")
+    assert b'href="/admin/customers"' in r.data
+
+
+def test_admin_dashboard_has_export_all_bookings_link(client):
+    _login(client)
+    r = client.get("/admin")
+    assert b'href="/admin/bookings/export"' in r.data
+
+
+def test_search_form_has_single_input_and_submit(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub())
+    _login(client)
+    r = client.get("/admin/customers")
+    assert r.data.count(b'<input type="text" name="q"') == 1
+    assert b'<button' in r.data and b'type="submit"' in r.data
+
+
+def test_picklist_entries_link_to_exact_account_code(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(customers=[HARR, ABCD]))
+    _login(client)
+    r = client.get("/admin/customers?q=Harri")
+    assert b'href="/admin/customers?q=HARR"' in r.data
+    assert b'href="/admin/customers?q=ABCD"' in r.data
+
+
+def test_booking_history_table_has_header_row_when_empty(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(customers=[HARR], vouchers=[]))
+    _login(client)
+    r = client.get("/admin/customers?q=HARR")
+    assert b"<th>Voucher ID</th>" in r.data
+    assert b"No bookings yet" in r.data

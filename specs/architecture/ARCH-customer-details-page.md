@@ -394,7 +394,7 @@ Implement the 3 new routes in `main.py`: `/admin/customers` (search resolution a
 
 ## Task T4: Customer Lookup Template & Admin Nav
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** ui
 > **Effort:** m
 > **Priority:** high

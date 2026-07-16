@@ -1,51 +1,81 @@
-<!-- templates/admin_customer_lookup.html
-     Minimal placeholder (T3, ARCH-customer-details-page) — sufficient for
-     T3's route-logic tests. Polished by T4. -->
+<!-- templates/admin_customer_lookup.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <title>UniFleet — Admin: Customer Lookup</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
+    h1 { margin-bottom: 12px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; }
+    th { background: #f9fafb; font-weight: 600; }
+    .search-form { display: flex; gap: 8px; margin-bottom: 20px; }
+    .search-form input[type="text"] {
+      flex: 1; max-width: 360px; padding: 8px; border: 1px solid #e5e7eb; border-radius: 6px;
+    }
+    .btn {
+      cursor: pointer; padding: 8px 14px; border: 1px solid #e5e7eb; border-radius: 6px;
+      background: #111827; color: white; text-decoration: none; display: inline-block;
+    }
+    .not-found { color: #991B1B; background: #FEE2E2; padding: 10px 14px; border-radius: 6px; }
+    .picklist { list-style: none; padding: 0; }
+    .picklist li { margin-bottom: 8px; }
+    .picklist a {
+      display: block; padding: 10px 14px; border: 1px solid #e5e7eb; border-radius: 6px;
+      text-decoration: none; color: #111827;
+    }
+    .picklist a:hover { background: #f9fafb; }
+    .customer-detail { background: #f9fafb; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
+    .customer-detail dt { font-weight: 600; color: #374151; margin-top: 8px; }
+    .customer-detail dd { margin: 0 0 4px; }
+    .muted { color: #6b7280; font-size: 14px; }
+  </style>
 </head>
 <body>
   <h1>Customer Lookup</h1>
 
-  <form method="GET" action="{{ url_for('admin_customers') }}">
+  <form class="search-form" method="GET" action="{{ url_for('admin_customers') }}">
     <input type="text" name="q" value="{{ query or '' }}" placeholder="Account code or name">
-    <button type="submit">Search</button>
+    <button class="btn" type="submit">Search</button>
   </form>
 
   {% if state == 'not_found' %}
-    <p class="not-found">No customer found for "{{ query }}".</p>
+    <p class="not-found">No customer found for &ldquo;{{ query }}&rdquo;.</p>
+
   {% elif state == 'picklist' %}
+    <p class="muted">Multiple matches for &ldquo;{{ query }}&rdquo; — pick one:</p>
     <ul class="picklist">
       {% for m in matches %}
       <li>
         <a href="{{ url_for('admin_customers', q=m.account_code) }}">
-          {{ m.contact_name }} — {{ m.account_code }} — {{ m.company_name }}
+          <strong>{{ m.contact_name }}</strong> — {{ m.account_code }} — {{ m.company_name }}
         </a>
       </li>
       {% endfor %}
     </ul>
+
   {% elif state == 'detail' %}
-    <section class="customer-detail">
-      <p><strong>Account Code:</strong> {{ customer.account_code }}</p>
-      <p><strong>Contact Name:</strong> {{ customer.contact_name }}</p>
-      <p><strong>Contact Number:</strong> {{ customer.contact_number }}</p>
-      <p><strong>Email:</strong> {{ customer.email }}</p>
-      <p><strong>Company Name:</strong> {{ customer.company_name }}</p>
-      <p><strong>Fleet Size:</strong> {{ customer.fleet_size }}</p>
-      <p><strong>Areas:</strong> {{ customer.areas }}</p>
-    </section>
+    <dl class="customer-detail">
+      <dt>Account Code</dt><dd>{{ customer.account_code }}</dd>
+      <dt>Contact Name</dt><dd>{{ customer.contact_name }}</dd>
+      <dt>Contact Number</dt><dd>{{ customer.contact_number }}</dd>
+      <dt>Email</dt><dd>{{ customer.email }}</dd>
+      <dt>Company Name</dt><dd>{{ customer.company_name }}</dd>
+      <dt>Fleet Size</dt><dd>{{ customer.fleet_size }}</dd>
+      <dt>Areas</dt><dd>{{ customer.areas }}</dd>
+    </dl>
 
-    <a href="{{ url_for('admin_customer_export', account_code=customer.account_code) }}">Export Bookings CSV</a>
+    <a class="btn" href="{{ url_for('admin_customer_export', account_code=customer.account_code) }}">Export Bookings CSV</a>
 
-    <table class="booking-history">
+    <h2>Booking History</h2>
+    <table>
       <thead>
         <tr>
           <th>Voucher ID</th>
           <th>Station</th>
-          <th>Amount</th>
+          <th>Amount (₱)</th>
           <th>Status</th>
           <th>Date</th>
         </tr>
@@ -62,6 +92,9 @@
         {% endfor %}
       </tbody>
     </table>
+    {% if not bookings %}
+      <p class="muted">No bookings yet for this customer.</p>
+    {% endif %}
   {% endif %}
 </body>
 </html>
