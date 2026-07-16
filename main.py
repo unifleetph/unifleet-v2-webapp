@@ -245,7 +245,9 @@ def admin():
         vouchers = []
 
     # NEW: supply station options + persisted selections for the PDF filter UI
-    stations = price_store.list_stations()  # [{id, name, brand, ...}]
+    # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T3/T4/T6 wire up
+    # real fuel-type selection through these call sites.
+    stations = price_store.list_stations("Biodiesel")  # [{id, name, brand, ...}]
     stations = sorted(stations, key=lambda s: (s.get("brand",""), s.get("name","")))
     cookie_val = request.cookies.get("pdf_station_ids", "")
     # Accept either comma or pipe as delimiter
@@ -430,7 +432,7 @@ def ops_set_status(voucher_id, new_status):
         price = snap_price
         if price <= 0:
             match = None
-            for s in price_store.list_stations():
+            for s in price_store.list_stations("Biodiesel"):  # TEMP (T2 bridge, F3.1)
                 if (s.get("name") or "").strip().lower() == station_name.lower():
                     match = s
                     break
@@ -442,7 +444,7 @@ def ops_set_status(voucher_id, new_status):
             dpl = 0.0
         if dpl == 0.0:
             try:
-                dpl_live = discount_store.get(station_name)
+                dpl_live = discount_store.get(station_name, "Biodiesel")  # TEMP (T2 bridge, F3.1)
                 if dpl_live is not None:
                     dpl = float(dpl_live)
             except Exception:
@@ -604,14 +606,16 @@ def book():
 
     try:
         # Pull from live price store so new stations auto-appear
-        station_objs = price_store.list_stations()  # [{id, name, brand, ...}]
+        # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T3/T4/T6 wire up
+        # real fuel-type selection through these call sites.
+        station_objs = price_store.list_stations("Biodiesel")  # [{id, name, brand, ...}]
         station_objs = sorted(
             [s for s in station_objs if s.get("name")],
             key=lambda x: str(x.get("name", "")).lower()
         )
 
         # Build read-only station table with discounts
-        discounts = discount_store.get_all() or {}
+        discounts = discount_store.get_all("Biodiesel") or {}  # TEMP (T2 bridge, F3.1)
 
         import re as _re
         def _norm_dashes(s: str) -> str:
@@ -829,7 +833,7 @@ def book():
         price_snapshot = 0.0
         price_snapshot_updated_at = 0
         try:
-            stations = price_store.list_stations()
+            stations = price_store.list_stations("Biodiesel")  # TEMP (T2 bridge, F3.1)
             match = None
             target_norm = _norm_dashes(station_name)
             target_slug = _slug(station_name)
@@ -857,9 +861,9 @@ def book():
         dpl_snapshot = 0.0
         dpl_captured_at = int(datetime.utcnow().timestamp())
         try:
-            val = discount_store.get(station_name)
+            val = discount_store.get(station_name, "Biodiesel")  # TEMP (T2 bridge, F3.1)
             if val is None:
-                all_discounts = discount_store.get_all() or {}
+                all_discounts = discount_store.get_all("Biodiesel") or {}  # TEMP (T2 bridge, F3.1)
                 for k, v in all_discounts.items():
                     if _norm_dashes(k) == target_norm or _slug(k) == target_slug:
                         val = v
@@ -1091,9 +1095,11 @@ discount_store = DiscountStore()
 def admin_prices():
     if not require_admin(request):
         return redirect(url_for('admin_login', next=request.path))
-    stations = price_store.list_stations()
+    # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T7 rebuilds this
+    # page with the 6-column (3 fuel types x price/discount) layout.
+    stations = price_store.list_stations("Biodiesel")
     stations = sorted(stations, key=lambda s: (s.get("brand",""), s.get("name","")))
-    discounts = discount_store.get_all()
+    discounts = discount_store.get_all("Biodiesel")
     return render_template("admin_prices.html", stations=stations, discounts=discounts)
 
 @app.route("/admin/prices/update", methods=["POST"])
@@ -1105,10 +1111,12 @@ def admin_prices_update():
         station_id = str(payload.get("station_id", "")).strip()
         new_price = float(payload.get("price", 0))
 
-        before = price_store.get_station(station_id) or {}
+        # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T6 adds a real
+        # fuel_type field to this endpoint's payload.
+        before = price_store.get_station(station_id, "Biodiesel") or {}
         old_price = before.get("price_php_per_liter")
 
-        updated = price_store.set_price(station_id, new_price)
+        updated = price_store.set_price(station_id, "Biodiesel", new_price)
 
         append_price_history(
             station_id=station_id,
@@ -1133,7 +1141,9 @@ def admin_prices_update():
 # Read-only API for previews
 @app.route("/api/v1/prices", methods=["GET"])
 def api_prices_list():
-    stations = price_store.list_stations()
+    # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T9 adds the real
+    # ?fuel_type= query param (default "Biodiesel" for backward compat).
+    stations = price_store.list_stations("Biodiesel")
     return jsonify({"stations": stations})
 
 # =========================
@@ -1173,7 +1183,9 @@ def admin_discounts_update():
         return _back()
 
     try:
-        discount_store.set(station, value, actor="admin", reason="manual update")
+        # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T6 adds a real
+        # fuel_type field to this endpoint's form body.
+        discount_store.set(station, "Biodiesel", value, actor="admin", reason="manual update")
         flash(f"Saved discount {value:.2f} PHP/L for “{station}”.", "success")
     except DiscountValueError as e:
         flash(str(e), "error")
@@ -1185,7 +1197,9 @@ def admin_discounts_update():
 @app.route("/api/v1/discounts", methods=["GET"])
 def api_discounts_list():
     try:
-        return jsonify({"discounts": discount_store.get_all()})
+        # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T9 adds the
+        # real ?fuel_type= query param (default "Biodiesel" for backward compat).
+        return jsonify({"discounts": discount_store.get_all("Biodiesel")})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1211,7 +1225,9 @@ def api_price_preview():
         dpl = 0.0
 
     def _norm(s): return str(s or "").strip().lower()
-    stations = price_store.list_stations()
+    # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T9 adds the real
+    # ?fuel_type= query param (default "Biodiesel" for backward compat).
+    stations = price_store.list_stations("Biodiesel")
     match = None
     for s in stations:
         if _norm(s.get("id")) == _norm(station_q):
@@ -1326,7 +1342,9 @@ def supplier_sheet_pdf():
     cookie_station_ids = [s.strip() for s in cookie_val_norm.split(",") if s.strip()]
 
     # 3) default to all
-    all_stations = price_store.list_stations()
+    # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T3/T4/T6 wire up
+    # real fuel-type selection through these call sites.
+    all_stations = price_store.list_stations("Biodiesel")
     all_ids = [s.get("id") for s in all_stations if s.get("id")]
 
     selected_ids = query_station_ids or cookie_station_ids or all_ids

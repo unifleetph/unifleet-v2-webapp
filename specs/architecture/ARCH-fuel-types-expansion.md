@@ -341,7 +341,7 @@ Extend `prices` and `discounts` from a 1:1 station keying to a composite `(stati
 
 ## Task T2: `price_store`/`discount_store` Fuel-Type-Aware API
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** m
 > **Priority:** critical

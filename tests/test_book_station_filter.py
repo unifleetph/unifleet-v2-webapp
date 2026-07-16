@@ -43,12 +43,16 @@ class RepoStub:
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setattr(main, "repo", RepoStub())
+    # TEMP (T2 bridge, F3.1): lambdas accept-and-ignore a fuel_type arg
+    # since main.py's call sites now pass "Biodiesel" positionally.
+    # T4/T5 will rewrite this whole file's assertions for the price-gate
+    # behavior reversal (ARCH A7) — this is only a signature-compat patch.
     monkeypatch.setattr(main.price_store, "list_stations",
-                        lambda: [dict(s) for s in STATIONS])
+                        lambda *a, **kw: [dict(s) for s in STATIONS])
     # Only EDSA Mandaluyong has a positive discount; Cleanfuel is 0.
     monkeypatch.setattr(main.discount_store, "get_all",
-                        lambda: {"EcoOil - EDSA Mandaluyong": 2.0,
-                                 "Cleanfuel - Valenzuela": 0.0})
+                        lambda *a, **kw: {"EcoOil - EDSA Mandaluyong": 2.0,
+                                           "Cleanfuel - Valenzuela": 0.0})
     main.app.config.update(TESTING=True)
     return main.app.test_client()
 

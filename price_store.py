@@ -3,19 +3,31 @@ price_store.py — Postgres-backed station price store.
 
 F2.3 of the UniFleet v2 → Railway + Postgres migration. Replaces the
 JSON-on-disk implementation with a thin wrapper over the F2.1
-schema's `stations` + `prices` + `price_history` tables. The public
-function signatures are preserved so call sites in main.py and
-generate_voucher.py do not change.
+schema's `stations` + `prices` + `price_history` tables.
 
-Public API (unchanged):
-  init_if_missing()    no-op in PG (data is seeded by F2.1)
-  load_all()           {"stations": [...]}  (back-compat shim)
-  save_all(obj)        no-op in PG (use set_price / upsert_station)
-  list_stations()      [Station dicts with id, brand, name, location,
-                        price_php_per_liter, updated_at (epoch int)]
-  get_station(id)      Single station dict, or None
-  set_price(id, price) Updates price; appends to price_history
-  upsert_station(st)   Inserts/updates station + price
+F3.1 (fuel-types-expansion): prices are now keyed per (station_id,
+fuel_type) instead of per station alone, so list_stations/get_station/
+set_price all take a required `fuel_type` argument. This is a
+deliberate breaking change to the "Public API (unchanged)" contract
+promised by F2.3 — every call site in main.py was updated alongside
+this module. `upsert_station()` no longer touches pricing at all;
+station identity and per-fuel-type price are separate concerns now
+(a station can exist with 0-3 fuel types priced independently — see
+set_price).
+
+Public API (F3.1):
+  init_if_missing()             no-op in PG (data is seeded by F2.1)
+  load_all(fuel_type)           {"stations": [...]}  (back-compat shim)
+  save_all(obj)                 no-op in PG (use set_price / upsert_station)
+  list_stations(fuel_type)      [Station dicts with id, brand, name, location,
+                                 price_php_per_liter, updated_at (epoch int)]
+                                 — only stations with a price row for this
+                                 fuel_type are returned.
+  get_station(id, fuel_type)    Single station dict, or None if no price
+                                 row exists for this (station, fuel_type).
+  set_price(id, fuel_type, price)  Updates price; appends to price_history
+  upsert_station(st)            Inserts/updates station identity only
+                                 (id, brand, name, location) — no price.
 
 The `_DEFAULT_STATIONS` constant is preserved (consumed by the F2.1
 seed file and by tests/test_seeds.py for cross-validation).
@@ -130,9 +142,9 @@ def init_if_missing() -> None:
     return None
 
 
-def load_all() -> Dict[str, Any]:
+def load_all(fuel_type: str) -> Dict[str, Any]:
     """Return the whole data structure in legacy shape: {"stations": [...]}."""
-    return {"stations": list_stations()}
+    return {"stations": list_stations(fuel_type)}
 
 
 def save_all(obj: Dict[str, Any]) -> None:
@@ -144,15 +156,15 @@ def save_all(obj: Dict[str, Any]) -> None:
     return None
 
 
-def list_stations() -> List[Dict[str, Any]]:
-    """Return all stations joined with their current price.
+def list_stations(fuel_type: str) -> List[Dict[str, Any]]:
+    """Return stations that have a price row for `fuel_type`.
 
     Each row: {id, brand, name, location, price_php_per_liter, updated_at}
     - `updated_at` is the price's `updated_at` converted to Unix epoch
       seconds (int), matching the legacy JSON shape so existing
       call sites like `int(s.get("updated_at", 0) or 0)` keep working.
-    - Stations without a row in `prices` (NULL price) still appear,
-      with price_php_per_liter=None and updated_at=0.
+    - Stations without a price row for this fuel_type are excluded
+      entirely (availability is price-gated — see ARCH R7/R9).
     """
     pool = get_pool()
     with pool.connection() as conn:
@@ -166,30 +178,26 @@ def list_stations() -> List[Dict[str, Any]]:
                     p.price_php_per_liter,
                     COALESCE(EXTRACT(EPOCH FROM p.updated_at)::BIGINT, 0) AS updated_at
                 FROM stations s
-                LEFT JOIN prices p ON p.station_id = s.id
+                JOIN prices p ON p.station_id = s.id AND p.fuel_type = %s
                 ORDER BY s.brand, s.display_name
-            """)
+            """, (fuel_type,))
             rows = cur.fetchall()
-    # Coerce Decimal -> float and None -> 0 for the price (callers expect
-    # numeric values; the legacy JSON had real numbers).
     out = []
     for r in rows:
-        price = r.get("price_php_per_liter")
-        if price is not None:
-            price = float(price)
         out.append({
             "id": r["id"],
             "brand": r["brand"],
             "name": r["name"],
             "location": r["location"],
-            "price_php_per_liter": price,
+            "price_php_per_liter": float(r["price_php_per_liter"]),
             "updated_at": int(r.get("updated_at") or 0),
         })
     return out
 
 
-def get_station(station_id: str) -> Optional[Dict[str, Any]]:
-    """Return a single station dict by id, or None if not found."""
+def get_station(station_id: str, fuel_type: str) -> Optional[Dict[str, Any]]:
+    """Return a single station's price for `fuel_type`, or None if no
+    price row exists for this (station, fuel_type) combo."""
     pool = get_pool()
     with pool.connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
@@ -202,27 +210,27 @@ def get_station(station_id: str) -> Optional[Dict[str, Any]]:
                     p.price_php_per_liter,
                     COALESCE(EXTRACT(EPOCH FROM p.updated_at)::BIGINT, 0) AS updated_at
                 FROM stations s
-                LEFT JOIN prices p ON p.station_id = s.id
+                JOIN prices p ON p.station_id = s.id AND p.fuel_type = %s
                 WHERE s.id = %s
-            """, (station_id,))
+            """, (fuel_type, station_id))
             r = cur.fetchone()
     if r is None:
         return None
-    price = r.get("price_php_per_liter")
-    if price is not None:
-        price = float(price)
     return {
         "id": r["id"],
         "brand": r["brand"],
         "name": r["name"],
         "location": r["location"],
-        "price_php_per_liter": price,
+        "price_php_per_liter": float(r["price_php_per_liter"]),
         "updated_at": int(r.get("updated_at") or 0),
     }
 
 
-def set_price(station_id: str, new_price: float) -> Dict[str, Any]:
-    """Update a station's price; append a row to price_history.
+def set_price(station_id: str, fuel_type: str, new_price: float) -> Dict[str, Any]:
+    """Update a station's price for `fuel_type`; append a row to
+    price_history. Creates the (station, fuel_type) price row if it
+    doesn't exist yet — a station can go from 0 to 3 fuel types priced
+    independently.
 
     Returns the updated station dict (same shape as get_station).
     Raises ValueError if the new price is out of range, KeyError if
@@ -236,8 +244,8 @@ def set_price(station_id: str, new_price: float) -> Dict[str, Any]:
         with conn.cursor(row_factory=dict_row) as cur:
             # Read the old price for the history row (NULL if no prior price).
             cur.execute(
-                "SELECT price_php_per_liter FROM prices WHERE station_id = %s",
-                (station_id,),
+                "SELECT price_php_per_liter FROM prices WHERE station_id = %s AND fuel_type = %s",
+                (station_id, fuel_type),
             )
             old_row = cur.fetchone()
             if old_row is None and not _station_exists(cur, station_id):
@@ -246,36 +254,39 @@ def set_price(station_id: str, new_price: float) -> Dict[str, Any]:
 
             # UPSERT the price.
             cur.execute("""
-                INSERT INTO prices (station_id, price_php_per_liter, updated_at)
-                VALUES (%s, %s, NOW())
-                ON CONFLICT (station_id) DO UPDATE
+                INSERT INTO prices (station_id, fuel_type, price_php_per_liter, updated_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (station_id, fuel_type) DO UPDATE
                 SET price_php_per_liter = EXCLUDED.price_php_per_liter,
                     updated_at = NOW()
-            """, (station_id, round(float(new_price), 2)))
+            """, (station_id, fuel_type, round(float(new_price), 2)))
 
             # Append to price_history. actor_ip and user_agent are
             # NULL by default; a future revision of the caller can
             # pass them in if/when the admin UI starts sending them.
             cur.execute("""
                 INSERT INTO price_history
-                    (station_id, old_price, new_price, timestamp_iso, timestamp_unix)
+                    (station_id, fuel_type, old_price, new_price, timestamp_iso, timestamp_unix)
                 VALUES
-                    (%s, %s, %s, NOW(), EXTRACT(EPOCH FROM NOW())::BIGINT)
-            """, (station_id, old_price, round(float(new_price), 2)))
+                    (%s, %s, %s, %s, NOW(), EXTRACT(EPOCH FROM NOW())::BIGINT)
+            """, (station_id, fuel_type, old_price, round(float(new_price), 2)))
         conn.commit()
 
     # Return the updated station dict (fresh from the DB)
-    updated = get_station(station_id)
+    updated = get_station(station_id, fuel_type)
     assert updated is not None
     return updated
 
 
 def upsert_station(st: Dict[str, Any]) -> Dict[str, Any]:
-    """Add or replace a station + its price in one shot.
+    """Add or replace a station's identity — id, brand, name, location.
 
-    Required keys: id, brand, name, location, price_php_per_liter.
+    F3.1: no longer touches pricing. Use set_price() separately for
+    each fuel type a station should carry a price for (0-3 of them).
+
+    Required keys: id, brand, name, location.
     """
-    required = {"id", "brand", "name", "location", "price_php_per_liter"}
+    required = {"id", "brand", "name", "location"}
     if not required.issubset(st.keys()):
         missing = required - set(st.keys())
         raise ValueError(f"Missing keys: {missing}")
@@ -292,17 +303,16 @@ def upsert_station(st: Dict[str, Any]) -> Dict[str, Any]:
                     location = EXCLUDED.location,
                     updated_at = NOW()
             """, (st["id"], st["brand"], st["name"], st.get("location")))
-
-            cur.execute("""
-                INSERT INTO prices (station_id, price_php_per_liter, updated_at)
-                VALUES (%s, %s, NOW())
-                ON CONFLICT (station_id) DO UPDATE
-                SET price_php_per_liter = EXCLUDED.price_php_per_liter,
-                    updated_at = NOW()
-            """, (st["id"], round(float(st["price_php_per_liter"]), 2)))
         conn.commit()
 
-    return get_station(st["id"])
+    with pool.connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT id, brand, display_name AS name, location FROM stations WHERE id = %s",
+                (st["id"],),
+            )
+            r = cur.fetchone()
+    return dict(r)
 
 
 # ============================================================
