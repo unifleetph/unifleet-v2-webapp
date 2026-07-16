@@ -11,6 +11,7 @@ FUEL_TYPES = ["Biodiesel", "Premium", "Unleaded"]
 VOUCHER_COLUMNS = [
     "voucher_id",
     "account_code",
+    "fuel_type",
     "station",
     "requested_amount_php",
     "liters_requested",

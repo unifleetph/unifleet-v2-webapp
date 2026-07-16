@@ -425,7 +425,7 @@ Both follow the `schema_db`/`postgres_db` fixture pattern already established in
 
 ## Task T3: Booking Persistence & Validation
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** m
 > **Priority:** critical

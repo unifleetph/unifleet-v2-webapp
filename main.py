@@ -874,14 +874,20 @@ def book():
             s = _re.sub(r'[\s-]+', '_', s)
             return s.strip('_')
 
-        # 1) live price snapshot (from price_store)
+        # 1) live price snapshot (from price_store) — also the
+        # server-side availability gate: a booking for a (station,
+        # fuel_type) combo with no price row is rejected outright,
+        # independent of whatever the client-side UI showed (ARCH A6,
+        # R7). match is checked for None explicitly, not falsiness —
+        # a transient 0.0 price from a DB hiccup must not be treated
+        # the same as "no price row exists".
         price_snapshot = 0.0
         price_snapshot_updated_at = 0
+        match = None
+        target_norm = _norm_dashes(station_name)
+        target_slug = _slug(station_name)
         try:
-            stations = price_store.list_stations("Biodiesel")  # TEMP (T2 bridge, F3.1)
-            match = None
-            target_norm = _norm_dashes(station_name)
-            target_slug = _slug(station_name)
+            stations = price_store.list_stations(fuel_type)
             for s in stations:
                 if _norm_dashes(s.get("id")) == target_norm:
                     match = s
@@ -896,19 +902,40 @@ def book():
                     if _slug(s.get("name")) == target_slug:
                         match = s
                         break
-            if match:
-                price_snapshot = float(match.get("price_php_per_liter") or 0)
-                price_snapshot_updated_at = int(match.get("updated_at") or 0)
         except Exception as _e:
             print("⚠️ price snapshot error:", _e)
 
-        # 2) live discount snapshot (from discount_store)
+        if match is None:
+            flash(
+                f"“{station_name}” does not have a price set for {fuel_type or 'the selected fuel type'}. "
+                "Please choose a different station or fuel type.",
+                "error"
+            )
+            base = customer
+            presets = _load_presets(account_code)
+            return render_template(
+                'book.html',
+                customer=base,
+                presets=presets,
+                station_names=station_names,
+                station_table=station_table,
+                station_table_updated_at=station_table_updated_at,
+                station_table_by_fuel=station_table_by_fuel,
+                form_values=request.form,
+                min_refuel=min_refuel
+            )
+
+        price_snapshot = float(match.get("price_php_per_liter") or 0)
+        price_snapshot_updated_at = int(match.get("updated_at") or 0)
+
+        # 2) live discount snapshot (from discount_store) — absence here
+        # just means ₱0 discount, never blocks the booking (R10).
         dpl_snapshot = 0.0
         dpl_captured_at = int(datetime.utcnow().timestamp())
         try:
-            val = discount_store.get(station_name, "Biodiesel")  # TEMP (T2 bridge, F3.1)
+            val = discount_store.get(station_name, fuel_type)
             if val is None:
-                all_discounts = discount_store.get_all("Biodiesel") or {}  # TEMP (T2 bridge, F3.1)
+                all_discounts = discount_store.get_all(fuel_type) or {}
                 for k, v in all_discounts.items():
                     if _norm_dashes(k) == target_norm or _slug(k) == target_slug:
                         val = v
