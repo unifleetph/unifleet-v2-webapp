@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS vouchers (
     station_id                       VARCHAR(64)  REFERENCES stations(id),
     station                          VARCHAR(200),
     account_code                     VARCHAR(16)  REFERENCES customers(account_code),
+    fuel_type                        VARCHAR(30),
 
     requested_amount_php             NUMERIC(12,2),
     liters_requested                 NUMERIC(12,4),
@@ -103,6 +104,13 @@ CREATE INDEX IF NOT EXISTS idx_vouchers_status            ON vouchers(status);
 CREATE INDEX IF NOT EXISTS idx_vouchers_transaction_date  ON vouchers(transaction_date);
 CREATE INDEX IF NOT EXISTS idx_vouchers_created_at        ON vouchers(created_at);
 
+-- F3.1 (fuel-types-expansion): fuel_type on an already-deployed table.
+-- The column is also declared in CREATE TABLE above for fresh databases;
+-- this ADD COLUMN IF NOT EXISTS is what actually lands it on Railway,
+-- where the table already exists. Nullable — historical rows stay NULL
+-- and are displayed as "Diesel" at the template layer, not backfilled.
+ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS fuel_type VARCHAR(30);
+
 -- ============================================================
 -- Presets: per-customer driver/vehicle defaults. UNIQUE on
 -- (account_code, driver_name) prevents duplicate presets for the
@@ -121,21 +129,42 @@ CREATE TABLE IF NOT EXISTS presets (
 );
 
 -- ============================================================
--- Prices: current price per station. 1:1 with stations.
+-- Prices: current price per (station, fuel_type). F3.1
+-- (fuel-types-expansion): was 1:1 with stations; now composite-keyed
+-- so a station can have an independent price per fuel type (0-3 of
+-- Biodiesel/Premium/Unleaded). Fresh databases get the composite PK
+-- directly from this CREATE TABLE; the DO block below upgrades an
+-- already-deployed single-PK prices table in place.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS prices (
-    station_id              VARCHAR(64)  PRIMARY KEY REFERENCES stations(id),
+    station_id              VARCHAR(64)  REFERENCES stations(id),
+    fuel_type                VARCHAR(30)  NOT NULL DEFAULT 'Biodiesel',
     price_php_per_liter     NUMERIC(10,4) NOT NULL,
-    updated_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    updated_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (station_id, fuel_type)
 );
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'prices' AND column_name = 'fuel_type'
+    ) THEN
+        ALTER TABLE prices ADD COLUMN fuel_type VARCHAR(30) NOT NULL DEFAULT 'Biodiesel';
+        ALTER TABLE prices DROP CONSTRAINT prices_pkey;
+        ALTER TABLE prices ADD PRIMARY KEY (station_id, fuel_type);
+    END IF;
+END $$;
 
 -- ============================================================
 -- Price history: append-only audit of every price change.
 -- Mirrors data/price_history.csv (PRICE_HISTORY_FIELDS in main.py).
+-- fuel_type is nullable audit-only context; old rows stay NULL.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS price_history (
     id              BIGINT       GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     station_id      VARCHAR(64)  NOT NULL REFERENCES stations(id),
+    fuel_type       VARCHAR(30),
     old_price       NUMERIC(10,4),
     new_price       NUMERIC(10,4) NOT NULL,
     timestamp_iso   TIMESTAMPTZ  NOT NULL,
@@ -144,31 +173,54 @@ CREATE TABLE IF NOT EXISTS price_history (
     user_agent      TEXT
 );
 
+ALTER TABLE price_history ADD COLUMN IF NOT EXISTS fuel_type VARCHAR(30);
+
 CREATE INDEX IF NOT EXISTS idx_price_history_station_id
     ON price_history(station_id);
 
 -- ============================================================
--- Discounts: current discount_per_liter per station. 1:1 with stations.
+-- Discounts: current discount_per_liter per (station, fuel_type).
+-- F3.1: was 1:1 with stations; now composite-keyed, same rationale
+-- as prices above. A priced fuel type with no discount row means
+-- ₱0 discount, not unavailability.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS discounts (
-    station_id            VARCHAR(64)  PRIMARY KEY REFERENCES stations(id),
+    station_id            VARCHAR(64)  REFERENCES stations(id),
+    fuel_type              VARCHAR(30)  NOT NULL DEFAULT 'Biodiesel',
     discount_per_liter    NUMERIC(8,4) NOT NULL,
-    updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (station_id, fuel_type)
 );
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'discounts' AND column_name = 'fuel_type'
+    ) THEN
+        ALTER TABLE discounts ADD COLUMN fuel_type VARCHAR(30) NOT NULL DEFAULT 'Biodiesel';
+        ALTER TABLE discounts DROP CONSTRAINT discounts_pkey;
+        ALTER TABLE discounts ADD PRIMARY KEY (station_id, fuel_type);
+    END IF;
+END $$;
 
 -- ============================================================
 -- Discount history: append-only audit of every discount change.
 -- Mirrors data/discount_history.csv columns.
+-- fuel_type is nullable audit-only context; old rows stay NULL.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS discount_history (
     id                       BIGINT       GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     station_id               VARCHAR(64)  NOT NULL REFERENCES stations(id),
+    fuel_type                VARCHAR(30),
     old_discount_per_liter   NUMERIC(8,4),
     new_discount_per_liter   NUMERIC(8,4) NOT NULL,
     timestamp_iso            TIMESTAMPTZ  NOT NULL,
     actor                    VARCHAR(100),
     reason                   TEXT
 );
+
+ALTER TABLE discount_history ADD COLUMN IF NOT EXISTS fuel_type VARCHAR(30);
 
 CREATE INDEX IF NOT EXISTS idx_discount_history_station_id
     ON discount_history(station_id);

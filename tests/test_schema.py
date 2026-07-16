@@ -5,6 +5,11 @@ These tests assume the `schema_db` fixture has been activated for the
 session, which applies db/schema.sql to a fresh test database.
 """
 
+import subprocess
+import sys
+import uuid
+from pathlib import Path
+
 import psycopg
 import pytest
 
@@ -84,6 +89,22 @@ def _primary_key(cur, table: str) -> str | None:
     )
     row = cur.fetchone()
     return row[0] if row else None
+
+
+def _primary_key_columns(cur, table: str) -> set[str]:
+    """Return the full set of PK columns for `table` (composite-PK-safe,
+    unlike _primary_key() which only returns one via fetchone())."""
+    cur.execute(
+        "SELECT kcu.column_name "
+        "FROM information_schema.table_constraints tc "
+        "JOIN information_schema.key_column_usage kcu "
+        "  ON tc.constraint_name = kcu.constraint_name "
+        "WHERE tc.table_schema = 'public' "
+        "  AND tc.table_name = %s "
+        "  AND tc.constraint_type = 'PRIMARY KEY'",
+        (table,),
+    )
+    return {row[0] for row in cur.fetchall()}
 
 
 def _unique_columns(cur, table: str) -> list[tuple[str, ...]]:
@@ -353,6 +374,228 @@ def test_presets_unique_on_account_code_driver_name(schema_db):
     assert ("account_code", "driver_name") in uniques, (
         f"Expected UNIQUE(account_code, driver_name) on presets, got {uniques}"
     )
+
+
+# ============================================================
+# Fuel-type pricing (T1, F3.1 fuel-types-expansion)
+# ============================================================
+
+@pytest.fixture
+def test_station(schema_db):
+    """Insert a dedicated station (not part of the seed set) for tests
+    that need to insert their own price/discount rows. schema_db is
+    session-scoped and shared with test_seeds.py's seeded rows, so we
+    never truncate the whole table — only clean up this one station's
+    rows on teardown.
+    """
+    station_id = f"pytest_station_{uuid.uuid4().hex[:8]}"
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO stations (id, brand, display_name) VALUES (%s, %s, %s)",
+                (station_id, "Test", "Test Station"),
+            )
+        conn.commit()
+    yield station_id
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM prices WHERE station_id = %s", (station_id,))
+            cur.execute("DELETE FROM discounts WHERE station_id = %s", (station_id,))
+            cur.execute("DELETE FROM stations WHERE id = %s", (station_id,))
+        conn.commit()
+
+
+def test_prices_has_composite_pk(schema_db):
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            pk = _primary_key_columns(cur, "prices")
+    assert pk == {"station_id", "fuel_type"}, f"Expected composite PK, got {pk}"
+
+
+def test_discounts_has_composite_pk(schema_db):
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            pk = _primary_key_columns(cur, "discounts")
+    assert pk == {"station_id", "fuel_type"}, f"Expected composite PK, got {pk}"
+
+
+def test_prices_allows_multiple_fuel_types_per_station(schema_db, test_station):
+    station_id = test_station
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prices (station_id, fuel_type, price_php_per_liter) "
+                "VALUES (%s, 'Biodiesel', 60.0), (%s, 'Premium', 65.0)",
+                (station_id, station_id),
+            )
+        conn.commit()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT fuel_type FROM prices WHERE station_id = %s ORDER BY fuel_type",
+                (station_id,),
+            )
+            fuel_types = {r[0] for r in cur.fetchall()}
+    assert fuel_types == {"Biodiesel", "Premium"}
+
+
+def test_vouchers_fuel_type_exists_and_nullable(schema_db):
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cols = _columns(cur, "vouchers")
+    assert "fuel_type" in cols
+    assert cols["fuel_type"]["data_type"] == "character varying"
+
+
+def test_price_history_and_discount_history_have_nullable_fuel_type(schema_db):
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            ph_cols = _columns(cur, "price_history")
+            dh_cols = _columns(cur, "discount_history")
+    assert "fuel_type" in ph_cols
+    assert "fuel_type" in dh_cols
+
+
+def test_seed_prices_seeds_biodiesel_only_for_all_stations(seeded_db):
+    with psycopg.connect(seeded_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT station_id, fuel_type FROM prices")
+            rows = cur.fetchall()
+    fuel_types = {r[1] for r in rows}
+    assert fuel_types == {"Biodiesel"}, f"Expected only Biodiesel seeded, got {fuel_types}"
+    assert len(rows) == 10, f"Expected 10 seeded stations, got {len(rows)}"
+
+
+def test_discount_row_is_optional_per_priced_fuel_type(schema_db, test_station):
+    """A priced (station, fuel_type) with no matching discounts row is
+    valid — missing discount means ₱0, not a schema violation."""
+    station_id = test_station
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prices (station_id, fuel_type, price_php_per_liter) "
+                "VALUES (%s, 'Biodiesel', 60.0)",
+                (station_id,),
+            )
+        conn.commit()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM discounts WHERE station_id = %s AND fuel_type = 'Biodiesel'",
+                (station_id,),
+            )
+            count = cur.fetchone()[0]
+    assert count == 0  # no error inserting the price with no discount row
+
+
+def test_station_with_only_two_of_three_fuel_types_priced(schema_db, test_station):
+    station_id = test_station
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prices (station_id, fuel_type, price_php_per_liter) "
+                "VALUES (%s, 'Biodiesel', 60.0), (%s, 'Premium', 65.0)",
+                (station_id, station_id),
+            )
+        conn.commit()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT fuel_type FROM prices WHERE station_id = %s",
+                (station_id,),
+            )
+            fuel_types = {r[0] for r in cur.fetchall()}
+    assert "Unleaded" not in fuel_types
+    assert fuel_types == {"Biodiesel", "Premium"}
+
+
+def test_migration_preserves_legacy_single_price_rows():
+    """A prices table in the pre-migration shape (single-column PK, no
+    fuel_type) survives applying the current schema.sql: the fuel_type
+    column is added with DEFAULT 'Biodiesel', backfilling existing rows,
+    and the PK becomes composite — no data is dropped."""
+    import uuid as _uuid
+
+    admin_dsn = "postgresql://unifleet:unifleet_dev_pw@db:5432/postgres"
+    db_name = f"unifleet_test_legacy_{_uuid.uuid4().hex[:8]}"
+    test_dsn = admin_dsn.rsplit("/", 1)[0] + f"/{db_name}"
+
+    with psycopg.connect(admin_dsn, autocommit=True, connect_timeout=5) as admin:
+        admin.execute(f'CREATE DATABASE "{db_name}"')
+
+    try:
+        # Build the pre-migration shape by hand: stations + old-style prices.
+        with psycopg.connect(test_dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "CREATE TABLE stations (id VARCHAR(64) PRIMARY KEY, "
+                    "brand VARCHAR(100) NOT NULL, display_name VARCHAR(200) NOT NULL)"
+                )
+                cur.execute(
+                    "CREATE TABLE prices (station_id VARCHAR(64) PRIMARY KEY "
+                    "REFERENCES stations(id), price_php_per_liter NUMERIC(10,4) NOT NULL, "
+                    "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+                )
+                cur.execute(
+                    "INSERT INTO stations (id, brand, display_name) "
+                    "VALUES ('legacy_station', 'Legacy', 'Legacy Station')"
+                )
+                cur.execute(
+                    "INSERT INTO prices (station_id, price_php_per_liter) "
+                    "VALUES ('legacy_station', 61.5)"
+                )
+            conn.commit()
+
+        # Now apply the current (already-migrated) schema.sql on top.
+        schema_path = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
+        result = subprocess.run(
+            [sys.executable, "db/apply.py", str(schema_path), "--dsn", test_dsn],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, (
+            f"apply.py failed on legacy shape: stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+
+        with psycopg.connect(test_dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT station_id, fuel_type, price_php_per_liter FROM prices"
+                )
+                rows = cur.fetchall()
+                pk = _primary_key_columns(cur, "prices")
+    finally:
+        with psycopg.connect(admin_dsn, autocommit=True, connect_timeout=5) as admin:
+            admin.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = %s AND pid <> pg_backend_pid()",
+                (db_name,),
+            )
+            admin.execute(f'DROP DATABASE IF EXISTS "{db_name}"')
+
+    assert len(rows) == 1, "legacy row was dropped during migration"
+    assert rows[0][0] == "legacy_station"
+    assert rows[0][1] == "Biodiesel", "legacy row should be auto-assigned fuel_type='Biodiesel'"
+    assert float(rows[0][2]) == 61.5, "legacy price value should be preserved"
+    assert pk == {"station_id", "fuel_type"}
+
+
+def test_schema_apply_is_idempotent_after_fuel_type_migration(schema_db):
+    """Re-applying schema.sql after the composite-PK migration has
+    already landed must not error or duplicate/corrupt rows."""
+    schema_path = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
+    result = subprocess.run(
+        [sys.executable, "db/apply.py", str(schema_path), "--dsn", schema_db],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (
+        f"Second apply after fuel-type migration failed: "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            pk = _primary_key_columns(cur, "prices")
+    assert pk == {"station_id", "fuel_type"}
 
 
 # ============================================================
