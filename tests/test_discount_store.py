@@ -123,6 +123,25 @@ def test_station_can_have_independent_discounts_per_fuel_type(store, test_statio
 
 
 # ============================================================
+# get_all_with_updated_at (T7, F3.1)
+# ============================================================
+
+def test_get_all_with_updated_at_includes_value_and_timestamp(store, test_station):
+    store.set(test_station["name"], "Biodiesel", 2.0, actor="t", reason="r")
+
+    result = store.get_all_with_updated_at("Biodiesel")
+
+    entry = result[test_station["name"]]
+    assert entry["value"] == 2.0
+    assert entry["updated_at"] > 0
+
+
+def test_get_all_with_updated_at_omits_stations_without_a_row(store, test_station):
+    result = store.get_all_with_updated_at("Premium")
+    assert test_station["name"] not in result
+
+
+# ============================================================
 # Regression Guard
 # ============================================================
 

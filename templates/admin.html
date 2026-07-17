@@ -299,6 +299,7 @@
           <tr>
             <th>Voucher ID</th>
             <th>Driver</th>
+            <th>Fuel Type</th>
             <th>Station</th>
             <th>Refuel Date</th>
             <th>Status</th>
@@ -317,6 +318,7 @@
             <tr>
                 <td><a href="/redeem/{{ row['voucher_id'] }}" target="_blank">{{ row['voucher_id'] }}</a></td>
                 <td>{{ row['driver_name'] }}</td>
+                <td>{{ row['fuel_type'] or 'Diesel' }}</td>
                 <td>{{ row['station'] }}</td>
                 <td>
                   {% set ts = row.get('refuel_datetime') or row.get('expected_refill_date') or row.get('transaction_date') %}

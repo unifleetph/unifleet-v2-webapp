@@ -1168,12 +1168,45 @@ discount_store = DiscountStore()
 def admin_prices():
     if not require_admin(request):
         return redirect(url_for('admin_login', next=request.path))
-    # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T7 rebuilds this
-    # page with the 6-column (3 fuel types x price/discount) layout.
-    stations = price_store.list_stations("Biodiesel")
-    stations = sorted(stations, key=lambda s: (s.get("brand",""), s.get("name","")))
-    discounts = discount_store.get_all("Biodiesel")
-    return render_template("admin_prices.html", stations=stations, discounts=discounts)
+
+    # T7 (F3.1): 6-column layout — price + discount per fuel type. A
+    # station appears here if it's priced for at least one fuel type
+    # (price_store.list_stations is price-gated per T2); a station with
+    # zero prices anywhere is invisible until it's given a first price
+    # some other way (REQ-station-management's future concern).
+    all_stations = {}
+    fuels_by_station = {}
+    for ft in FUEL_TYPES:
+        for s in price_store.list_stations(ft):
+            sid = s["id"]
+            all_stations.setdefault(sid, {
+                "id": sid, "brand": s.get("brand"), "name": s.get("name"), "location": s.get("location"),
+            })
+            fuels_by_station.setdefault(sid, {})[ft] = {
+                "price": s.get("price_php_per_liter"),
+                "price_updated_at": s.get("updated_at") or 0,
+                "discount": None,
+                "discount_updated_at": 0,
+            }
+        for name, info in (discount_store.get_all_with_updated_at(ft) or {}).items():
+            for sid, st in all_stations.items():
+                if st["name"] == name and ft in fuels_by_station.get(sid, {}):
+                    fuels_by_station[sid][ft]["discount"] = info["value"]
+                    fuels_by_station[sid][ft]["discount_updated_at"] = info["updated_at"]
+
+    def _readable(epoch):
+        if not epoch:
+            return "—"
+        return datetime.fromtimestamp(epoch, tz=ZoneInfo("Asia/Manila")).strftime("%Y-%m-%d %H:%M")
+
+    stations = sorted(all_stations.values(), key=lambda s: (s.get("brand") or "", s.get("name") or ""))
+    for s in stations:
+        s["fuels"] = fuels_by_station.get(s["id"], {})
+        for ft_info in s["fuels"].values():
+            ft_info["price_updated_readable"] = _readable(ft_info["price_updated_at"])
+            ft_info["discount_updated_readable"] = _readable(ft_info["discount_updated_at"])
+
+    return render_template("admin_prices.html", stations=stations, fuel_types=FUEL_TYPES)
 
 @app.route("/admin/prices/update", methods=["POST"])
 def admin_prices_update():

@@ -704,7 +704,7 @@ Extend `admin_prices_update()` and `admin_discounts_update()` in `main.py` to ac
 
 ## Task T7: Admin-Facing Display Updates
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** ui
 > **Effort:** m
 > **Priority:** high
@@ -755,9 +755,13 @@ Expand `admin_prices.html` from a single price/discount column to 6 (3 fuel type
 **Modified files:**
 - `templates/admin_prices.html` (6 price/discount cells, readable timestamps)
 - `templates/admin.html` (new Fuel Type column, "Diesel" fallback)
+- `main.py` (`admin_prices()` GET route only — build per-fuel-type station/discount data, same pattern as T4's `station_table_by_fuel`; footprint amendment agreed during T7 implementation, since T2's own bridge comment says "until T7 rebuilds this page" and the 6-column template can't render without this data. `admin_prices_update`/`admin_discounts_update`, T6's scope, untouched.)
+
+- `discount_store.py` (new additive method exposing per-fuel-type discount `updated_at`, e.g. `get_all_with_updated_at(fuel_type)` — existing `get()`/`get_all()`/`set()` untouched; footprint amendment agreed during T7 implementation, since discount cells need a readable timestamp too and the underlying `discounts` table has the column but no store method exposed it)
 
 **Must NOT modify:**
-- `main.py` (T6's scope, already landed)
+- `admin_prices_update`, `admin_discounts_update` in `main.py` (T6's scope, already landed)
+- Existing `discount_store.py` methods (`get`, `get_all`, `set`, `set_many`, `clear_all`) — only a new method is added
 
 ---
 

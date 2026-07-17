@@ -101,6 +101,26 @@ class DiscountStore:
                 rows = cur.fetchall()
         return {r["name"]: float(r["value"]) for r in rows}
 
+    def get_all_with_updated_at(self, fuel_type: str) -> Dict[str, Dict[str, Any]]:
+        """Like get_all(), but each entry also carries updated_at (Unix
+        epoch seconds, int) so callers can show a readable timestamp
+        (T7, F3.1). Stations without a discount row for this fuel_type
+        are omitted, same as get_all()."""
+        pool = get_pool(dsn=self._dsn)
+        with pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("""
+                    SELECT s.display_name AS name, d.discount_per_liter AS value,
+                           EXTRACT(EPOCH FROM d.updated_at)::BIGINT AS updated_at
+                    FROM stations s
+                    JOIN discounts d ON d.station_id = s.id AND d.fuel_type = %s
+                """, (fuel_type,))
+                rows = cur.fetchall()
+        return {
+            r["name"]: {"value": float(r["value"]), "updated_at": int(r["updated_at"] or 0)}
+            for r in rows
+        }
+
     def get(self, station: str, fuel_type: str) -> Optional[float]:
         """Return discount for a (station, fuel_type) combo, or None if
         not set or station unknown. None means ₱0 downstream, not
