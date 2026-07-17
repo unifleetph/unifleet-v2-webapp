@@ -1246,12 +1246,23 @@ def admin_prices_update():
     except Exception:
         return jsonify({"ok": False, "error": "server_error"}), 500
 
+def _resolve_fuel_type_param() -> str:
+    """Read ?fuel_type= for the 3 public read-only /api/v1/* endpoints.
+
+    Deliberately more lenient than T6's admin write-endpoint validation
+    (ARCH A8): missing or unrecognized values fall back silently to
+    "Biodiesel" rather than 400ing, since these are public, read-only,
+    with unknown-identity external (supplier) and internal consumers
+    who predate the fuel-types feature entirely.
+    """
+    ft = (request.args.get("fuel_type") or "").strip()
+    return ft if ft in FUEL_TYPES else "Biodiesel"
+
+
 # Read-only API for previews
 @app.route("/api/v1/prices", methods=["GET"])
 def api_prices_list():
-    # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T9 adds the real
-    # ?fuel_type= query param (default "Biodiesel" for backward compat).
-    stations = price_store.list_stations("Biodiesel")
+    stations = price_store.list_stations(_resolve_fuel_type_param())
     return jsonify({"stations": stations})
 
 # =========================
@@ -1308,9 +1319,7 @@ def admin_discounts_update():
 @app.route("/api/v1/discounts", methods=["GET"])
 def api_discounts_list():
     try:
-        # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T9 adds the
-        # real ?fuel_type= query param (default "Biodiesel" for backward compat).
-        return jsonify({"discounts": discount_store.get_all("Biodiesel")})
+        return jsonify({"discounts": discount_store.get_all(_resolve_fuel_type_param())})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1336,9 +1345,7 @@ def api_price_preview():
         dpl = 0.0
 
     def _norm(s): return str(s or "").strip().lower()
-    # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T9 adds the real
-    # ?fuel_type= query param (default "Biodiesel" for backward compat).
-    stations = price_store.list_stations("Biodiesel")
+    stations = price_store.list_stations(_resolve_fuel_type_param())
     match = None
     for s in stations:
         if _norm(s.get("id")) == _norm(station_q):

@@ -832,7 +832,7 @@ Add a "Fuel Type" column to `report_pdf.py`'s `build_supplier_pdf()` output, exp
 
 ## Task T9: `/api/v1/*` Backward-Compatible `fuel_type` Param
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** medium
