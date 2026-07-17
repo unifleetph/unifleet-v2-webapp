@@ -1,5 +1,5 @@
 from flask import (
-    Flask, render_template, render_template_string, request, redirect, send_file, abort,
+    Flask, render_template, request, redirect, send_file, abort,
     url_for, flash, jsonify, make_response, send_from_directory, session
 )
 import os
@@ -1238,11 +1238,7 @@ def admin_stations():
 
     stations = price_store.list_all_stations()
     stations = sorted(stations, key=lambda s: (s.get("brand") or "", s.get("name") or ""))
-    # Placeholder rendering — T4 (ARCH-station-management) replaces this
-    # with templates/admin_stations.html.
-    return render_template_string(
-        "Stations: {{ stations|length }}", stations=stations
-    )
+    return render_template("admin_stations.html", stations=stations)
 
 @app.route("/admin/stations/<station_id>/edit", methods=["POST"])
 def admin_stations_edit(station_id):

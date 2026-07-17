@@ -3,9 +3,26 @@ tests/test_admin_stations.py — station CRUD/activation admin routes
 (T2, ARCH-station-management).
 """
 
+from contextlib import contextmanager
+
 import pytest
+from flask import template_rendered
 
 import main
+
+
+@contextmanager
+def captured_templates(app):
+    recorded = []
+
+    def record(sender, template, context, **extra):
+        recorded.append((template, context))
+
+    template_rendered.connect(record, app)
+    try:
+        yield recorded
+    finally:
+        template_rendered.disconnect(record, app)
 
 
 @pytest.fixture
@@ -176,6 +193,55 @@ def test_post_admin_stations_reactivate_unknown_id_returns_404(client, fake_pric
     r = client.post("/admin/stations/does_not_exist/reactivate")
 
     assert r.status_code == 404
+
+
+# ============================================================
+# Template Rendering (T4, ARCH-station-management)
+# ============================================================
+
+def test_get_admin_stations_context_contains_full_station_list_incl_inactive(client, fake_price_store):
+    _login(client)
+    fake_price_store.stations["active1"] = {
+        "id": "active1", "brand": "A", "name": "Active One", "location": "X", "is_active": True,
+    }
+    fake_price_store.stations["inactive1"] = {
+        "id": "inactive1", "brand": "B", "name": "Inactive One", "location": "Y", "is_active": False,
+    }
+
+    with captured_templates(main.app) as templates:
+        r = client.get("/admin/stations")
+
+    assert r.status_code == 200
+    assert len(templates) == 1
+    template, context = templates[0]
+    assert template.name == "admin_stations.html"
+    ids = {s["id"] for s in context["stations"]}
+    assert ids == {"active1", "inactive1"}
+
+
+def test_get_admin_stations_inactive_flag_reaches_template_context(client, fake_price_store):
+    _login(client)
+    fake_price_store.stations["inactive1"] = {
+        "id": "inactive1", "brand": "B", "name": "Inactive One", "location": "Y", "is_active": False,
+    }
+
+    with captured_templates(main.app) as templates:
+        client.get("/admin/stations")
+
+    _, context = templates[0]
+    station = next(s for s in context["stations"] if s["id"] == "inactive1")
+    assert station["is_active"] is False
+
+
+def test_get_admin_stations_renders_inactive_row_css_class(client, fake_price_store):
+    _login(client)
+    fake_price_store.stations["inactive1"] = {
+        "id": "inactive1", "brand": "B", "name": "Inactive One", "location": "Y", "is_active": False,
+    }
+
+    r = client.get("/admin/stations")
+
+    assert 'class="inactive-row"' in r.data.decode("utf-8")
 
 
 # ============================================================

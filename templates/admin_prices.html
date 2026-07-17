@@ -39,6 +39,22 @@
     .fuel-col-group th {
       text-align: center;
     }
+
+    /* Inactive station styling — shared visual language with
+       templates/admin_stations.html (grayed-out row, not hidden,
+       per ARCH-station-management A3/A4). */
+    tr.inactive-row {
+      opacity: 0.55;
+      background: #f3f4f6;
+    }
+    tr.inactive-row:hover { background: #f3f4f6; }
+    .status-badge {
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      margin-left: 8px;
+    }
+    .status-inactive { background: #F3F4F6; color: #6B7280; }
   </style>
 </head>
 <body>
@@ -67,9 +83,9 @@
     </thead>
     <tbody>
       {% for s in stations %}
-      <tr data-station-id="{{ s.id }}">
+      <tr data-station-id="{{ s.id }}" class="{{ 'inactive-row' if not s.is_active else '' }}">
         <td>{{ s.brand }}</td>
-        <td>{{ s.name }}</td>
+        <td>{{ s.name }}{% if not s.is_active %}<span class="status-badge status-inactive">Inactive</span>{% endif %}</td>
         <td>{{ s.location }}</td>
 
         {% for ft in fuel_types %}

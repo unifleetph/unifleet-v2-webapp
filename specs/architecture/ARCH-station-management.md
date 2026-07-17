@@ -397,13 +397,13 @@ Fix `admin_prices()` (T7's route) to seed its station list from T1's `list_all_s
 
 ## Task T4: Manage Stations Page & Grayed-Out Inactive Styling
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** ui
 > **Effort:** m
 > **Priority:** high
 > **Depends on:** T1, T2
 > **Satisfies REQs:** R1, R2, R3, R6, R9
-> **Footprint slice:** New: `templates/admin_stations.html`. Modified: `templates/admin_prices.html`, `templates/admin.html`
+> **Footprint slice:** New: `templates/admin_stations.html`. Modified: `templates/admin_prices.html`, `templates/admin.html`, `main.py` (footprint amendment, approved during implementation: `admin_stations()` GET swaps T2's placeholder `render_template_string` for `render_template("admin_stations.html", ...)` — without it the new template can never render)
 > **High-risk areas touched:** `admin_prices.html` — M risk (T7's already-shipped styling)
 
 ### Description

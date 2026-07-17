@@ -115,6 +115,13 @@ def test_inactive_station_appears_in_admin_prices_list(admin_prices_page_bare_in
     assert 'data-station-id="inactive1"' in admin_prices_page_bare_inactive
 
 
+def test_admin_prices_html_renders_inactive_row_css_class(admin_prices_page_bare_inactive):
+    inactive_row = admin_prices_page_bare_inactive[
+        admin_prices_page_bare_inactive.index('data-station-id="inactive1"'):
+    ]
+    assert 'inactive-row' in inactive_row[:200]
+
+
 def test_active_priced_station_unchanged_from_t7_behavior(admin_prices_page):
     # regression guard: existing priced/active station's fuel data unaffected
     assert 'data-station-id="s1"' in admin_prices_page
