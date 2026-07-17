@@ -136,6 +136,127 @@ def test_station_can_go_from_zero_to_three_fuel_types_priced(test_station):
 
 
 # ============================================================
+# is_active Enforcement (T1, ARCH-station-management)
+# ============================================================
+
+def test_list_stations_default_excludes_inactive_stations(test_station, schema_db):
+    price_store.set_price(test_station, "Biodiesel", 60.0)
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE stations SET is_active = FALSE WHERE id = %s", (test_station,))
+        conn.commit()
+
+    result = price_store.list_stations("Biodiesel")
+
+    assert test_station not in {s["id"] for s in result}
+
+
+def test_list_stations_include_inactive_true_includes_inactive_stations(test_station, schema_db):
+    price_store.set_price(test_station, "Biodiesel", 60.0)
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE stations SET is_active = FALSE WHERE id = %s", (test_station,))
+        conn.commit()
+
+    result = price_store.list_stations("Biodiesel", include_inactive=True)
+
+    assert test_station in {s["id"] for s in result}
+
+
+# ============================================================
+# list_all_stations (T1, ARCH-station-management)
+# ============================================================
+
+def test_list_all_stations_returns_bare_station_with_zero_prices(test_station):
+    result = price_store.list_all_stations()
+
+    assert test_station in {s["id"] for s in result}
+
+
+def test_list_all_stations_include_inactive_false_excludes_inactive(test_station, schema_db):
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE stations SET is_active = FALSE WHERE id = %s", (test_station,))
+        conn.commit()
+
+    result = price_store.list_all_stations(include_inactive=False)
+
+    assert test_station not in {s["id"] for s in result}
+
+
+# ============================================================
+# generate_unique_station_id (T1, ARCH-station-management)
+# ============================================================
+
+def test_generate_unique_station_id_slugifies_brand_and_name():
+    result = price_store.generate_unique_station_id("Petron", "Makati")
+
+    assert result == "petron_makati"
+
+
+def test_generate_unique_station_id_auto_suffixes_on_collision(schema_db):
+    station_id = "collidebrand_collidename"
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO stations (id, brand, display_name, location) VALUES (%s, %s, %s, %s)",
+                (station_id, "CollideBrand", "CollideName", "X"),
+            )
+        conn.commit()
+    try:
+        result = price_store.generate_unique_station_id("CollideBrand", "CollideName")
+        assert result == "collidebrand_collidename-2"
+    finally:
+        with psycopg.connect(schema_db) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM stations WHERE id = %s", (station_id,))
+            conn.commit()
+
+
+def test_generate_unique_station_id_sequential_collisions_get_sequential_suffixes(schema_db):
+    base_id = "uniquesuffix_seqname3020"
+    suffix2_id = "uniquesuffix_seqname3020-2"
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO stations (id, brand, display_name, location) VALUES (%s, %s, %s, %s)",
+                (base_id, "UniqueSuffix", "SeqName3020", "X"),
+            )
+            cur.execute(
+                "INSERT INTO stations (id, brand, display_name, location) VALUES (%s, %s, %s, %s)",
+                (suffix2_id, "UniqueSuffix", "SeqName3020", "X"),
+            )
+        conn.commit()
+    try:
+        result = price_store.generate_unique_station_id("UniqueSuffix", "SeqName3020")
+        assert result == "uniquesuffix_seqname3020-3"
+    finally:
+        with psycopg.connect(schema_db) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM stations WHERE id IN (%s, %s)", (base_id, suffix2_id))
+            conn.commit()
+
+
+# ============================================================
+# set_station_active (T1, ARCH-station-management)
+# ============================================================
+
+def test_set_station_active_deactivate_then_reactivate_round_trips(test_station):
+    price_store.set_price(test_station, "Biodiesel", 60.0)
+
+    price_store.set_station_active(test_station, False)
+    assert test_station not in {s["id"] for s in price_store.list_stations("Biodiesel")}
+
+    price_store.set_station_active(test_station, True)
+    assert test_station in {s["id"] for s in price_store.list_stations("Biodiesel")}
+
+
+def test_set_station_active_unknown_id_raises_key_error():
+    with pytest.raises(KeyError):
+        price_store.set_station_active("does_not_exist_xyz", False)
+
+
+# ============================================================
 # Regression Guard
 # ============================================================
 

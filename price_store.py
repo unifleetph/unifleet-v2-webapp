@@ -34,6 +34,7 @@ seed file and by tests/test_seeds.py for cross-validation).
 """
 
 import os
+import re
 import time
 from typing import List, Dict, Any, Optional
 
@@ -156,7 +157,7 @@ def save_all(obj: Dict[str, Any]) -> None:
     return None
 
 
-def list_stations(fuel_type: str) -> List[Dict[str, Any]]:
+def list_stations(fuel_type: str, include_inactive: bool = False) -> List[Dict[str, Any]]:
     """Return stations that have a price row for `fuel_type`.
 
     Each row: {id, brand, name, location, price_php_per_liter, updated_at}
@@ -165,6 +166,8 @@ def list_stations(fuel_type: str) -> List[Dict[str, Any]]:
       call sites like `int(s.get("updated_at", 0) or 0)` keep working.
     - Stations without a price row for this fuel_type are excluded
       entirely (availability is price-gated — see ARCH R7/R9).
+    - Deactivated stations (`is_active = FALSE`) are excluded unless
+      `include_inactive=True` (ARCH-station-management A4).
     """
     pool = get_pool()
     with pool.connection() as conn:
@@ -179,8 +182,9 @@ def list_stations(fuel_type: str) -> List[Dict[str, Any]]:
                     COALESCE(EXTRACT(EPOCH FROM p.updated_at)::BIGINT, 0) AS updated_at
                 FROM stations s
                 JOIN prices p ON p.station_id = s.id AND p.fuel_type = %s
+                WHERE (%s OR s.is_active)
                 ORDER BY s.brand, s.display_name
-            """, (fuel_type,))
+            """, (fuel_type, include_inactive))
             rows = cur.fetchall()
     out = []
     for r in rows:
@@ -193,6 +197,26 @@ def list_stations(fuel_type: str) -> List[Dict[str, Any]]:
             "updated_at": int(r.get("updated_at") or 0),
         })
     return out
+
+
+def list_all_stations(include_inactive: bool = True) -> List[Dict[str, Any]]:
+    """Return all stations, identity only, no price join and no fuel
+    filter — the base list for the Manage Stations page and for
+    admin_prices()'s per-fuel-type overlay (ARCH-station-management A5).
+
+    Each row: {id, brand, name, location, is_active}
+    """
+    pool = get_pool()
+    with pool.connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("""
+                SELECT id, brand, display_name AS name, location, is_active
+                FROM stations
+                WHERE (%s OR is_active)
+                ORDER BY brand, display_name
+            """, (include_inactive,))
+            rows = cur.fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_station(station_id: str, fuel_type: str) -> Optional[Dict[str, Any]]:
@@ -315,9 +339,63 @@ def upsert_station(st: Dict[str, Any]) -> Dict[str, Any]:
     return dict(r)
 
 
+def generate_unique_station_id(brand: str, name: str) -> str:
+    """Slugify `brand`+`name` into a station id, auto-suffixing with
+    `-2`, `-3`, ... on collision with an existing station id
+    (ARCH-station-management A2).
+    """
+    base = _slug(f"{brand} {name}")
+
+    pool = get_pool()
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM stations WHERE id = %s", (base,))
+            if cur.fetchone() is None:
+                return base
+
+            n = 2
+            while True:
+                candidate = f"{base}-{n}"
+                cur.execute("SELECT 1 FROM stations WHERE id = %s", (candidate,))
+                if cur.fetchone() is None:
+                    return candidate
+                n += 1
+
+
+def set_station_active(station_id: str, is_active: bool) -> Dict[str, Any]:
+    """Flip a station's `is_active` flag. Raises KeyError if the
+    station doesn't exist (ARCH-station-management A3/A4)."""
+    pool = get_pool()
+    with pool.connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("""
+                UPDATE stations
+                SET is_active = %s, updated_at = NOW()
+                WHERE id = %s
+                RETURNING id, brand, display_name AS name, location, is_active
+            """, (is_active, station_id))
+            r = cur.fetchone()
+        conn.commit()
+    if r is None:
+        raise KeyError(f"Station '{station_id}' not found")
+    return dict(r)
+
+
 # ============================================================
 # Internal helpers
 # ============================================================
+
+
+def _norm_dashes(s: str) -> str:
+    s = str(s or '')
+    return s.replace('—', '-').replace('–', '-').strip().lower()
+
+
+def _slug(s: str) -> str:
+    s = _norm_dashes(s)
+    s = re.sub(r'[^a-z0-9\s-]', '', s)
+    s = re.sub(r'[\s-]+', '_', s)
+    return s.strip('_')
 
 def _station_exists(cur, station_id: str) -> bool:
     """Return True if a station row exists with this id (cheap existence check)."""
