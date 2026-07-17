@@ -634,7 +634,7 @@ Reorder `templates/book.html` so Driver & Vehicle (including the new Fuel Type f
 
 ## Task T6: Admin Price/Discount Edit Endpoints
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** high

@@ -1182,14 +1182,16 @@ def admin_prices_update():
     try:
         payload = request.get_json(force=True) or {}
         station_id = str(payload.get("station_id", "")).strip()
+        fuel_type = str(payload.get("fuel_type", "")).strip()
         new_price = float(payload.get("price", 0))
 
-        # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T6 adds a real
-        # fuel_type field to this endpoint's payload.
-        before = price_store.get_station(station_id, "Biodiesel") or {}
+        if fuel_type not in FUEL_TYPES:
+            return jsonify({"ok": False, "error": f"Invalid fuel_type: {fuel_type!r}"}), 400
+
+        before = price_store.get_station(station_id, fuel_type) or {}
         old_price = before.get("price_php_per_liter")
 
-        updated = price_store.set_price(station_id, "Biodiesel", new_price)
+        updated = price_store.set_price(station_id, fuel_type, new_price)
 
         append_price_history(
             station_id=station_id,
@@ -1229,6 +1231,7 @@ def admin_discounts_update():
 
     key = request.args.get("key", "").strip()
     station = (request.form.get("station") or "").strip()
+    fuel_type = (request.form.get("fuel_type") or "").strip()
     raw_value = (request.form.get("discount_per_liter") or "").strip()
 
     def _back():
@@ -1239,6 +1242,10 @@ def admin_discounts_update():
 
     if not station:
         flash("Station is required.", "error")
+        return _back()
+
+    if fuel_type not in FUEL_TYPES:
+        flash(f"Invalid fuel type: “{fuel_type}”.", "error")
         return _back()
 
     if raw_value == "":
@@ -1256,9 +1263,7 @@ def admin_discounts_update():
         return _back()
 
     try:
-        # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T6 adds a real
-        # fuel_type field to this endpoint's form body.
-        discount_store.set(station, "Biodiesel", value, actor="admin", reason="manual update")
+        discount_store.set(station, fuel_type, value, actor="admin", reason="manual update")
         flash(f"Saved discount {value:.2f} PHP/L for “{station}”.", "success")
     except DiscountValueError as e:
         flash(str(e), "error")
