@@ -1215,6 +1215,13 @@ def admin_prices():
 
     return render_template("admin_prices.html", stations=stations, fuel_types=FUEL_TYPES)
 
+def _admin_stations_back():
+    key = request.args.get("key", "").strip()
+    target = url_for("admin_stations")
+    if key:
+        target = f"{target}?key={key}"
+    return redirect(target)
+
 @app.route("/admin/stations", methods=["GET", "POST"])
 def admin_stations():
     if not require_admin(request):
@@ -1227,14 +1234,17 @@ def admin_stations():
 
         if not brand or not name:
             flash("Brand and name are required.", "error")
-            return redirect(url_for("admin_stations"))
+            return _admin_stations_back()
 
-        station_id = price_store.generate_unique_station_id(brand, name)
-        price_store.upsert_station({
-            "id": station_id, "brand": brand, "name": name, "location": location,
-        })
-        flash(f"Created station “{name}”.", "success")
-        return redirect(url_for("admin_stations"))
+        try:
+            station_id = price_store.generate_unique_station_id(brand, name)
+            price_store.upsert_station({
+                "id": station_id, "brand": brand, "name": name, "location": location,
+            })
+            flash(f"Created station “{name}”.", "success")
+        except Exception as e:
+            flash(f"Failed to create station: {e}", "error")
+        return _admin_stations_back()
 
     stations = price_store.list_all_stations()
     stations = sorted(stations, key=lambda s: (s.get("brand") or "", s.get("name") or ""))
@@ -1253,12 +1263,15 @@ def admin_stations_edit(station_id):
     if existing is None:
         abort(404)
 
-    price_store.upsert_station({
-        "id": station_id, "brand": brand or existing["brand"],
-        "name": name or existing["name"], "location": location or existing.get("location"),
-    })
-    flash(f"Updated station “{station_id}”.", "success")
-    return redirect(url_for("admin_stations"))
+    try:
+        price_store.upsert_station({
+            "id": station_id, "brand": brand or existing["brand"],
+            "name": name or existing["name"], "location": location or existing.get("location"),
+        })
+        flash(f"Updated station “{station_id}”.", "success")
+    except Exception as e:
+        flash(f"Failed to update station: {e}", "error")
+    return _admin_stations_back()
 
 @app.route("/admin/stations/<station_id>/deactivate", methods=["POST"])
 def admin_stations_deactivate(station_id):
@@ -1269,7 +1282,7 @@ def admin_stations_deactivate(station_id):
     except KeyError:
         abort(404)
     flash(f"Deactivated station “{station_id}”.", "success")
-    return redirect(url_for("admin_stations"))
+    return _admin_stations_back()
 
 @app.route("/admin/stations/<station_id>/reactivate", methods=["POST"])
 def admin_stations_reactivate(station_id):
@@ -1280,7 +1293,7 @@ def admin_stations_reactivate(station_id):
     except KeyError:
         abort(404)
     flash(f"Reactivated station “{station_id}”.", "success")
-    return redirect(url_for("admin_stations"))
+    return _admin_stations_back()
 
 @app.route("/admin/prices/update", methods=["POST"])
 def admin_prices_update():

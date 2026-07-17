@@ -245,6 +245,90 @@ def test_get_admin_stations_renders_inactive_row_css_class(client, fake_price_st
 
 
 # ============================================================
+# Key-Auth Redirect Preservation (review fix, High finding)
+# ============================================================
+
+def test_post_admin_stations_create_preserves_key_query_param_on_redirect(client, fake_price_store):
+    _login(client)
+    monkeypatch_key = "testkey"
+    r = client.post(f"/admin/stations?key={monkeypatch_key}", data={
+        "brand": "Petron", "name": "Makati", "location": "EDSA",
+    })
+
+    assert r.status_code == 302
+    assert f"key={monkeypatch_key}" in r.headers["Location"]
+
+
+def test_post_admin_stations_edit_preserves_key_query_param_on_redirect(client, fake_price_store):
+    _login(client)
+    fake_price_store.stations["petron_makati"] = {
+        "id": "petron_makati", "brand": "Petron", "name": "Makati", "location": "EDSA", "is_active": True,
+    }
+
+    r = client.post("/admin/stations/petron_makati/edit?key=testkey", data={
+        "brand": "Petron", "name": "Makati", "location": "EDSA",
+    })
+
+    assert r.status_code == 302
+    assert "key=testkey" in r.headers["Location"]
+
+
+def test_post_admin_stations_deactivate_preserves_key_query_param_on_redirect(client, fake_price_store):
+    _login(client)
+    fake_price_store.stations["petron_makati"] = {
+        "id": "petron_makati", "brand": "Petron", "name": "Makati", "location": "EDSA", "is_active": True,
+    }
+
+    r = client.post("/admin/stations/petron_makati/deactivate?key=testkey")
+
+    assert r.status_code == 302
+    assert "key=testkey" in r.headers["Location"]
+
+
+def test_post_admin_stations_reactivate_preserves_key_query_param_on_redirect(client, fake_price_store):
+    _login(client)
+    fake_price_store.stations["petron_makati"] = {
+        "id": "petron_makati", "brand": "Petron", "name": "Makati", "location": "EDSA", "is_active": False,
+    }
+
+    r = client.post("/admin/stations/petron_makati/reactivate?key=testkey")
+
+    assert r.status_code == 302
+    assert "key=testkey" in r.headers["Location"]
+
+
+# ============================================================
+# Store-Error Handling (review fix, High finding)
+# ============================================================
+
+def test_post_admin_stations_create_store_error_flashes_instead_of_500(client, fake_price_store, monkeypatch):
+    def _raise(*a, **kw):
+        raise RuntimeError("db unavailable")
+    monkeypatch.setattr(fake_price_store, "upsert_station", _raise)
+    _login(client)
+
+    r = client.post("/admin/stations", data={"brand": "Petron", "name": "Makati", "location": "EDSA"})
+
+    assert r.status_code == 302
+
+
+def test_post_admin_stations_edit_store_error_flashes_instead_of_500(client, fake_price_store, monkeypatch):
+    fake_price_store.stations["petron_makati"] = {
+        "id": "petron_makati", "brand": "Petron", "name": "Makati", "location": "EDSA", "is_active": True,
+    }
+    def _raise(*a, **kw):
+        raise RuntimeError("db unavailable")
+    monkeypatch.setattr(fake_price_store, "upsert_station", _raise)
+    _login(client)
+
+    r = client.post("/admin/stations/petron_makati/edit", data={
+        "brand": "Petron", "name": "Renamed", "location": "EDSA",
+    })
+
+    assert r.status_code == 302
+
+
+# ============================================================
 # Regression Guard
 # ============================================================
 
