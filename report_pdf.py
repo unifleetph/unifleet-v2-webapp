@@ -41,6 +41,41 @@ def _draw_paragraph(c, text, style, x, y, max_width):
     p.drawOn(c, x, y - h)
     return y - h
 
+# F3.1 (fuel-types-expansion, T8): short canonical values are stored
+# everywhere (main.py, price_store, discount_store); only the supplier
+# PDF expands Premium/Unleaded to their full display names. Biodiesel
+# is unchanged. A blank/None fuel_type (pre-migration historical
+# bookings) falls back to "Diesel", matching the admin dashboard's
+# same fallback (ARCH A3/R16) — no retroactive relabeling of history.
+_FUEL_TYPE_DISPLAY = {
+    "Premium": "Premium Gasoline",
+    "Unleaded": "Unleaded Gasoline",
+}
+
+
+def _fuel_type_display(fuel_type) -> str:
+    ft = (fuel_type or "").strip()
+    if not ft:
+        return "Diesel"
+    return _FUEL_TYPE_DISPLAY.get(ft, ft)
+
+
+def _build_supplier_row(r: dict) -> list:
+    """Turn one voucher dict into a supplier-sheet row (7 columns).
+    Pure and reportlab-free, so it's testable without a PDF-parsing
+    dependency (T8's testability note)."""
+    amount = _total_amount_php_from_row(r)
+    return [
+        (r.get("station") or "").strip(),
+        f"{_fmt_money(amount)}",
+        r.get("driver_name") or "",
+        r.get("vehicle_plate") or "",
+        _fuel_type_display(r.get("fuel_type")),
+        r.get("voucher_id") or "",
+        "",  # Name / Signature
+    ]
+
+
 def _total_amount_php_from_row(r: dict) -> float:
     """
     Preferred order:
@@ -74,6 +109,7 @@ def build_supplier_pdf(*, vouchers, target_station_ids, stations, logo_path=None
       - Amount (PHP)
       - Driver name
       - Plate
+      - Fuel Type
       - Voucher ID (Unredeemed)
       - Name / Signature
     """
@@ -94,22 +130,7 @@ def build_supplier_pdf(*, vouchers, target_station_ids, stations, logo_path=None
         if not include:
             continue
 
-        # ── FIX: Amount must be total, not requested ───────────────────────────
-        amount = _total_amount_php_from_row(r)
-        # ───────────────────────────────────────────────────────────────────────
-
-        driver = r.get("driver_name") or ""
-        plate = r.get("vehicle_plate") or ""
-        vid = r.get("voucher_id") or ""
-
-        rows.append([
-            station_name,
-            f"{_fmt_money(amount)}",
-            driver,
-            plate,
-            vid,
-            ""  # Name / Signature
-        ])
+        rows.append(_build_supplier_row(r))
 
     # Canvas
     buf = BytesIO()
@@ -150,19 +171,21 @@ def build_supplier_pdf(*, vouchers, target_station_ids, stations, logo_path=None
             pass
 
     # Table (adjusted widths & row height via padding)
-    header = ["Station (Expected)", "Amount (PHP)", "Driver name", "Plate", "Voucher ID (Unredeemed)", "Name / Signature"]
+    header = ["Station (Expected)", "Amount (PHP)", "Driver name", "Plate", "Fuel Type", "Voucher ID (Unredeemed)", "Name / Signature"]
     data = [header]
     data.extend(rows if rows else [["—"] * len(header)])
 
     # Column widths (fit within A4 landscape minus margins)
     # Totals to ~272mm with 12mm side margins (page width 297mm).
+    # F3.1 (T8): retuned for the new Fuel Type column.
     col_widths = [
-        74*mm,  # Station (slightly reduced)
-        24*mm,  # Voucher (narrower)
-        48*mm,  # Driver
-        24*mm,  # Plate (slightly narrower)
-        44*mm,  # Voucher ID (narrower)
-        58*mm,  # Name/Signature (wider)
+        68*mm,  # Station
+        22*mm,  # Amount
+        42*mm,  # Driver
+        20*mm,  # Plate
+        30*mm,  # Fuel Type (new)
+        38*mm,  # Voucher ID
+        52*mm,  # Name/Signature
     ]
     table = Table(data, colWidths=col_widths)
 

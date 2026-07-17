@@ -767,7 +767,7 @@ Expand `admin_prices.html` from a single price/discount column to 6 (3 fuel type
 
 ## Task T8: Supplier PDF Fuel Column
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** test-after
 > **Effort:** s
 > **Priority:** medium
