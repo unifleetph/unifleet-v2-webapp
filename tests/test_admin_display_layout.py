@@ -23,7 +23,7 @@ def _login(client):
 
 
 class FakePriceStore:
-    def list_stations(self, fuel_type):
+    def list_stations(self, fuel_type, include_inactive=False):
         if fuel_type == "Biodiesel":
             return [{"id": "s1", "brand": "Cleanfuel", "name": "Cleanfuel", "location": "NLEX",
                       "price_php_per_liter": 60.0, "updated_at": 1750000000}]
@@ -31,6 +31,9 @@ class FakePriceStore:
             return [{"id": "s1", "brand": "Cleanfuel", "name": "Cleanfuel", "location": "NLEX",
                       "price_php_per_liter": 65.0, "updated_at": 1750000100}]
         return []
+
+    def list_all_stations(self, include_inactive=True):
+        return [{"id": "s1", "brand": "Cleanfuel", "name": "Cleanfuel", "location": "NLEX", "is_active": True}]
 
 
 class FakeDiscountStore:
@@ -74,6 +77,49 @@ def test_unpriced_fuel_type_shows_dash_placeholder(admin_prices_page):
     # Unleaded has no price/discount at all for this station
     unleaded_block = admin_prices_page[admin_prices_page.index('data-fuel-type="Unleaded"'):]
     assert "—" in unleaded_block[:400]
+
+
+# ============================================================
+# Bare & Inactive Station Visibility (T3, ARCH-station-management)
+# ============================================================
+
+class FakePriceStoreWithBareAndInactive:
+    def list_stations(self, fuel_type, include_inactive=False):
+        return []  # no prices set for any fuel type, any station
+
+    def list_all_stations(self, include_inactive=True):
+        stations = [
+            {"id": "bare1", "brand": "Bare Co", "name": "Bare Station", "location": "Nowhere", "is_active": True},
+            {"id": "inactive1", "brand": "Old Co", "name": "Old Station", "location": "Nowhere", "is_active": False},
+        ]
+        if not include_inactive:
+            stations = [s for s in stations if s["is_active"]]
+        return stations
+
+
+@pytest.fixture
+def admin_prices_page_bare_inactive(client, monkeypatch):
+    monkeypatch.setattr(main, "price_store", FakePriceStoreWithBareAndInactive())
+    monkeypatch.setattr(main, "discount_store", FakeDiscountStore())
+    _login(client)
+    r = client.get("/admin/prices")
+    assert r.status_code == 200
+    return r.data.decode("utf-8")
+
+
+def test_bare_station_appears_with_blank_price_cells(admin_prices_page_bare_inactive):
+    assert 'data-station-id="bare1"' in admin_prices_page_bare_inactive
+
+
+def test_inactive_station_appears_in_admin_prices_list(admin_prices_page_bare_inactive):
+    assert 'data-station-id="inactive1"' in admin_prices_page_bare_inactive
+
+
+def test_active_priced_station_unchanged_from_t7_behavior(admin_prices_page):
+    # regression guard: existing priced/active station's fuel data unaffected
+    assert 'data-station-id="s1"' in admin_prices_page
+    price_cells = re.findall(r'<td class="price-cell" data-fuel-type="([^"]+)"', admin_prices_page)
+    assert price_cells == ["Biodiesel", "Premium", "Unleaded"]
 
 
 # ============================================================

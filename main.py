@@ -1169,15 +1169,22 @@ def admin_prices():
     if not require_admin(request):
         return redirect(url_for('admin_login', next=request.path))
 
-    # T7 (F3.1): 6-column layout — price + discount per fuel type. A
-    # station appears here if it's priced for at least one fuel type
-    # (price_store.list_stations is price-gated per T2); a station with
-    # zero prices anywhere is invisible until it's given a first price
-    # some other way (REQ-station-management's future concern).
+    # T7 (F3.1) / T3 (ARCH-station-management): 6-column layout — price +
+    # discount per fuel type. Base station list now comes from
+    # list_all_stations() (no price join), so bare (unpriced) and
+    # inactive stations both appear; price/discount data is overlaid
+    # per fuel type on top, same shape as before.
     all_stations = {}
+    for s in price_store.list_all_stations():
+        sid = s["id"]
+        all_stations[sid] = {
+            "id": sid, "brand": s.get("brand"), "name": s.get("name"),
+            "location": s.get("location"), "is_active": s.get("is_active", True),
+        }
+
     fuels_by_station = {}
     for ft in FUEL_TYPES:
-        for s in price_store.list_stations(ft):
+        for s in price_store.list_stations(ft, include_inactive=True):
             sid = s["id"]
             all_stations.setdefault(sid, {
                 "id": sid, "brand": s.get("brand"), "name": s.get("name"), "location": s.get("location"),

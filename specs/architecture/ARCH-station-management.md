@@ -339,7 +339,7 @@ Add 4 new admin-gated routes for creating, editing, deactivating, and reactivati
 
 ## Task T3: `admin_prices()` Rebuild — Bare & Inactive Station Visibility
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** test-after
 > **Effort:** s
 > **Priority:** high
