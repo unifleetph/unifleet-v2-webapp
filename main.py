@@ -1,5 +1,5 @@
 from flask import (
-    Flask, render_template, request, redirect, send_file, abort,
+    Flask, render_template, render_template_string, request, redirect, send_file, abort,
     url_for, flash, jsonify, make_response, send_from_directory, session
 )
 import os
@@ -1207,6 +1207,77 @@ def admin_prices():
             ft_info["discount_updated_readable"] = _readable(ft_info["discount_updated_at"])
 
     return render_template("admin_prices.html", stations=stations, fuel_types=FUEL_TYPES)
+
+@app.route("/admin/stations", methods=["GET", "POST"])
+def admin_stations():
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    if request.method == "POST":
+        brand = (request.form.get("brand") or "").strip()
+        name = (request.form.get("name") or "").strip()
+        location = (request.form.get("location") or "").strip()
+
+        if not brand or not name:
+            flash("Brand and name are required.", "error")
+            return redirect(url_for("admin_stations"))
+
+        station_id = price_store.generate_unique_station_id(brand, name)
+        price_store.upsert_station({
+            "id": station_id, "brand": brand, "name": name, "location": location,
+        })
+        flash(f"Created station “{name}”.", "success")
+        return redirect(url_for("admin_stations"))
+
+    stations = price_store.list_all_stations()
+    stations = sorted(stations, key=lambda s: (s.get("brand") or "", s.get("name") or ""))
+    # Placeholder rendering — T4 (ARCH-station-management) replaces this
+    # with templates/admin_stations.html.
+    return render_template_string(
+        "Stations: {{ stations|length }}", stations=stations
+    )
+
+@app.route("/admin/stations/<station_id>/edit", methods=["POST"])
+def admin_stations_edit(station_id):
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    brand = (request.form.get("brand") or "").strip()
+    name = (request.form.get("name") or "").strip()
+    location = (request.form.get("location") or "").strip()
+
+    existing = next((s for s in price_store.list_all_stations() if s["id"] == station_id), None)
+    if existing is None:
+        abort(404)
+
+    price_store.upsert_station({
+        "id": station_id, "brand": brand or existing["brand"],
+        "name": name or existing["name"], "location": location or existing.get("location"),
+    })
+    flash(f"Updated station “{station_id}”.", "success")
+    return redirect(url_for("admin_stations"))
+
+@app.route("/admin/stations/<station_id>/deactivate", methods=["POST"])
+def admin_stations_deactivate(station_id):
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+    try:
+        price_store.set_station_active(station_id, False)
+    except KeyError:
+        abort(404)
+    flash(f"Deactivated station “{station_id}”.", "success")
+    return redirect(url_for("admin_stations"))
+
+@app.route("/admin/stations/<station_id>/reactivate", methods=["POST"])
+def admin_stations_reactivate(station_id):
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+    try:
+        price_store.set_station_active(station_id, True)
+    except KeyError:
+        abort(404)
+    flash(f"Reactivated station “{station_id}”.", "success")
+    return redirect(url_for("admin_stations"))
 
 @app.route("/admin/prices/update", methods=["POST"])
 def admin_prices_update():

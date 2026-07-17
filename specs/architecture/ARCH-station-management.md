@@ -268,7 +268,7 @@ Add `is_active` enforcement to `list_stations()` via a new backward-compatible `
 
 ## Task T2: Station CRUD/Activation Routes
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** test-after
 > **Effort:** m
 > **Priority:** high
