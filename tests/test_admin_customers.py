@@ -50,6 +50,17 @@ class RepoStub:
     def list_all_vouchers(self):
         return list(self._vouchers)
 
+    def list_voucher_driver_pairs(self):
+        seen = set()
+        pairs = []
+        for v in self._vouchers:
+            code = str(v.get("account_code") or "").strip().upper()
+            name = str(v.get("driver_name") or "").strip()
+            if code and name and (code, name) not in seen:
+                seen.add((code, name))
+                pairs.append({"account_code": code, "driver_name": name})
+        return pairs
+
 
 @pytest.fixture
 def client(monkeypatch):
@@ -318,6 +329,31 @@ def test_customer_with_zero_bookings_gets_one_blank_driver_row(client, monkeypat
     row_start = table.index("Harry")
     row_end = table.index("</tr>", row_start)
     assert "<td></td>" in table[row_start:row_end] or "<td> </td>" in table[row_start:row_end]
+
+
+# ============================================================
+# Query Efficiency (review fix, ARCH-brief-3-fixes T4)
+# ============================================================
+
+class RepoStubNoFullVoucherScan(RepoStub):
+    """list_all_vouchers() raises — proves the all-customers directory
+    build path uses the narrow list_voucher_driver_pairs() query
+    instead of fetching every voucher column."""
+    def list_all_vouchers(self):
+        raise AssertionError("list_all_vouchers() should not be called for the all-customers directory")
+
+
+def test_all_customers_directory_does_not_fetch_full_voucher_rows(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStubNoFullVoucherScan(
+        customers=[HARR],
+        vouchers=[_voucher("HARR", "Alice")],
+    ))
+    _login(client)
+
+    r = client.get("/admin/customers")
+
+    assert r.status_code == 200
+    assert b"Alice" in r.data
 
 
 # ============================================================

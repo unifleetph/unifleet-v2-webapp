@@ -272,11 +272,11 @@ def _all_customer_driver_rows():
     history; customers with zero bookings still get one row with a
     blank driver name (T4, ARCH-brief-3-fixes)."""
     drivers_by_code = {}
-    for v in repo.list_all_vouchers():
-        code = str(v.get('account_code') or '').strip().upper()
+    for pair in repo.list_voucher_driver_pairs():
+        code = str(pair.get('account_code') or '').strip().upper()
         if not code:
             continue
-        name = str(v.get('driver_name') or '').strip()
+        name = str(pair.get('driver_name') or '').strip()
         if name:
             drivers_by_code.setdefault(code, set()).add(name)
 

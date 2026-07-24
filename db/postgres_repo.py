@@ -217,6 +217,19 @@ class PostgresRepo:
                 cur.execute("SELECT * FROM vouchers")
                 return cur.fetchall()
 
+    def list_voucher_driver_pairs(self) -> List[Dict]:
+        """Return distinct (account_code, driver_name) pairs across all
+        vouchers — used to build the all-customers/driver directory
+        without pulling every voucher column (review fix, ARCH-brief-3-fixes T4)."""
+        with self._pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("""
+                    SELECT DISTINCT account_code, driver_name
+                    FROM vouchers
+                    WHERE account_code IS NOT NULL AND driver_name IS NOT NULL
+                """)
+                return cur.fetchall()
+
     def get_voucher(self, voucher_id: str) -> Optional[Dict]:
         """Return one voucher by ID, or None if not found."""
         with self._pool.connection() as conn:

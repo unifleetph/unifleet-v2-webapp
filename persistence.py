@@ -113,6 +113,16 @@ class CSVRepo:
     def list_all_vouchers(self) -> List[Dict]:
         return self._read().to_dict(orient='records')
 
+    def list_voucher_driver_pairs(self) -> List[Dict]:
+        """Return distinct (account_code, driver_name) pairs across all
+        vouchers (review fix, ARCH-brief-3-fixes T4)."""
+        df = self._read()
+        cols = [c for c in ('account_code', 'driver_name') if c in df.columns]
+        if len(cols) < 2:
+            return []
+        pairs = df[cols].dropna().drop_duplicates()
+        return pairs.to_dict(orient='records')
+
     def get_voucher(self, voucher_id: str) -> Optional[Dict]:
         df = self._read()
         rows = df[df['voucher_id'] == voucher_id]
