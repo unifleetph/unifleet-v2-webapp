@@ -267,13 +267,18 @@ def admin():
 # =========================
 # Admin: Customer Lookup (T3, ARCH-customer-details-page)
 # =========================
+def _normalize_account_code(row):
+    """Uppercase/stripped account_code from any dict-like row, safe
+    against a missing/None value (review fix, ARCH-brief-3-fixes)."""
+    return str((row or {}).get('account_code') or '').strip().upper()
+
 def _all_customer_driver_rows():
     """One row per distinct driver_name in each customer's booking
     history; customers with zero bookings still get one row with a
     blank driver name (T4, ARCH-brief-3-fixes)."""
     drivers_by_code = {}
     for pair in repo.list_voucher_driver_pairs():
-        code = str(pair.get('account_code') or '').strip().upper()
+        code = _normalize_account_code(pair)
         if not code:
             continue
         name = str(pair.get('driver_name') or '').strip()
@@ -282,7 +287,7 @@ def _all_customer_driver_rows():
 
     rows = []
     for c in repo.list_customers():
-        code = c['account_code'].strip().upper()
+        code = _normalize_account_code(c)
         driver_names = sorted(drivers_by_code.get(code, set()))
         if not driver_names:
             rows.append({
@@ -342,7 +347,7 @@ def admin_customers():
 
     bookings = [
         v for v in repo.list_all_vouchers()
-        if str(v.get('account_code') or '').strip().upper() == customer['account_code'].strip().upper()
+        if _normalize_account_code(v) == _normalize_account_code(customer)
     ]
     return render_template(
         'admin_customer_lookup.html',
@@ -380,13 +385,13 @@ def _with_customer_contact_columns(bookings):
     """Return bookings with Customer Name/Number/Email joined in via each
     row's account_code. Blank for bookings with no matching customer."""
     customers_by_code = {
-        str(c.get("account_code") or "").strip().upper(): c
+        _normalize_account_code(c): c
         for c in repo.list_customers()
     }
     out = []
     for b in bookings:
         row = dict(b)
-        customer = customers_by_code.get(str(b.get("account_code") or "").strip().upper())
+        customer = customers_by_code.get(_normalize_account_code(b))
         row["Customer Name"] = customer.get("contact_name", "") if customer else ""
         row["Customer Number"] = customer.get("contact_number", "") if customer else ""
         row["Customer Email"] = customer.get("email", "") if customer else ""
@@ -405,7 +410,7 @@ def admin_customer_export():
 
     bookings = [
         v for v in repo.list_all_vouchers()
-        if str(v.get('account_code') or '').strip().upper() == customer['account_code'].strip().upper()
+        if _normalize_account_code(v) == _normalize_account_code(customer)
     ]
     bookings = _with_customer_contact_columns(bookings)
     export_path = str(data_paths.EXPORTS_DIR / f"customer_{customer['account_code']}_bookings.csv")

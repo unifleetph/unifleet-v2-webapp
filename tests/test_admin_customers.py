@@ -137,6 +137,10 @@ def test_fuzzy_multiple_matches_renders_picklist(client, monkeypatch):
     picklist_block = body[body.index('<ul class="picklist">'):body.index("</ul>")]
     assert "harry@example.com" not in picklist_block
     assert "harriet@example.com" not in picklist_block
+    # ...but the always-visible all-customers table below it does show
+    # email (R4/A3 — full directory, not the disambiguation picklist)
+    assert "harry@example.com" in body
+    assert "harriet@example.com" in body
 
 
 def test_no_match_renders_not_found(client, monkeypatch):
