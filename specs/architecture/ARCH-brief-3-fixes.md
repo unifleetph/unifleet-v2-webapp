@@ -119,7 +119,7 @@ Move the Fuel Type + Station select block (and the "How to Find Discounts" info 
 
 ## Task T2: Admin Page Background Color Fix
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** checklist
 > **Effort:** xs
 > **Priority:** low
