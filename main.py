@@ -267,14 +267,52 @@ def admin():
 # =========================
 # Admin: Customer Lookup (T3, ARCH-customer-details-page)
 # =========================
+def _all_customer_driver_rows():
+    """One row per distinct driver_name in each customer's booking
+    history; customers with zero bookings still get one row with a
+    blank driver name (T4, ARCH-brief-3-fixes)."""
+    drivers_by_code = {}
+    for v in repo.list_all_vouchers():
+        code = str(v.get('account_code') or '').strip().upper()
+        if not code:
+            continue
+        name = str(v.get('driver_name') or '').strip()
+        if name:
+            drivers_by_code.setdefault(code, set()).add(name)
+
+    rows = []
+    for c in repo.list_customers():
+        code = c['account_code'].strip().upper()
+        driver_names = sorted(drivers_by_code.get(code, set()))
+        if not driver_names:
+            rows.append({
+                'account_code': c['account_code'],
+                'contact_name': c.get('contact_name', ''),
+                'contact_number': c.get('contact_number', ''),
+                'email': c.get('email', ''),
+                'driver_name': '',
+            })
+        else:
+            for name in driver_names:
+                rows.append({
+                    'account_code': c['account_code'],
+                    'contact_name': c.get('contact_name', ''),
+                    'contact_number': c.get('contact_number', ''),
+                    'email': c.get('email', ''),
+                    'driver_name': name,
+                })
+    return rows
+
 @app.route('/admin/customers')
 def admin_customers():
     if not require_admin(request):
         return redirect(url_for('admin_login', next=request.path))
 
+    all_customers = _all_customer_driver_rows()
+
     query = (request.args.get('q') or '').strip()
     if not query:
-        return render_template('admin_customer_lookup.html', state=None, query=query)
+        return render_template('admin_customer_lookup.html', state=None, query=query, all_customers=all_customers)
 
     customer = repo.get_customer(query)
     matches = None
@@ -296,10 +334,10 @@ def admin_customers():
             customer = matches[0]
             matches = None
         elif len(matches) == 0:
-            return render_template('admin_customer_lookup.html', state='not_found', query=query)
+            return render_template('admin_customer_lookup.html', state='not_found', query=query, all_customers=all_customers)
         else:
             return render_template(
-                'admin_customer_lookup.html', state='picklist', query=query, matches=matches
+                'admin_customer_lookup.html', state='picklist', query=query, matches=matches, all_customers=all_customers
             )
 
     bookings = [
@@ -312,6 +350,7 @@ def admin_customers():
         query=query,
         customer=customer,
         bookings=bookings,
+        all_customers=all_customers,
     )
 
 # Booking-export-only columns (T3, ARCH-brief-3-fixes): customer contact

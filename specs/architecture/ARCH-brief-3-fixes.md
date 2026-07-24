@@ -228,7 +228,7 @@ Add Customer Name, Customer Number, and Customer Email columns to both the "Expo
 
 ## Task T4: All-Customers Table on `/admin/customers`
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** test-after
 > **Effort:** m
 > **Priority:** medium
@@ -263,6 +263,7 @@ Add a table below the search box on `/admin/customers`, always visible regardles
 ##### Regression Guard
 
 - **existing_detail_picklist_not_found_rendering_unchanged** — existing tests in this file for detail/picklist/not_found states must still pass unchanged
+- **Amendment (approved during implementation):** `test_fuzzy_multiple_matches_renders_picklist` asserted customer emails never appear on the picklist page — a privacy guard that predates this REQ. T4's always-visible table (REQ decision #8) legitimately shows every customer's email below the picklist, which collided with that assertion. Resolved: the guard now scopes to the `<ul class="picklist">` block only (picklist entries themselves still omit email), not the whole page body.
 
 ### Implementation Notes
 

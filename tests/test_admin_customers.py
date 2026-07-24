@@ -120,9 +120,12 @@ def test_fuzzy_multiple_matches_renders_picklist(client, monkeypatch):
     assert r.status_code == 200
     assert b"HARR" in r.data
     assert b"ABCD" in r.data
-    # not a direct detail view — neither full email appears
-    assert b"harry@example.com" not in r.data
-    assert b"harriet@example.com" not in r.data
+    # the picklist entries themselves (not the all-customers table below,
+    # T4 ARCH-brief-3-fixes) still don't show full email inline
+    body = r.data.decode("utf-8")
+    picklist_block = body[body.index('<ul class="picklist">'):body.index("</ul>")]
+    assert "harry@example.com" not in picklist_block
+    assert "harriet@example.com" not in picklist_block
 
 
 def test_no_match_renders_not_found(client, monkeypatch):
@@ -253,3 +256,65 @@ def test_booking_history_table_has_header_row_when_empty(client, monkeypatch):
     r = client.get("/admin/customers?q=HARR")
     assert b"<th>Voucher ID</th>" in r.data
     assert b"No bookings yet" in r.data
+
+
+# ============================================================
+# All-Customers Table (T4, ARCH-brief-3-fixes)
+# ============================================================
+
+def _voucher(account_code, driver_name):
+    return {"account_code": account_code, "driver_name": driver_name}
+
+
+def test_all_customers_table_present_on_empty_query(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(customers=[HARR], vouchers=[]))
+    _login(client)
+    r = client.get("/admin/customers")
+    assert b'id="all-customers-table"' in r.data
+    assert b"Harry" in r.data
+
+
+def test_all_customers_table_present_on_detail_state(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(customers=[HARR], vouchers=[]))
+    _login(client)
+    r = client.get("/admin/customers?q=HARR")
+    assert b'id="all-customers-table"' in r.data
+
+
+def test_all_customers_table_present_on_picklist_state(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(customers=[HARR, ABCD]))
+    _login(client)
+    r = client.get("/admin/customers?q=Harri")
+    assert b'id="all-customers-table"' in r.data
+
+
+def test_all_customers_table_present_on_not_found_state(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(customers=[HARR]))
+    _login(client)
+    r = client.get("/admin/customers?q=ZZZZ")
+    assert b'id="all-customers-table"' in r.data
+
+
+def test_customer_with_two_distinct_drivers_gets_two_rows(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(
+        customers=[HARR],
+        vouchers=[_voucher("HARR", "Alice"), _voucher("HARR", "Bob")],
+    ))
+    _login(client)
+    r = client.get("/admin/customers")
+    body = r.data.decode("utf-8")
+    table = body[body.index('id="all-customers-table"'):]
+    assert table.count("Alice") == 1
+    assert table.count("Bob") == 1
+
+
+def test_customer_with_zero_bookings_gets_one_blank_driver_row(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(customers=[HARR], vouchers=[]))
+    _login(client)
+    r = client.get("/admin/customers")
+    body = r.data.decode("utf-8")
+    table = body[body.index('id="all-customers-table"'):]
+    assert "Harry" in table
+    row_start = table.index("Harry")
+    row_end = table.index("</tr>", row_start)
+    assert "<td></td>" in table[row_start:row_end] or "<td> </td>" in table[row_start:row_end]
