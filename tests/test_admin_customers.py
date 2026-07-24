@@ -376,7 +376,7 @@ def test_export_matches_table_shape(client, monkeypatch):
     assert r.status_code == 200
     import pandas as pd
     df = pd.read_csv(pd.io.common.BytesIO(r.data))
-    assert list(df.columns) == ["Customer Name", "Number", "Email", "Driver Name"]
+    assert list(df.columns) == ["Customer Name", "Customer Number", "Customer Email", "Driver Name"]
     assert len(df) == 2
     assert set(df["Driver Name"]) == {"Alice", "Bob"}
     assert (df["Customer Name"] == "Harry").all()
@@ -403,3 +403,16 @@ def test_export_requires_admin(client, monkeypatch):
 
     assert r.status_code == 302
     assert "/admin/login" in r.headers["Location"]
+
+
+def test_export_writes_audit_log_entry(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(customers=[HARR], vouchers=[]))
+    calls = []
+    monkeypatch.setattr(main, "append_audit", lambda *a, **kw: calls.append((a, kw)))
+    _login(client)
+
+    r = client.get("/admin/customers/export_all")
+
+    assert r.status_code == 200
+    assert len(calls) == 1
+    assert calls[0][0][0] == "admin_customers_export_all"
