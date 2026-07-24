@@ -265,54 +265,10 @@
       <label for="contact_number">Name & Mobile Number [for Voucher Delivery]</label>
       <input type="text" name="contact_number" value="{{ customer.contact_name }} – {{ customer.contact_number }}" class="full-width-input" required>
 
-      <!-- Driver & Vehicle (reordered before Station, T5/F3.1 — the
-           Station list is filtered by the selected Fuel Type below,
-           so Fuel Type must be resolved first). -->
-      <hr style="margin: 2rem 0;">
-
-      <h3 style="color: #0054a6;">Driver & Vehicle</h3>
-
-      <label for="driver_mode">Choose Mode</label>
-      <select name="driver_mode" id="driver_mode" class="full-width-input" required>
-        <option value="preset">Use Existing Preset</option>
-        <option value="new">Add New Driver</option>
-      </select>
-
-      <!-- Preset Dropdown -->
-      <div id="preset_fields">
-        <label for="driver_select">Select from Existing Presets</label>
-        <select name="driver_select" id="driver_select" class="full-width-input">
-          {% for row in presets %}
-          <option value="{{ row.driver_name }}|{{ row.vehicle_plate }}|{{ row.truck_make }}|{{ row.truck_model }}|{{ row.number_of_wheels }}|{{ row.fuel_type }}">
-            {{ row.driver_name }} – {{ row.vehicle_plate }}
-          </option>
-          {% endfor %}
-        </select>
-      </div>
-
-      <!-- New Driver Inputs -->
-      <div id="new_driver_fields" style="display: none;">
-        <p class="note">Enter details for new driver and vehicle:</p>
-
-        <label for="driver_name">Driver FULL NAME</label>
-        <input type="text" name="driver_name" class="full-width-input">
-
-        <label for="number_of_wheels">Number of Wheels on Vehicle</label>
-        <input type="number" name="number_of_wheels" class="full-width-input">
-
-        <label for="truck_make">Vehicle Make</label>
-        <input type="text" name="truck_make" class="full-width-input">
-
-        <label for="truck_model">Vehicle Model</label>
-        <input type="text" name="truck_model" class="full-width-input">
-
-        <label for="vehicle_plate">Plate Number of Vehicle</label>
-        <input type="text" name="vehicle_plate" class="full-width-input">
-      </div>
-
-      <!-- Fuel Type: single, independent booking-level field (T4/T5,
-           F3.1) — pre-filled from the selected preset's stored default
-           (blank for legacy "Diesel" presets), always overridable. -->
+      <!-- Fuel Type + Station (T1, ARCH-brief-3-fixes — restored to their
+           pre-fuel-types position, ahead of Driver & Vehicle. Fuel Type
+           stays paired immediately before Station since the station list
+           is filtered by the selected Fuel Type. -->
       <label for="fuel_type">Fuel Type</label>
       <select name="fuel_type" id="fuel_type" class="full-width-input" required>
         <option value="" disabled selected>Select fuel type</option>
@@ -433,6 +389,50 @@
       >
       <div class="note">
         Must be at least <strong>24 hours</strong> from now (Asia/Manila).
+      </div>
+
+      <!-- Driver & Vehicle (T1, ARCH-brief-3-fixes — restored to its
+           pre-fuel-types position, after Refuel Date & Time). -->
+      <hr style="margin: 2rem 0;">
+
+      <h3 style="color: #0054a6;">Driver & Vehicle</h3>
+
+      <label for="driver_mode">Choose Mode</label>
+      <select name="driver_mode" id="driver_mode" class="full-width-input" required>
+        <option value="preset">Use Existing Preset</option>
+        <option value="new">Add New Driver</option>
+      </select>
+
+      <!-- Preset Dropdown -->
+      <div id="preset_fields">
+        <label for="driver_select">Select from Existing Presets</label>
+        <select name="driver_select" id="driver_select" class="full-width-input">
+          {% for row in presets %}
+          <option value="{{ row.driver_name }}|{{ row.vehicle_plate }}|{{ row.truck_make }}|{{ row.truck_model }}|{{ row.number_of_wheels }}|{{ row.fuel_type }}">
+            {{ row.driver_name }} – {{ row.vehicle_plate }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <!-- New Driver Inputs -->
+      <div id="new_driver_fields" style="display: none;">
+        <p class="note">Enter details for new driver and vehicle:</p>
+
+        <label for="driver_name">Driver FULL NAME</label>
+        <input type="text" name="driver_name" class="full-width-input">
+
+        <label for="number_of_wheels">Number of Wheels on Vehicle</label>
+        <input type="number" name="number_of_wheels" class="full-width-input">
+
+        <label for="truck_make">Vehicle Make</label>
+        <input type="text" name="truck_make" class="full-width-input">
+
+        <label for="truck_model">Vehicle Model</label>
+        <input type="text" name="truck_model" class="full-width-input">
+
+        <label for="vehicle_plate">Plate Number of Vehicle</label>
+        <input type="text" name="vehicle_plate" class="full-width-input">
       </div>
 
       <button type="submit">Submit Booking</button>

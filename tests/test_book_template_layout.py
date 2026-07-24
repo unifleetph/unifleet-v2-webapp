@@ -48,12 +48,45 @@ def _booking_form(client):
     return resp.data.decode("utf-8")
 
 
-def test_driver_vehicle_precedes_station_section(client):
+def test_fuel_type_and_station_precede_driver_vehicle(client):
+    """T1, ARCH-brief-3-fixes: reverted to pre-fuel-types order — Fuel
+    Type + Station now come before Driver & Vehicle."""
     body = _booking_form(client)
-    driver_idx = body.find('id="driver_mode"')
+    fuel_idx = body.find('id="fuel_type"')
     station_idx = body.find('id="station"')
-    assert driver_idx != -1 and station_idx != -1
-    assert driver_idx < station_idx
+    driver_idx = body.find('id="driver_mode"')
+    assert fuel_idx != -1 and station_idx != -1 and driver_idx != -1
+    assert fuel_idx < driver_idx
+    assert station_idx < driver_idx
+
+
+def test_fuel_type_immediately_precedes_station(client):
+    body = _booking_form(client)
+    fuel_idx = body.find('id="fuel_type"')
+    station_idx = body.find('id="station"')
+    assert fuel_idx != -1 and station_idx != -1
+    assert fuel_idx < station_idx
+    # nothing else with an id="..." sits between them
+    between = body[fuel_idx:station_idx]
+    assert between.count('id="') == 1  # just fuel_type's own id="fuel_type"
+
+
+def test_discount_info_block_precedes_driver_vehicle(client):
+    body = _booking_form(client)
+    discount_idx = body.find("How to Find Discounts")
+    driver_idx = body.find('id="driver_mode"')
+    assert discount_idx != -1 and driver_idx != -1
+    assert discount_idx < driver_idx
+
+
+def test_station_dropdown_has_no_server_rendered_options(client):
+    """Regression guard: station population stays client-side via
+    window.__STATION_TABLE__, unaffected by the reorder."""
+    body = _booking_form(client)
+    select_start = body.find('id="station"')
+    select_end = body.find("</select>", select_start)
+    select_block = body[select_start:select_end]
+    assert "<option" not in select_block
 
 
 def test_fuel_type_select_has_exactly_three_real_options(client):
