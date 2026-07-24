@@ -165,7 +165,7 @@ Set the `body` background color on `/admin/stations` and `/admin/prices` to `#f4
 
 ## Task T3: Customer Contact Columns on Booking Export CSVs
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** medium

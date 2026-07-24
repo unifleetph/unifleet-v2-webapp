@@ -314,6 +314,29 @@ def admin_customers():
         bookings=bookings,
     )
 
+# Booking-export-only columns (T3, ARCH-brief-3-fixes): customer contact
+# info joined via account_code at export time. Deliberately NOT added to
+# VOUCHER_COLUMNS — these are derived/joined fields, not part of the
+# persisted voucher shape (ARCH decision A2).
+_EXPORT_COLUMNS = VOUCHER_COLUMNS + ["Customer Name", "Customer Number", "Customer Email"]
+
+def _with_customer_contact_columns(bookings):
+    """Return bookings with Customer Name/Number/Email joined in via each
+    row's account_code. Blank for bookings with no matching customer."""
+    customers_by_code = {
+        str(c.get("account_code") or "").strip().upper(): c
+        for c in repo.list_customers()
+    }
+    out = []
+    for b in bookings:
+        row = dict(b)
+        customer = customers_by_code.get(str(b.get("account_code") or "").strip().upper())
+        row["Customer Name"] = customer.get("contact_name", "") if customer else ""
+        row["Customer Number"] = customer.get("contact_number", "") if customer else ""
+        row["Customer Email"] = customer.get("email", "") if customer else ""
+        out.append(row)
+    return out
+
 @app.route('/admin/customers/export')
 def admin_customer_export():
     if not require_admin(request):
@@ -328,8 +351,9 @@ def admin_customer_export():
         v for v in repo.list_all_vouchers()
         if str(v.get('account_code') or '').strip().upper() == customer['account_code'].strip().upper()
     ]
+    bookings = _with_customer_contact_columns(bookings)
     export_path = str(data_paths.EXPORTS_DIR / f"customer_{customer['account_code']}_bookings.csv")
-    pd.DataFrame(bookings, columns=VOUCHER_COLUMNS).to_csv(export_path, index=False, encoding='utf-8-sig')
+    pd.DataFrame(bookings, columns=_EXPORT_COLUMNS).to_csv(export_path, index=False, encoding='utf-8-sig')
     return send_file(export_path, as_attachment=True)
 
 @app.route('/admin/bookings/export')
@@ -337,9 +361,9 @@ def admin_bookings_export():
     if not require_admin(request):
         return redirect(url_for('admin_login', next=request.path))
 
-    bookings = repo.list_all_vouchers()
+    bookings = _with_customer_contact_columns(repo.list_all_vouchers())
     export_path = str(data_paths.EXPORTS_DIR / "all_customers_bookings.csv")
-    pd.DataFrame(bookings, columns=VOUCHER_COLUMNS).to_csv(export_path, index=False, encoding='utf-8-sig')
+    pd.DataFrame(bookings, columns=_EXPORT_COLUMNS).to_csv(export_path, index=False, encoding='utf-8-sig')
     return send_file(export_path, as_attachment=True)
 
 # -------------- (CSV upload route stays; you’ll remove visually in admin.html soon) --------------
