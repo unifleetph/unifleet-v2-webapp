@@ -353,6 +353,23 @@ def admin_customers():
         all_customers=all_customers,
     )
 
+@app.route('/admin/customers/export_all')
+def admin_customers_export_all():
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    rows = _all_customer_driver_rows()
+    export_columns = ["Customer Name", "Number", "Email", "Driver Name"]
+    csv_rows = [{
+        "Customer Name": r["contact_name"],
+        "Number": r["contact_number"],
+        "Email": r["email"],
+        "Driver Name": r["driver_name"],
+    } for r in rows]
+    export_path = str(data_paths.EXPORTS_DIR / "all_customers.csv")
+    pd.DataFrame(csv_rows, columns=export_columns).to_csv(export_path, index=False, encoding='utf-8-sig')
+    return send_file(export_path, as_attachment=True)
+
 # Booking-export-only columns (T3, ARCH-brief-3-fixes): customer contact
 # info joined via account_code at export time. Deliberately NOT added to
 # VOUCHER_COLUMNS — these are derived/joined fields, not part of the

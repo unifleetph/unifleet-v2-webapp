@@ -98,6 +98,7 @@
   {% endif %}
 
   <h2>All Customers</h2>
+  <a class="btn" href="{{ url_for('admin_customers_export_all') }}">Export to CSV</a>
   <table id="all-customers-table">
     <thead>
       <tr>

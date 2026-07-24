@@ -318,3 +318,48 @@ def test_customer_with_zero_bookings_gets_one_blank_driver_row(client, monkeypat
     row_start = table.index("Harry")
     row_end = table.index("</tr>", row_start)
     assert "<td></td>" in table[row_start:row_end] or "<td> </td>" in table[row_start:row_end]
+
+
+# ============================================================
+# All-Customers Table CSV Export (T5, ARCH-brief-3-fixes)
+# ============================================================
+
+def test_export_matches_table_shape(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(
+        customers=[HARR],
+        vouchers=[_voucher("HARR", "Alice"), _voucher("HARR", "Bob")],
+    ))
+    _login(client)
+
+    r = client.get("/admin/customers/export_all")
+
+    assert r.status_code == 200
+    import pandas as pd
+    df = pd.read_csv(pd.io.common.BytesIO(r.data))
+    assert list(df.columns) == ["Customer Name", "Number", "Email", "Driver Name"]
+    assert len(df) == 2
+    assert set(df["Driver Name"]) == {"Alice", "Bob"}
+    assert (df["Customer Name"] == "Harry").all()
+
+
+def test_export_includes_zero_booking_customer_as_blank_driver_row(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(customers=[HARR], vouchers=[]))
+    _login(client)
+
+    r = client.get("/admin/customers/export_all")
+
+    assert r.status_code == 200
+    import pandas as pd
+    df = pd.read_csv(pd.io.common.BytesIO(r.data))
+    assert len(df) == 1
+    assert df.loc[0, "Customer Name"] == "Harry"
+    assert pd.isna(df.loc[0, "Driver Name"])
+
+
+def test_export_requires_admin(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(customers=[HARR], vouchers=[]))
+
+    r = client.get("/admin/customers/export_all")
+
+    assert r.status_code == 302
+    assert "/admin/login" in r.headers["Location"]

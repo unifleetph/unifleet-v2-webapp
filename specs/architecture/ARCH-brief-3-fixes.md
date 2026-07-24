@@ -296,7 +296,7 @@ Add a table below the search box on `/admin/customers`, always visible regardles
 
 ## Task T5: All-Customers Table CSV Export
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** low
