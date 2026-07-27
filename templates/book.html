@@ -227,7 +227,7 @@
     <img src="{{ url_for('static', filename='UniFleet Logo.png') }}" alt="UniFleet Logo">
   </header>
 
-  <div class="page-title">Book a Refuel</div>
+  <div class="page-title">Book a Refuel (Prepay for Discounts)</div>
 
   <main class="centered-content">
 
@@ -250,10 +250,21 @@
       <input type="text" name="account_code" id="account_code" maxlength="4" class="full-width-input" required>
       <button type="submit">Continue</button>
     </form>
-    <p class="note" style="margin-top: 0.8rem;">
-      Need to register a fleet first?
-      <a href="{{ url_for('register') }}">Register your fleet</a>
-    </p>
+    <div style="background-color: #e6f0fb; padding: 1.5rem; border-radius: 8px; margin-top: 1rem;">
+      <p style="text-align:center; font-weight:bold; margin-top:0;">
+        <a href="{{ url_for('register') }}">Register Vehicle To Get 4-Letter Account CODE</a>
+      </p>
+      <p style="margin-bottom:0.4rem;"><strong>How It Works</strong></p>
+      <ol style="margin-top:0;">
+        <li>Register Vehicle (link above)</li>
+        <li>Enter Details</li>
+        <li>Get CODE</li>
+      </ol>
+      <p style="margin-bottom:0;">
+        <strong>Malaking tipid. Mas mahabang biyahe.</strong><br>
+        Big savings. Longer trips.
+      </p>
+    </div>
     {% endif %}
 
     {% if customer %}
