@@ -127,6 +127,39 @@ def test_fleet_size_coercion(schema_db):
 
 
 # ============================================================
+# create_customer_if_absent (review fix, account_code uniqueness)
+# ============================================================
+
+def test_create_customer_if_absent_succeeds_when_free(schema_db):
+    repo = PostgresRepo(dsn=schema_db)
+    try:
+        result = repo.create_customer_if_absent(dict(SAMPLE))
+        got = repo.get_customer("HARR")
+    finally:
+        repo.close()
+
+    assert result is not None
+    assert result["account_code"] == "HARR"
+    assert got is not None
+
+
+def test_create_customer_if_absent_returns_none_on_conflict(schema_db):
+    """A collision returns None and does NOT overwrite the existing
+    row's fields — the direct regression test for the silent-merge bug
+    create_customer()'s ON CONFLICT DO UPDATE has."""
+    repo = PostgresRepo(dsn=schema_db)
+    try:
+        repo.create_customer(dict(SAMPLE))
+        result = repo.create_customer_if_absent({**SAMPLE, "company_name": "Different Co"})
+        got = repo.get_customer("HARR")
+    finally:
+        repo.close()
+
+    assert result is None
+    assert got["company_name"] == "Harrods"
+
+
+# ============================================================
 # list_customers (T2, ARCH-customer-details-page)
 # ============================================================
 

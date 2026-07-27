@@ -4,6 +4,7 @@ from flask import (
 )
 import os
 import io
+import fcntl
 import hmac
 import subprocess
 import pandas as pd
@@ -602,19 +603,46 @@ def ops_set_status(voucher_id, new_status):
     next_url = request.args.get("next") or request.referrer or url_for("admin")
     return redirect(next_url)
 
+def _append_customer_csv_if_absent(new_row):
+    """Raw-CSV half of /register's dual-write (independent of whichever
+    `repo` backend is active — always keeps data/customers.csv current).
+    Locked against the same sidecar lock file CSVRepo.create_customer_if_absent
+    uses, so if `repo` happens to be CSVRepo too, the two never race or
+    double-append. If account_code is already present (unexpected drift,
+    or repo already wrote it under CSVRepo), skip and warn instead of
+    appending a duplicate row (review fix, account_code uniqueness)."""
+    customers_path = str(data_paths.CUSTOMERS_CSV)
+    lock_path = customers_path + ".lock"
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    with open(lock_path, "a+") as lockfile:
+        fcntl.flock(lockfile.fileno(), fcntl.LOCK_EX)
+        try:
+            if os.path.isfile(customers_path):
+                df = pd.read_csv(customers_path, dtype=str)
+            else:
+                df = pd.DataFrame(columns=list(new_row.keys()))
+
+            for col in new_row.keys():
+                if col not in df.columns:
+                    df[col] = ''
+
+            code = str(new_row.get('account_code') or '').strip().upper()
+            existing = df['account_code'].astype(str).str.strip().str.upper() == code
+            if existing.any():
+                print(f"⚠️ customers.csv already has account_code={code}, skipping duplicate append")
+                return
+
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            df.to_csv(customers_path, index=False, encoding='utf-8-sig')
+        finally:
+            fcntl.flock(lockfile.fileno(), fcntl.LOCK_UN)
+
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
         company_name = request.form.get('company_name', '').strip()
         clean = re.sub(r'[^A-Za-z]', '', company_name.upper())
         account_code = (clean[:4] if len(clean) >= 4 else ''.join(random.choices(string.ascii_uppercase, k=4)))
-
-        # Collision-safe: if the derived code already belongs to a customer,
-        # generate an alternate unique code instead of overwriting them.
-        _attempts = 0
-        while repo.customer_exists(account_code) and _attempts < 10:
-            account_code = ''.join(random.choices(string.ascii_uppercase, k=4))
-            _attempts += 1
 
         def sanitize(v):
             return str(v).strip() if v else ''
@@ -632,27 +660,35 @@ def register():
             'hq_locations': ''
         }
 
-        # Dual-write (transition): persist to Postgres via the repo. On
-        # failure, keep going so the CSV append below still records the
-        # signup (do not lose the registration).
-        try:
-            repo.create_customer(new_row)
-        except Exception as e:
-            print(f"⚠️ create_customer (Postgres) failed for {account_code}: {e}")
+        # Collision-safe: atomically attempt the insert; on collision
+        # (return value None, not an exception), generate a new random
+        # code and retry. create_customer_if_absent() never overwrites
+        # an existing row, unlike create_customer() (review fix,
+        # account_code uniqueness — closes a TOCTOU race + a silent
+        # give-up-after-10-attempts bug that used to let this loop
+        # exit having proceeded with a still-colliding code).
+        _attempts = 0
+        stored = None
+        while _attempts < 10:
+            new_row['account_code'] = account_code
+            try:
+                stored = repo.create_customer_if_absent(dict(new_row))
+            except Exception as e:
+                print(f"⚠️ create_customer_if_absent (Postgres) failed for {account_code}: {e}")
+                stored = "pg_error"  # sentinel: DB unreachable, proceed with this code
+                                      # rather than block registration on an outage —
+                                      # preserves the existing Postgres-down resilience.
+            if stored:
+                break
+            account_code = ''.join(random.choices(string.ascii_uppercase, k=4))
+            _attempts += 1
 
-        customers_path = str(data_paths.CUSTOMERS_CSV)
-        if os.path.isfile(customers_path):
-            df = pd.read_csv(customers_path, dtype=str)
-        else:
-            df = pd.DataFrame(columns=list(new_row.keys()))
+        if not stored:
+            flash("Could not generate a unique account code. Please try registering again.", "error")
+            return render_template('register.html')
 
-        # Ensure legacy columns still exist even if older file/header differs
-        for col in new_row.keys():
-            if col not in df.columns:
-                df[col] = ''
-
-        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        df.to_csv(customers_path, index=False, encoding='utf-8-sig')
+        new_row['account_code'] = account_code
+        _append_customer_csv_if_absent(new_row)
         return redirect(f"/register/success?account_code={account_code}")
 
     return render_template('register.html')

@@ -1,4 +1,5 @@
 # persistence.py
+import fcntl
 import os, sqlite3, pandas as pd
 from typing import List, Dict, Optional
 from models import VOUCHER_COLUMNS, SCHEMA_SQL
@@ -278,6 +279,27 @@ class CSVRepo:
             str(data_paths.CUSTOMERS_CSV), index=False, encoding="utf-8-sig"
         )
         return self.get_customer(code)
+
+    def create_customer_if_absent(self, data: Dict) -> Optional[Dict]:
+        """Locked read-check-write: returns the stored row on success,
+        None if account_code was already present. Never overwrites an
+        existing row, unlike create_customer(). Serializes callers via
+        an fcntl.flock on a sidecar lock file — POSIX-only, protects
+        against concurrent callers on the same host (the only realistic
+        writer here; the offline backfill script never runs concurrently
+        with live traffic)."""
+        d = data or {}
+        code = str(d.get("account_code") or "").strip().upper()
+        lock_path = str(data_paths.CUSTOMERS_CSV) + ".lock"
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        with open(lock_path, "a+") as lockfile:
+            fcntl.flock(lockfile.fileno(), fcntl.LOCK_EX)
+            try:
+                if self.get_customer(code) is not None:
+                    return None
+                return self.create_customer(d)
+            finally:
+                fcntl.flock(lockfile.fileno(), fcntl.LOCK_UN)
 
     def get_customer(self, account_code: str) -> Optional[Dict]:
         """Fetch a customer by account_code (case-insensitive). None if absent."""

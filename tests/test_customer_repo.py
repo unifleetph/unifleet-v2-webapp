@@ -95,6 +95,44 @@ def test_fleet_size_coercion(csv_repo):
 
 
 # ============================================================
+# create_customer_if_absent (review fix, account_code uniqueness)
+# ============================================================
+
+def test_create_customer_if_absent_succeeds_when_free(csv_repo):
+    result = csv_repo.create_customer_if_absent(dict(SAMPLE))
+
+    assert result is not None
+    assert result["account_code"] == "HARR"
+    assert csv_repo.get_customer("HARR") is not None
+
+
+def test_create_customer_if_absent_returns_none_on_conflict(csv_repo):
+    csv_repo.create_customer(dict(SAMPLE))
+
+    result = csv_repo.create_customer_if_absent({**SAMPLE, "company_name": "Different Co"})
+
+    assert result is None
+    # original row untouched — no silent merge
+    assert csv_repo.get_customer("HARR")["company_name"] == "Harrods"
+
+
+def test_create_customer_if_absent_locking_smoke_test(csv_repo):
+    """Two sequential calls with the same code: second returns None,
+    exactly one row exists for that code (proves the lock-acquire/
+    release cycle doesn't deadlock or leak, and the check-then-write
+    is correctly serialized against itself)."""
+    import pandas as pd
+
+    first = csv_repo.create_customer_if_absent(dict(SAMPLE))
+    second = csv_repo.create_customer_if_absent(dict(SAMPLE))
+
+    assert first is not None
+    assert second is None
+    df = pd.read_csv(data_paths.CUSTOMERS_CSV, dtype=str).fillna("")
+    assert (df["account_code"].str.strip().str.upper() == "HARR").sum() == 1
+
+
+# ============================================================
 # list_customers (T2, ARCH-customer-details-page)
 # ============================================================
 

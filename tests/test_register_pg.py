@@ -25,21 +25,21 @@ FORM = {
 
 
 class RepoStub:
-    """Records create_customer calls; customer_exists follows a scripted
-    sequence, then defaults to False."""
+    """Records create_customer_if_absent calls; a scripted collision
+    sequence controls whether each call reports the code as already
+    taken (returns None) or succeeds (records + returns the row)."""
 
     def __init__(self, exists_seq=None):
         self.created = []
         self._exists_seq = list(exists_seq or [])
         self.exists_calls = []
 
-    def customer_exists(self, code):
+    def create_customer_if_absent(self, data):
+        code = data.get("account_code")
         self.exists_calls.append(code)
-        if self._exists_seq:
-            return self._exists_seq.pop(0)
-        return False
-
-    def create_customer(self, data):
+        taken = self._exists_seq.pop(0) if self._exists_seq else False
+        if taken:
+            return None
         self.created.append(dict(data))
         return dict(data)
 
@@ -100,8 +100,22 @@ def test_collision_generates_unique_code(client, monkeypatch):
     code = stub.created[0]["account_code"]
     assert code != "HARR"
     assert re.fullmatch(r"[A-Z]{4}", code)
-    # create_customer never called against the pre-existing HARR
+    # create_customer_if_absent never succeeded for the pre-existing HARR
     assert all(c["account_code"] != "HARR" for c in stub.created)
+
+
+def test_exhausted_retries_shows_error(client, monkeypatch):
+    """If every attempt collides (10 exhausted), flash an error and
+    re-render the form — no customer is created on either backend."""
+    stub = RepoStub(exists_seq=[True] * 10)
+    _use_repo(monkeypatch, stub)
+
+    resp = client.post("/register", data=FORM)
+
+    assert resp.status_code == 200
+    assert b"Could not generate a unique account code" in resp.data
+    assert len(stub.created) == 0
+    assert not data_paths.CUSTOMERS_CSV.exists()
 
 
 # ============================================================
@@ -112,7 +126,7 @@ def test_pg_failure_still_writes_csv(client, monkeypatch):
     """If create_customer raises, the CSV append still happens and no 500."""
 
     class FailRepo(RepoStub):
-        def create_customer(self, data):
+        def create_customer_if_absent(self, data):
             raise RuntimeError("pg down")
 
     stub = FailRepo(exists_seq=[False])

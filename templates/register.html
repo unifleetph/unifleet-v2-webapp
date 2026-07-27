@@ -115,6 +115,18 @@
   <div class="page-title">Register Your Fleet for Discounts</div>
 
   <main class="centered-content">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <ul class="flashes" style="list-style: none; padding: 0; margin: 1rem 0;">
+          {% for category, message in messages %}
+            <li style="background-color: #ffe0e0; color: #a80000; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; font-weight: bold;">
+              {{ message }}
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+
     <section class="info-box">
       <strong>Save up to ₱1,000 per Diesel re-fuel with the UniFleet fuel discount program!</strong>
       Sign-up now to receive our Fuel Discount Locator today.<br><br>

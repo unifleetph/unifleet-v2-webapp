@@ -471,6 +471,46 @@ class PostgresRepo:
             conn.commit()
         return self.get_customer(code)
 
+    def create_customer_if_absent(self, data: Dict) -> Optional[Dict]:
+        """Atomically insert a new customer iff account_code is not taken.
+
+        Uses INSERT ... ON CONFLICT (account_code) DO NOTHING RETURNING *
+        — a single statement, so there's no separate exists-check +
+        insert race. Returns the inserted row on success, None if the
+        code was already taken (caller should retry with a different
+        code). Unlike create_customer(), this NEVER overwrites an
+        existing row — safe to use in a collision-retry loop.
+        """
+        d = data or {}
+        code = str(d.get("account_code") or "").strip().upper()
+        with self._pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    """
+                    INSERT INTO customers
+                        (account_code, contact_name, contact_number, email,
+                         company_name, fleet_size, areas, refuel_locations,
+                         hq_locations)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (account_code) DO NOTHING
+                    RETURNING *
+                    """,
+                    (
+                        code or None,
+                        _clean_str(d.get("contact_name")),
+                        _clean_str(d.get("contact_number")),
+                        _clean_str(d.get("email")),
+                        _clean_str(d.get("company_name")),
+                        _nullable_int(d.get("fleet_size")),
+                        _clean_str(d.get("areas")),
+                        _clean_str(d.get("refuel_locations")),
+                        _clean_str(d.get("hq_locations")),
+                    ),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return row
+
     def get_customer(self, account_code: str) -> Optional[Dict]:
         """Fetch a customer by account_code (case-insensitive). None if absent."""
         code = str(account_code or "").strip().upper()
