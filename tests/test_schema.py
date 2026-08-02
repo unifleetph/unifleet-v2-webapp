@@ -34,6 +34,7 @@ EXPECTED_TABLES = {
 
 MONEY_COLUMNS = [
     "requested_amount_php",
+    "requested_total_php",
     "live_price_php_per_liter",
     "discount_per_liter",
     "discount_total",

@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS vouchers (
     fuel_type                        VARCHAR(30),
 
     requested_amount_php             NUMERIC(12,2),
+    requested_total_php              NUMERIC(12,2),
     liters_requested                 NUMERIC(12,4),
     transaction_date                 TIMESTAMPTZ,
     expected_refill_date             TIMESTAMPTZ,
@@ -110,6 +111,14 @@ CREATE INDEX IF NOT EXISTS idx_vouchers_created_at        ON vouchers(created_at
 -- where the table already exists. Nullable — historical rows stay NULL
 -- and are displayed as "Diesel" at the template layer, not backfilled.
 ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS fuel_type VARCHAR(30);
+
+-- Brief-5 (calculator inversion): the calculator's input now means "total
+-- fuel amount" (T), not "prepaid cash". requested_amount_php keeps its
+-- existing meaning (amount charged); this new column holds T so redemption
+-- can derive liters/discount from the right base instead of re-deriving a
+-- wrong number from the discounted charge amount. Nullable — historical
+-- rows stay NULL and fall back to the pre-Brief-5 formula (ARCH-brief-5).
+ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS requested_total_php NUMERIC(12,2);
 
 -- ============================================================
 -- Presets: per-customer driver/vehicle defaults. UNIQUE on
