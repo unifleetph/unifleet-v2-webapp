@@ -450,7 +450,7 @@ Extend the existing JSON/fetch `/admin/prices/update` endpoint to accept an opti
 
 ## Task T5: Admin prices table UI — consolidated save + sticky header
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** ui
 > **Effort:** s
 > **Priority:** high

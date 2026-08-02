@@ -40,6 +40,35 @@
       text-align: center;
     }
 
+    /* Sticky header (Brief-5, ARCH-brief-5 T5, R11): the whole <thead>
+       sticks as one unit within the scroll container below, covering
+       both header rows without per-row offset math. */
+    .table-scroll {
+      max-height: 70vh;
+      overflow: auto;
+      border: 1px solid #e5e7eb;
+    }
+    .table-scroll table { border: none; }
+    thead { position: sticky; top: 0; z-index: 2; }
+    thead th { background: #f9fafb; }
+    thead tr:first-child th { background: #f9fafb; }
+
+    .save-feedback {
+      font-size: 12px;
+      margin-left: 4px;
+    }
+    .save-feedback.ok { color: #059669; }
+    .save-feedback.err { color: #b91c1c; }
+    .field-error {
+      display: block;
+      font-size: 11px;
+      color: #b91c1c;
+      margin-top: 2px;
+    }
+    input.field-invalid {
+      border-color: #b91c1c;
+    }
+
     /* Inactive station styling — shared visual language with
        templates/admin_stations.html (grayed-out row, not hidden,
        per ARCH-station-management A3/A4). */
@@ -64,6 +93,7 @@
     <span class="muted">Edits are saved instantly, per fuel type, to the <span class="mono">prices</span>/<span class="mono">discounts</span> tables. Internal use only.</span>
   </div>
 
+  <div class="table-scroll">
   <table>
     <thead>
       <tr>
@@ -95,21 +125,23 @@
           <div class="row">
             <input class="price-input" type="number" step="0.01" min="0.01" max="200"
                    value="{{ '%.2f'|format(fuel.price) if fuel and fuel.price is not none else '' }}" />
-            <button class="btn save-price-btn" type="button" data-fuel-type="{{ ft }}">Save</button>
           </div>
+          <span class="field-error" hidden></span>
           <span class="updated-readable">{{ fuel.price_updated_readable if fuel else '—' }}</span>
         </td>
 
-        <!-- DISCOUNT cell -->
+        <!-- DISCOUNT cell (Brief-5, ARCH-brief-5 T5, R12: 1 Save button per
+             fuel type, saving price+discount together — button lives here,
+             reads the sibling price-cell's input in the same row) -->
         <td class="discount-cell" data-fuel-type="{{ ft }}" data-epoch="{{ fuel.discount_updated_at if fuel else 0 }}">
-          <form action="{{ '/admin/discounts/update?key=' ~ (request.args.get('key') or '') }}" method="POST" class="row">
-            <input type="hidden" name="station" value="{{ s.name }}">
-            <input type="hidden" name="fuel_type" value="{{ ft }}">
-            <input class="discount-input" type="number" step="0.01" min="0" name="discount_per_liter"
+          <div class="row">
+            <input class="discount-input" type="number" step="0.01" min="0" max="15"
                    placeholder="0.00"
                    value="{{ '%.2f'|format(fuel.discount) if fuel and fuel.discount is not none else '' }}" />
-            <button class="btn" type="submit">Save</button>
-          </form>
+            <button class="btn save-combined-btn" type="button" data-fuel-type="{{ ft }}">Save</button>
+            <span class="save-feedback" aria-hidden="true"></span>
+          </div>
+          <span class="field-error" hidden></span>
           <span class="updated-readable">{{ fuel.discount_updated_readable if fuel else '—' }}</span>
         </td>
         {% endfor %}
@@ -117,6 +149,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
 
   <p class="muted" style="margin-top:12px">
     Tip: Bookmark this page with your <span class="mono">?key=</span> query string for quick access.
@@ -196,35 +229,77 @@
     // Initial pass on load
     document.querySelectorAll('.price-cell, .discount-cell').forEach(markCellStaleIfNeeded);
 
-    // PRICE Save handler — one per fuel-type cell, reads fuel_type from
-    // the button's data attribute.
-    document.querySelectorAll('.save-price-btn').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        const cell = e.target.closest('.price-cell');
-        const row = e.target.closest('tr');
-        const stationId = row.getAttribute('data-station-id');
-        const fuelType = btn.getAttribute('data-fuel-type');
-        const price = parseFloat(cell.querySelector('.price-input').value);
+    // Combined price+discount Save handler — one button per fuel-type
+    // (Brief-5, ARCH-brief-5 T5, R12/R13/R14/R15). Reads both sibling
+    // cells in the row, posts both fields in one request, no page
+    // reload/scroll change. All-or-nothing validation is enforced
+    // server-side (T4); on failure the specific invalid field is
+    // highlighted here without touching the other field's saved value.
+    function clearFieldError(cell) {
+      const err = cell.querySelector('.field-error');
+      err.hidden = true;
+      err.textContent = '';
+      const input = cell.querySelector('input');
+      if (input) input.classList.remove('field-invalid');
+    }
 
+    function showFieldError(cell, message) {
+      const err = cell.querySelector('.field-error');
+      err.hidden = false;
+      err.textContent = message;
+      const input = cell.querySelector('input');
+      if (input) input.classList.add('field-invalid');
+    }
+
+    function showSaveFeedback(btn, ok, message) {
+      const el = btn.parentElement.querySelector('.save-feedback');
+      if (!el) return;
+      el.textContent = ok ? '✔' : '✖';
+      el.className = 'save-feedback ' + (ok ? 'ok' : 'err');
+      el.title = message || '';
+      setTimeout(() => { el.textContent = ''; el.className = 'save-feedback'; el.title = ''; }, 2000);
+    }
+
+    document.querySelectorAll('.save-combined-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const row = e.target.closest('tr');
+        const fuelType = btn.getAttribute('data-fuel-type');
+        const priceCell = row.querySelector('.price-cell[data-fuel-type="' + fuelType + '"]');
+        const discountCell = row.querySelector('.discount-cell[data-fuel-type="' + fuelType + '"]');
+        const stationId = row.getAttribute('data-station-id');
+        const price = parseFloat(priceCell.querySelector('.price-input').value);
+        const discount = parseFloat(discountCell.querySelector('.discount-input').value);
+
+        clearFieldError(priceCell);
+        clearFieldError(discountCell);
         btn.disabled = true;
         try {
           const res = await fetch('/admin/prices/update?key=' + encodeURIComponent(ADMIN_KEY), {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ station_id: stationId, fuel_type: fuelType, price })
+            body: JSON.stringify({ station_id: stationId, fuel_type: fuelType, price, discount_per_liter: discount })
           });
           const data = await res.json();
-          if (!res.ok || !data.ok) throw new Error(data.error || 'Failed');
+          if (!res.ok || !data.ok) {
+            const targetCell = data.field === 'discount' ? discountCell : priceCell;
+            showFieldError(targetCell, data.error || 'Save failed');
+            showSaveFeedback(btn, false, data.error);
+            return;
+          }
 
-          cell.setAttribute('data-epoch', data.updated_at);
+          priceCell.setAttribute('data-epoch', data.updated_at);
           const readable = new Date(data.updated_at * 1000).toISOString().slice(0, 16).replace('T', ' ');
-          cell.querySelector('.updated-readable').textContent = readable;
-          markCellStaleIfNeeded(cell);
+          priceCell.querySelector('.updated-readable').textContent = readable;
+          markCellStaleIfNeeded(priceCell);
 
-          toast('Saved ✔');
+          discountCell.setAttribute('data-epoch', data.updated_at);
+          discountCell.querySelector('.updated-readable').textContent = readable;
+          markCellStaleIfNeeded(discountCell);
+
+          showSaveFeedback(btn, true);
         } catch (err) {
           console.error(err);
-          toast('Save failed: ' + err.message, false);
+          showSaveFeedback(btn, false, err.message);
         } finally {
           btn.disabled = false;
         }
