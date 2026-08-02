@@ -389,7 +389,7 @@ This endpoint duplicates the calculator's math for external/preview callers. It 
 
 ## Task T4: Admin combined price+discount save endpoint
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** high

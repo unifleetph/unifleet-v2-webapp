@@ -31,6 +31,10 @@ class FakePriceStore:
             return None
         return {"id": station_id, "price_php_per_liter": price, "updated_at": 0}
 
+    def list_all_stations(self, include_inactive=True):
+        return [{"id": "cleanfuel_valenzuela", "name": "Cleanfuel – Valenzuela",
+                  "brand": "Cleanfuel", "location": "Valenzuela", "is_active": True}]
+
     def set_price(self, station_id, fuel_type, new_price):
         if new_price <= 0 or new_price > 200:
             raise ValueError("Unreasonable price. Must be 0 < price ≤ 200.")
@@ -160,6 +164,79 @@ def test_discount_out_of_range_rejected(client, fake_discount_store):
     r = client.post("/admin/discounts/update", data={
         "station": "Cleanfuel – Valenzuela", "fuel_type": "Biodiesel", "discount_per_liter": "99"
     })
+    assert fake_discount_store.set_calls == []
+
+
+# ============================================================
+# Brief-5 (ARCH-brief-5, T4): combined price+discount save
+# ============================================================
+
+def test_combined_save_writes_both_price_and_discount(client, fake_price_store, fake_discount_store, monkeypatch):
+    _login(client)
+    monkeypatch.setattr(main, "append_price_history", lambda **kw: None)
+
+    r = client.post("/admin/prices/update", json={
+        "station_id": "cleanfuel_valenzuela", "fuel_type": "Premium",
+        "price": 65.0, "discount_per_liter": 2.5
+    })
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["price_php_per_liter"] == 65.0
+    assert data["discount_per_liter"] == 2.5
+    assert ("cleanfuel_valenzuela", "Premium", 65.0) in fake_price_store.set_calls
+    assert ("Cleanfuel – Valenzuela", "Premium", 2.5) in fake_discount_store.set_calls
+
+
+def test_combined_save_invalid_discount_saves_neither(client, fake_price_store, fake_discount_store, monkeypatch):
+    _login(client)
+    monkeypatch.setattr(main, "append_price_history", lambda **kw: None)
+
+    r = client.post("/admin/prices/update", json={
+        "station_id": "cleanfuel_valenzuela", "fuel_type": "Premium",
+        "price": 65.0, "discount_per_liter": 99
+    })
+
+    assert r.status_code == 400
+    data = r.get_json()
+    assert data["ok"] is False
+    assert data["field"] == "discount"
+    assert fake_price_store.set_calls == []
+    assert fake_discount_store.set_calls == []
+
+
+def test_combined_save_invalid_price_saves_neither(client, fake_price_store, fake_discount_store, monkeypatch):
+    _login(client)
+    monkeypatch.setattr(main, "append_price_history", lambda **kw: None)
+
+    r = client.post("/admin/prices/update", json={
+        "station_id": "cleanfuel_valenzuela", "fuel_type": "Premium",
+        "price": 999, "discount_per_liter": 2.5
+    })
+
+    assert r.status_code == 400
+    data = r.get_json()
+    assert data["ok"] is False
+    assert data["field"] == "price"
+    assert fake_price_store.set_calls == []
+    assert fake_discount_store.set_calls == []
+
+
+def test_combined_save_price_only_payload_still_works(client, fake_price_store, fake_discount_store, monkeypatch):
+    """Backward compat: a payload with only `price` (no discount_per_liter)
+    still saves price; discount is left untouched."""
+    _login(client)
+    monkeypatch.setattr(main, "append_price_history", lambda **kw: None)
+
+    r = client.post("/admin/prices/update", json={
+        "station_id": "cleanfuel_valenzuela", "fuel_type": "Premium", "price": 65.0
+    })
+
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["ok"] is True
+    assert ("cleanfuel_valenzuela", "Premium", 65.0) in fake_price_store.set_calls
     assert fake_discount_store.set_calls == []
 
 

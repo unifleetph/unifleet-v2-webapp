@@ -1481,6 +1481,33 @@ def admin_prices_update():
         if fuel_type not in FUEL_TYPES:
             return jsonify({"ok": False, "error": f"Invalid fuel_type: {fuel_type!r}"}), 400
 
+        # Brief-5 (ARCH-brief-5, T4): discount_per_liter is optional, for
+        # backward compat with a price-only payload. When present, both
+        # price and discount are validated BEFORE either is written
+        # (all-or-nothing per fuel type, R15) — same 0-15 bound as the
+        # legacy admin_discounts_update route.
+        has_discount = "discount_per_liter" in payload
+        new_discount = None
+        if has_discount:
+            try:
+                new_discount = float(payload.get("discount_per_liter"))
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "Discount must be a number.", "field": "discount"}), 400
+            if new_discount < 0 or new_discount > 15:
+                return jsonify({"ok": False, "error": "Discount must be between 0 and 15 PHP/L.", "field": "discount"}), 400
+
+        if new_price <= 0 or new_price > 200:
+            return jsonify({"ok": False, "error": "Unreasonable price. Must be 0 < price ≤ 200.", "field": "price"}), 400
+
+        station_name = None
+        if has_discount:
+            for s in price_store.list_all_stations():
+                if s.get("id") == station_id:
+                    station_name = s.get("name")
+                    break
+            if station_name is None:
+                return jsonify({"ok": False, "error": f"Station '{station_id}' not found"}), 404
+
         before = price_store.get_station(station_id, fuel_type) or {}
         old_price = before.get("price_php_per_liter")
 
@@ -1493,12 +1520,18 @@ def admin_prices_update():
             updated_unix=updated["updated_at"]
         )
 
-        return jsonify({
+        response = {
             "ok": True,
             "station_id": station_id,
             "price_php_per_liter": updated["price_php_per_liter"],
             "updated_at": updated["updated_at"],
-        })
+        }
+
+        if has_discount:
+            discount_store.set(station_name, fuel_type, new_discount, actor="admin", reason="manual update")
+            response["discount_per_liter"] = new_discount
+
+        return jsonify(response)
     except KeyError as e:
         return jsonify({"ok": False, "error": str(e)}), 404
     except ValueError as e:
