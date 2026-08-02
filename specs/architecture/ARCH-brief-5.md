@@ -334,7 +334,7 @@ Write the "total_dispensed reconstructs" test first (it defines the contract), t
 
 ## Task T3: Rewrite `api_price_preview` to the subtract-based model
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** medium

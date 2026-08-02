@@ -1628,9 +1628,15 @@ def api_price_preview():
     if amount <= 0 or price <= 0:
         return jsonify({"ok": False, "error": "invalid amount or price"}), 400
 
+    # Brief-5 (ARCH-brief-5, T3): amount now means "total fuel amount" (T),
+    # not prepaid cash — liters_requested/discount_total formulas are
+    # unchanged (still amount/price and liters*dpl), but total_dispensed
+    # is the entered total itself (T), and you_pay_php is the new
+    # subtract-based charge, mirroring book()'s server-side calc (T2).
     liters_requested = round(amount / price, 2)
     discount_total = round(liters_requested * dpl, 2)
-    total_dispensed = round(amount + discount_total, 2)
+    you_pay_php = round(amount - discount_total, 2)
+    total_dispensed = amount
     liters_dispensed = round(liters_requested + (discount_total / price if price else 0), 2)
 
     is_stale = False
@@ -1651,6 +1657,7 @@ def api_price_preview():
         "discount_per_liter": dpl,
         "liters_requested": liters_requested,
         "discount_total": discount_total,
+        "you_pay_php": you_pay_php,
         "total_dispensed": total_dispensed,
         "liters_dispensed": liters_dispensed
     })

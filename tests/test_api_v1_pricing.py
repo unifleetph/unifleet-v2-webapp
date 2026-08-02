@@ -118,3 +118,43 @@ def test_price_preview_station_not_found_still_404(client):
 def test_price_preview_invalid_amount_still_400(client):
     r = client.get("/api/v1/price_preview?station=Cleanfuel&amount=notanumber")
     assert r.status_code == 400
+
+
+# ============================================================
+# Brief-5 (ARCH-brief-5, T3): subtract-based model — amount now means
+# "total fuel amount" (T), not prepaid cash.
+# ============================================================
+
+def test_price_preview_returns_you_pay_php(client):
+    # Biodiesel price 60.0, amount=1000 (T), discount_per_liter=2.0
+    # liters = 1000/60 = 16.6667 -> round 16.67, discount_total = 16.67*2.0 = 33.34
+    # you_pay_php = 1000 - 33.34 = 966.66
+    r = client.get("/api/v1/price_preview?station=Cleanfuel&amount=1000&discount_per_liter=2.0")
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["you_pay_php"] == pytest.approx(966.66, abs=0.01)
+
+
+def test_price_preview_total_dispensed_reflects_new_semantics(client):
+    # total_dispensed now represents the entered total (T) itself, not
+    # amount + discount_total (the old add-on-top intent) — it must equal
+    # the entered amount, not amount + discount_total.
+    r = client.get("/api/v1/price_preview?station=Cleanfuel&amount=1000&discount_per_liter=2.0")
+    data = r.get_json()
+    assert data["total_dispensed"] == pytest.approx(1000.0, abs=0.01)
+    assert data["total_dispensed"] != pytest.approx(1000.0 + data["discount_total"], abs=0.01)
+
+
+# ============================================================
+# Regression guard: existing response shape/formulas unaffected
+# ============================================================
+
+def test_price_preview_existing_fields_still_present_and_correct(client):
+    r = client.get("/api/v1/price_preview?station=Cleanfuel&amount=1000&discount_per_liter=2.0")
+    data = r.get_json()
+    assert round(data["liters_requested"], 2) == round(1000 / 60.0, 2)
+    assert data["discount_total"] == pytest.approx(round(data["liters_requested"] * 2.0, 2), abs=0.01)
+    assert data["price_php_per_liter"] == 60.0
+    assert data["station_id"] == "s1"
+    assert data["station_name"] == "Cleanfuel"
+    assert "price_is_stale" in data
