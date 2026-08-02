@@ -133,7 +133,7 @@
 
       <div class="payment-instructions">
         <h2 style="margin-top:0; color:#0054a6;">Next Step: Send Payment</h2>
-        <p class="amount-due">Amount Due: ₱1 (InstaPay or PESONet)</p>
+        <p class="amount-due">Amount Due: ₱1</p>
 
         <div class="payment-box">
           <h3>🏦 Send to INSTAPAY</h3>
@@ -141,6 +141,11 @@
           <p><strong>Account Number:</strong> 000228034271</p>
           <p>Kunan ng screenshot ang iyong payment reference number. Maaaring makipag-ugnayan ang UniFleet para sa kumpirmasyon at beripikasyon.</p>
           <p>Screenshot your payment reference number. UniFleet may reach out for confirmation and verification.</p>
+        </div>
+
+        <div class="payment-qr">
+          <img src="{{ url_for('static', filename='instapay_qr.png') }}" alt="InstaPay QR code">
+          <p class="qr-caption">Scan with your banking app (InstaPay) to pay.</p>
         </div>
 
       <div class="btn-row">

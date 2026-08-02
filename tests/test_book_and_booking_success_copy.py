@@ -94,7 +94,7 @@ def _valid_refuel():
     return (datetime.now(manila) + timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M")
 
 
-def test_booking_success_shows_instapay_copy_no_qr(client, monkeypatch):
+def test_booking_success_shows_instapay_copy_and_qr(client, monkeypatch):
     stub = RepoStub(customer=dict(CUST))
     monkeypatch.setattr(main, "repo", stub)
     monkeypatch.setattr(
@@ -122,9 +122,21 @@ def test_booking_success_shows_instapay_copy_no_qr(client, monkeypatch):
 
     assert resp.status_code == 200
     body = resp.data.decode("utf-8")
-    assert "Amount Due: ₱1 (InstaPay or PESONet)" in body
+
+    # R1: PESONet removed, exact amount-due text (Brief-5, ARCH-brief-5 T7)
+    assert "PESONet" not in body
+    assert "Amount Due: ₱1" in body
+
+    # R2: InstaPay QR present with caption
+    assert "instapay_qr.png" in body
+    assert "Scan with your banking app (InstaPay) to pay." in body
+
+    # unrelated payment-box content unchanged
     assert "Send to INSTAPAY" in body
     assert "000228034271" in body
+
+    # regression guard: this repo previously reverted a GoTyme QR attempt —
+    # must not reintroduce it
     assert "GoTyme" not in body
     assert "payment_qr.png" not in body
     assert 'alt="UniFleet GoTyme payment QR code"' not in body

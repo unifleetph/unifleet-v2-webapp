@@ -557,7 +557,7 @@ Relabel the input field, rewrite the client-side `updatePreview()` JS to subtrac
 
 ## Task T7: Booking-success payment panel — drop PESONet, add InstaPay QR
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** test-after
 > **Effort:** xs
 > **Priority:** medium
