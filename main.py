@@ -513,9 +513,8 @@ def ops_set_status(voucher_id, new_status):
         # total_dispensed doesn't reconstruct to what the calculator
         # promised. Pre-migration rows have requested_total_php = NULL;
         # fall back to the pre-Brief-5 formula (base = amount) for those.
-        raw_total = row.get("requested_total_php")
         try:
-            total_for_liters = float(raw_total) if raw_total not in (None, "", "nan") else amount
+            total_for_liters = float(_coalesce(row.get("requested_total_php"), amount))
         except Exception:
             total_for_liters = amount
 
@@ -868,6 +867,26 @@ def book():
                 p['fuel_type'] = ''
         return presets
 
+    def _reject_booking(account_code, message):
+        """Flash an error and re-render book.html with the submitted form
+        values retained. Shared by every POST-time validation failure below
+        (ARCH-brief-5 simplification finding: this collapsed 5 verbatim
+        copies of the same render_template call)."""
+        flash(message, "error")
+        base = customer
+        presets = _load_presets(account_code)
+        return render_template(
+            'book.html',
+            customer=base,
+            presets=presets,
+            station_names=station_names,
+            station_table=station_table,
+            station_table_updated_at=station_table_updated_at,
+            station_table_by_fuel=station_table_by_fuel,
+            form_values=request.form,
+            min_refuel=min_refuel
+        )
+
     if request.method == 'POST':
         account_code = request.form.get('account_code', '').strip().upper()
 
@@ -921,20 +940,7 @@ def book():
         driver_mode = request.form.get('driver_mode')
         use_new = driver_mode == 'new'
         if driver_mode == 'preset' and not request.form.get('driver_select'):
-            flash("Please select a preset or switch to 'Add New Driver'", "error")
-            base = customer
-            presets = _load_presets(account_code)
-            return render_template(
-                'book.html',
-                customer=base,
-                presets=presets,
-                station_names=station_names,
-                station_table=station_table,
-                station_table_updated_at=station_table_updated_at,
-                station_table_by_fuel=station_table_by_fuel,
-                form_values=request.form,
-                min_refuel=min_refuel
-            )
+            return _reject_booking(account_code, "Please select a preset or switch to 'Add New Driver'")
 
         # F3.1 (T4): fuel_type is an independent, booking-level field \u2014
         # decoupled from driver_data. It pre-fills from the selected
@@ -967,36 +973,10 @@ def book():
             # HTML datetime-local is naive; interpret as Manila local
             refuel_dt_mnl = datetime.strptime(refuel_dt_str, "%Y-%m-%dT%H:%M").replace(tzinfo=manila)
             if refuel_dt_mnl < min_refuel_dt:
-                flash("Refuel Date & Time must be at least 24 hours from now (Asia/Manila).", "error")
-                base = customer
-                presets = _load_presets(account_code)
-                return render_template(
-                    'book.html',
-                    customer=base,
-                    presets=presets,
-                    station_names=station_names,
-                    station_table=station_table,
-                    station_table_updated_at=station_table_updated_at,
-                    station_table_by_fuel=station_table_by_fuel,
-                    form_values=request.form,
-                    min_refuel=min_refuel
-                )
+                return _reject_booking(account_code, "Refuel Date & Time must be at least 24 hours from now (Asia/Manila).")
         except Exception:
             # If parsing fails, treat as invalid
-            flash("Please enter a valid Refuel Date & Time (YYYY-MM-DDTHH:MM).", "error")
-            base = customer
-            presets = _load_presets(account_code)
-            return render_template(
-                'book.html',
-                customer=base,
-                presets=presets,
-                station_names=station_names,
-                station_table=station_table,
-                station_table_updated_at=station_table_updated_at,
-                station_table_by_fuel=station_table_by_fuel,
-                form_values=request.form,
-                min_refuel=min_refuel
-            )
+            return _reject_booking(account_code, "Please enter a valid Refuel Date & Time (YYYY-MM-DDTHH:MM).")
 
         # ---- CAPTURE BOOKING-TIME SNAPSHOTS (price & discount) ----
         station_name = (request.form.get('station') or '').strip()
@@ -1045,27 +1025,26 @@ def book():
             print("⚠️ price snapshot error:", _e)
 
         if match is None:
-            flash(
+            return _reject_booking(
+                account_code,
                 f"“{station_name}” does not have a price set for {fuel_type or 'the selected fuel type'}. "
-                "Please choose a different station or fuel type.",
-                "error"
-            )
-            base = customer
-            presets = _load_presets(account_code)
-            return render_template(
-                'book.html',
-                customer=base,
-                presets=presets,
-                station_names=station_names,
-                station_table=station_table,
-                station_table_updated_at=station_table_updated_at,
-                station_table_by_fuel=station_table_by_fuel,
-                form_values=request.form,
-                min_refuel=min_refuel
+                "Please choose a different station or fuel type."
             )
 
         price_snapshot = float(match.get("price_php_per_liter") or 0)
         price_snapshot_updated_at = int(match.get("updated_at") or 0)
+
+        # A matched price row of exactly 0 is a data glitch, not a valid
+        # price to book against — reject rather than silently dropping
+        # the discount and charging the full entered amount (ARCH-brief-5
+        # correctness finding: this used to charge full price with no
+        # discount and no error shown).
+        if price_snapshot <= 0:
+            return _reject_booking(
+                account_code,
+                f"“{station_name}” has an invalid live price right now and can't be booked. "
+                "Please choose a different station or try again shortly."
+            )
 
         # 2) live discount snapshot (from discount_store) — absence here
         # just means ₱0 discount, never blocks the booking (R10).
@@ -1092,31 +1071,19 @@ def book():
         # meaning (amount charged) — pay = T - discount(T), where the
         # discount uses the same liters=T/price formula the client showed.
         requested_total_php = float(request.form.get('requested_amount_php') or 0)
-        if price_snapshot > 0:
-            liters_for_total = requested_total_php / price_snapshot
-            discount_for_total = liters_for_total * dpl_snapshot
-        else:
-            discount_for_total = 0.0
+
+        if requested_total_php <= 0:
+            return _reject_booking(account_code, "Please enter a fuel amount greater than ₱0.")
+
+        liters_for_total = requested_total_php / price_snapshot
+        discount_for_total = liters_for_total * dpl_snapshot
         computed_pay_php = round(requested_total_php - discount_for_total, 2)
 
         if computed_pay_php <= 0:
-            flash(
+            return _reject_booking(
+                account_code,
                 "The discount for this station exceeds the fuel amount entered. "
-                "Please enter a larger amount.",
-                "error"
-            )
-            base = customer
-            presets = _load_presets(account_code)
-            return render_template(
-                'book.html',
-                customer=base,
-                presets=presets,
-                station_names=station_names,
-                station_table=station_table,
-                station_table_updated_at=station_table_updated_at,
-                station_table_by_fuel=station_table_by_fuel,
-                form_values=request.form,
-                min_refuel=min_refuel
+                "Please enter a larger amount."
             )
 
         row = {
@@ -1202,6 +1169,11 @@ def supplier_api(voucher_id):
 
         # Snapshot-first values with legacy fallback
         req   = _coalesce(r.get("requested_amount_php"), 0) or 0
+        # Brief-5 (ARCH-brief-5 correctness finding): liters must be derived
+        # from the entered total (T), not the post-discount pay amount, or
+        # a still-Unverified voucher (liters_requested not yet populated by
+        # ops_set_status) reports understated liters to the supplier.
+        req_total = _coalesce(r.get("requested_total_php"), req) or 0
         price = _coalesce(r.get("price_snapshot_php_per_liter"), r.get("live_price_php_per_liter"))
         disc  = _coalesce(r.get("discount_snapshot_php_per_liter"), r.get("discount_per_liter"))
 
@@ -1213,7 +1185,7 @@ def supplier_api(voucher_id):
             if (liters_req is None or str(liters_req).strip() == "") and price not in (None, "", "nan"):
                 p = float(price)
                 if p > 0:
-                    liters_req = round(float(req) / p, 2)
+                    liters_req = round(float(req_total) / p, 2)
         except Exception:
             pass
 
@@ -1272,6 +1244,10 @@ def export_supplier_csv():
             vid   = str(r.get("voucher_id", "")).strip()
             stat  = r.get("station", "") or ""
             req   = _coalesce(r.get("requested_amount_php"), 0) or 0
+            # Brief-5 (ARCH-brief-5 correctness finding): same fix as
+            # supplier_api() above — derive liters from the entered total,
+            # not the post-discount pay amount.
+            req_total = _coalesce(r.get("requested_total_php"), req) or 0
 
             price = _coalesce(r.get("price_snapshot_php_per_liter"), r.get("live_price_php_per_liter"))
             disc  = _coalesce(r.get("discount_snapshot_php_per_liter"), r.get("discount_per_liter"))
@@ -1284,7 +1260,7 @@ def export_supplier_csv():
                 if (liters_req is None or str(liters_req).strip() == "") and price not in (None, "", "nan"):
                     p = float(price)
                     if p > 0:
-                        liters_req = round(float(req) / p, 2)
+                        liters_req = round(float(req_total) / p, 2)
             except Exception:
                 pass
 
@@ -1485,12 +1461,16 @@ def admin_prices_update():
         # backward compat with a price-only payload. When present, both
         # price and discount are validated BEFORE either is written
         # (all-or-nothing per fuel type, R15) — same 0-15 bound as the
-        # legacy admin_discounts_update route.
-        has_discount = "discount_per_liter" in payload
+        # legacy admin_discounts_update route. Treat a present-but-null/
+        # empty value the same as absent, not as "invalid" — the combined
+        # save UI always includes this key, so an empty discount input
+        # must mean "leave discount untouched", not "reject the whole save".
+        raw_discount = payload.get("discount_per_liter")
+        has_discount = raw_discount is not None and str(raw_discount).strip() != ""
         new_discount = None
         if has_discount:
             try:
-                new_discount = float(payload.get("discount_per_liter"))
+                new_discount = float(raw_discount)
             except (TypeError, ValueError):
                 return jsonify({"ok": False, "error": "Discount must be a number.", "field": "discount"}), 400
             if new_discount < 0 or new_discount > 15:
@@ -1520,15 +1500,43 @@ def admin_prices_update():
             updated_unix=updated["updated_at"]
         )
 
+        if has_discount:
+            try:
+                discount_store.set(station_name, fuel_type, new_discount, actor="admin", reason="manual update")
+            except Exception as discount_err:
+                # price_store.set_price and discount_store.set are separate
+                # DB round-trips (no shared transaction), so the price write
+                # above may have already committed. Best-effort compensating
+                # rollback to honor the "all-or-nothing" contract for the
+                # common case (a price row already existed); if it didn't
+                # exist before, there's no clean rollback path, so say so
+                # plainly rather than falsely claiming nothing was saved.
+                if old_price is not None:
+                    try:
+                        price_store.set_price(station_id, fuel_type, old_price)
+                        return jsonify({
+                            "ok": False,
+                            "error": f"Discount save failed; price change was rolled back: {discount_err}",
+                            "field": "discount",
+                        }), 500
+                    except Exception:
+                        pass
+                return jsonify({
+                    "ok": False,
+                    "error": (
+                        f"Discount save failed. Price was already saved as "
+                        f"{updated['price_php_per_liter']} and could not be rolled back: {discount_err}"
+                    ),
+                    "field": "discount",
+                }), 500
+
         response = {
             "ok": True,
             "station_id": station_id,
             "price_php_per_liter": updated["price_php_per_liter"],
             "updated_at": updated["updated_at"],
         }
-
         if has_discount:
-            discount_store.set(station_name, fuel_type, new_discount, actor="admin", reason="manual update")
             response["discount_per_liter"] = new_discount
 
         return jsonify(response)
@@ -1671,6 +1679,11 @@ def api_price_preview():
     you_pay_php = round(amount - discount_total, 2)
     total_dispensed = amount
     liters_dispensed = round(liters_requested + (discount_total / price if price else 0), 2)
+
+    # Mirror book()'s R10 rejection: a discount that meets or exceeds the
+    # entered total is not a valid preview, not a negative charge to display.
+    if you_pay_php <= 0:
+        return jsonify({"ok": False, "error": "discount exceeds the entered amount"}), 400
 
     is_stale = False
     if ts <= 0:

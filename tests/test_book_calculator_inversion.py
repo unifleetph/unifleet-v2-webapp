@@ -154,6 +154,34 @@ def test_rejects_when_computed_pay_is_non_positive(client, monkeypatch):
     assert 'value="100"' in body
 
 
+def test_zero_amount_shows_correct_error_not_discount_message(client, monkeypatch):
+    """Code-review fix: a zero (or blank) fuel amount must not be told
+    'the discount exceeds the fuel amount' — there's no discount involved
+    at all, just a missing amount."""
+    stub = RepoStub(customer=dict(CUST))
+    resp = _book(client, monkeypatch, stub, amount=0, price=50.0, discount=2.0)
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 0
+    body = resp.data.decode("utf-8")
+    flashes = body.split('<ul class="flashes"')[1].split("</ul>")[0]
+    assert "greater than" in flashes.lower() or "₱0" in flashes
+    assert "discount" not in flashes.lower()
+
+
+def test_zero_station_price_rejects_booking_with_clear_error(client, monkeypatch):
+    """Code-review fix: a matched station with price=0 (data glitch) must
+    reject the booking with a clear message, not silently charge full
+    price with zero discount and no error."""
+    stub = RepoStub(customer=dict(CUST))
+    resp = _book(client, monkeypatch, stub, amount=1000, price=0.0, discount=2.0)
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 0
+    body = resp.data.decode("utf-8")
+    assert "invalid" in body.lower() and ("price" in body.lower() or "cainta" in body.lower() or "test" in body.lower())
+
+
 # ============================================================
 # Approve-flow formula (ops_set_status)
 # ============================================================

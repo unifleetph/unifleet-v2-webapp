@@ -149,6 +149,17 @@ def test_price_preview_total_dispensed_reflects_new_semantics(client):
 # Regression guard: existing response shape/formulas unaffected
 # ============================================================
 
+def test_price_preview_rejects_when_pay_would_be_negative(client):
+    """Code-review fix: a discount that meets/exceeds the entered total
+    must reject (400), not return ok:true with a negative you_pay_php."""
+    # Biodiesel price 60.0, amount=100, discount_per_liter=60:
+    # liters=1.67, discount_total=100.2, you_pay_php would be negative.
+    r = client.get("/api/v1/price_preview?station=Cleanfuel&amount=100&discount_per_liter=60")
+    assert r.status_code == 400
+    data = r.get_json()
+    assert data["ok"] is False
+
+
 def test_price_preview_existing_fields_still_present_and_correct(client):
     r = client.get("/api/v1/price_preview?station=Cleanfuel&amount=1000&discount_per_liter=2.0")
     data = r.get_json()

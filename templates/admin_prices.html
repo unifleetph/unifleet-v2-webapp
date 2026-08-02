@@ -268,16 +268,24 @@
         const discountCell = row.querySelector('.discount-cell[data-fuel-type="' + fuelType + '"]');
         const stationId = row.getAttribute('data-station-id');
         const price = parseFloat(priceCell.querySelector('.price-input').value);
-        const discount = parseFloat(discountCell.querySelector('.discount-input').value);
+        const discountRaw = discountCell.querySelector('.discount-input').value.trim();
 
         clearFieldError(priceCell);
         clearFieldError(discountCell);
         btn.disabled = true;
         try {
+          // Only include discount_per_liter when the admin actually entered
+          // something — an empty discount input means "leave discount
+          // untouched", not "set it to 0" (a blank field must not silently
+          // reject the whole save the way an always-sent NaN/null did).
+          const payload = { station_id: stationId, fuel_type: fuelType, price };
+          if (discountRaw !== '') {
+            payload.discount_per_liter = parseFloat(discountRaw);
+          }
           const res = await fetch('/admin/prices/update?key=' + encodeURIComponent(ADMIN_KEY), {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ station_id: stationId, fuel_type: fuelType, price, discount_per_liter: discount })
+            body: JSON.stringify(payload)
           });
           const data = await res.json();
           if (!res.ok || !data.ok) {
@@ -292,9 +300,14 @@
           priceCell.querySelector('.updated-readable').textContent = readable;
           markCellStaleIfNeeded(priceCell);
 
-          discountCell.setAttribute('data-epoch', data.updated_at);
-          discountCell.querySelector('.updated-readable').textContent = readable;
-          markCellStaleIfNeeded(discountCell);
+          // Only mark the discount cell as updated if a discount was
+          // actually part of this save (price-only saves must not make
+          // an untouched discount look freshly saved).
+          if ('discount_per_liter' in data) {
+            discountCell.setAttribute('data-epoch', data.updated_at);
+            discountCell.querySelector('.updated-readable').textContent = readable;
+            markCellStaleIfNeeded(discountCell);
+          }
 
           showSaveFeedback(btn, true);
         } catch (err) {
