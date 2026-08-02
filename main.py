@@ -507,6 +507,18 @@ def ops_set_status(voucher_id, new_status):
         except Exception:
             amount = 0.0
 
+        # Brief-5 (ARCH-brief-5, T2): liters/discount must be derived from
+        # requested_total_php (T, what the customer was shown), not
+        # requested_amount_php (pay, what they're charged) — otherwise
+        # total_dispensed doesn't reconstruct to what the calculator
+        # promised. Pre-migration rows have requested_total_php = NULL;
+        # fall back to the pre-Brief-5 formula (base = amount) for those.
+        raw_total = row.get("requested_total_php")
+        try:
+            total_for_liters = float(raw_total) if raw_total not in (None, "", "nan") else amount
+        except Exception:
+            total_for_liters = amount
+
         # Prefer booking-time snapshots
         try:
             snap_price = float(row.get("price_snapshot_php_per_liter") or 0)
@@ -545,8 +557,8 @@ def ops_set_status(voucher_id, new_status):
                 disc_captured_at = int(_dt.now().timestamp())
 
         # ---- Do the math (guard against zero price) ----
-        if amount > 0 and price > 0:
-            liters_requested = round(amount / price, 2)
+        if total_for_liters > 0 and price > 0:
+            liters_requested = round(total_for_liters / price, 2)
             discount_total = round(liters_requested * dpl, 2)
             total_dispensed = round(amount + discount_total, 2)
             liters_dispensed = round(liters_requested + (discount_total / price if price else 0), 2)
@@ -1074,10 +1086,44 @@ def book():
 
         print(f"[BOOK] snapshots: {price_snapshot} {dpl_snapshot} {price_snapshot_updated_at} {dpl_captured_at} (station='{station_name}')")
 
+        # Brief-5 (ARCH-brief-5, T2): the calculator's input now means
+        # "total fuel amount" (T), not prepaid cash. requested_total_php
+        # stores T as entered; requested_amount_php keeps its existing
+        # meaning (amount charged) — pay = T - discount(T), where the
+        # discount uses the same liters=T/price formula the client showed.
+        requested_total_php = float(request.form.get('requested_amount_php') or 0)
+        if price_snapshot > 0:
+            liters_for_total = requested_total_php / price_snapshot
+            discount_for_total = liters_for_total * dpl_snapshot
+        else:
+            discount_for_total = 0.0
+        computed_pay_php = round(requested_total_php - discount_for_total, 2)
+
+        if computed_pay_php <= 0:
+            flash(
+                "The discount for this station exceeds the fuel amount entered. "
+                "Please enter a larger amount.",
+                "error"
+            )
+            base = customer
+            presets = _load_presets(account_code)
+            return render_template(
+                'book.html',
+                customer=base,
+                presets=presets,
+                station_names=station_names,
+                station_table=station_table,
+                station_table_updated_at=station_table_updated_at,
+                station_table_by_fuel=station_table_by_fuel,
+                form_values=request.form,
+                min_refuel=min_refuel
+            )
+
         row = {
             'account_code': account_code,
             'station': station_name,
-            'requested_amount_php': float(request.form.get('requested_amount_php') or 0),
+            'requested_amount_php': computed_pay_php,
+            'requested_total_php': requested_total_php,
             'refuel_datetime': refuel_dt_str,  # keep original string
 
             'driver_name': driver_data['driver_name'],

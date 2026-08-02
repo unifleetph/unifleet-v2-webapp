@@ -264,7 +264,7 @@ Add a new nullable column `requested_total_php` to the `vouchers` table so the c
 
 ## Task T2: Booking money-flow backend (store total + fix Approve-flow formula)
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** m
 > **Priority:** critical
