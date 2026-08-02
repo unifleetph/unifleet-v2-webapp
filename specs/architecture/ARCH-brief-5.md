@@ -503,7 +503,7 @@ Consolidate the 6 save buttons (2 per fuel type) into 3 (1 per fuel type), each 
 
 ## Task T6: Calculator UI — relabel, invert display logic
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** ui
 > **Effort:** m
 > **Priority:** high
