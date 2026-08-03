@@ -157,7 +157,7 @@ None.
 
 ## Task T1: Book page mobile responsiveness
 
-> **Status:** done — 12/14 checklist items fully verified with evidence (screenshots + DOM assertions); item 10 (slow-network) accepted as low-risk/unchanged rather than actively re-tested; item 14 (cross-browser) verified on Chromium only — Safari iOS + Samsung Internet need a manual/real-device check before merge (WebKit unavailable in this sandbox, missing system libs, no sudo access)
+> **Status:** done — 13/14 checklist items verified with evidence persisted at `docs/qa/brief-6/` (screenshots + DOM/JSON assertions: t1-03 landscape, t1-05 stacked-card table, t1-06-13 desktop table+page, t1-09 rotation-state, t1-12 shared-page recheck ×4); item 10 (slow-network) accepted as low-risk/unchanged based on the render path (server-rendered tables, native `loading="lazy"` map) rather than actively re-tested under throttling; item 14 (cross-browser) verified on Chromium only — Safari iOS + Samsung Internet need a manual/real-device check before merge (WebKit unavailable in this sandbox, missing system libs, no sudo access). Post-review fix: mobile discount-table reflow now keeps `<thead>` in the DOM (visually hidden, not `display:none`) and uses a real `<span class="mobile-cell-label">` per cell instead of CSS `::before`/`data-label` generated content, restoring screen-reader table semantics (code-review Finding accessibility#1). Added `.mobile-page summary` tap-target sizing to cover the `<details>` toggles R6 requires (code-review Finding task-completion#2). Added iframe `title` attribute (code-review Finding accessibility#2).
 > **Verification:** ui
 > **Effort:** m
 > **Priority:** high
@@ -226,7 +226,7 @@ Fix the root cause of the "must pinch-zoom" complaint on `/book`: add the missin
 
 ## Task T2: Booking confirmation/payment page mobile responsiveness
 
-> **Status:** done — 6/8 checklist items fully verified with evidence (screenshots + DOM measurements); item 5 (physical QR scan) not tested with a real second device in this sandbox — QR size/contrast unchanged from working baseline image; item 8 (cross-browser) verified on Chromium only — Safari iOS + Samsung Internet need a manual/real-device check before merge (same WebKit sandbox limitation as T1)
+> **Status:** done — 7/8 checklist items verified with evidence persisted at `docs/qa/brief-6/` (t2-03 landscape, t2-07 desktop, t2-04-06 QR+button size JSON); item 5 (physical QR scan) not tested with a real second device in this sandbox — QR size/contrast unchanged from working baseline image; item 8 (cross-browser) verified on Chromium only — Safari iOS + Samsung Internet need a manual/real-device check before merge (same WebKit sandbox limitation as T1)
 > **Verification:** ui
 > **Effort:** s
 > **Priority:** high

@@ -69,6 +69,13 @@ button:hover {
   font-size: 0.95rem;
 }
 
+/* Per-cell mobile column label — hidden on desktop, where the visible
+   <thead> already labels the column. Not scoped to .mobile-page/media
+   query since it must apply before the breakpoint is known. */
+.mobile-cell-label {
+  display: none;
+}
+
 /* Mobile responsiveness (Brief-6, ARCH-brief-6). Scoped under .mobile-page
    so it never reaches register/admin templates that share the same base
    class names (.page-title, .centered-content, .section). */
@@ -104,6 +111,13 @@ button:hover {
     min-width: 44px;
   }
 
+  /* <details>/<summary> toggles (map, fuel tables) are tap targets too */
+  .mobile-page summary {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+
   /* Native datetime picker trigger icon — webkit only, ignored elsewhere */
   .mobile-page input[type="datetime-local"]::-webkit-calendar-picker-indicator {
     padding: 10px;
@@ -126,8 +140,18 @@ button:hover {
     width: 100%;
   }
 
+  /* Visually hidden, not display:none — keeps column headers in the
+     accessibility tree for screen readers while hiding them sighted. */
   .mobile-page .discount-table thead {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   .mobile-page .discount-table tr {
@@ -151,8 +175,8 @@ button:hover {
     border-bottom: none;
   }
 
-  .mobile-page .discount-table td::before {
-    content: attr(data-label);
+  /* Visible replacement for the hidden column header, per cell */
+  .mobile-page .discount-table .mobile-cell-label {
     display: block;
     font-weight: 700;
     color: #0054a6;
@@ -164,5 +188,3 @@ button:hover {
     min-width: 200px;
   }
 }
-
-

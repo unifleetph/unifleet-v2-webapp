@@ -330,9 +330,10 @@
               <tbody>
                 {% for row in station_table_by_fuel.get(ft, []) %}
                 <tr>
-                  <td data-label="Station">{{ row.name }}</td>
-                  <td class="price-value" data-label="Price">₱{{ row.price_php_per_liter }}</td>
-                  <td class="discount-value" data-label="Discount">
+                  <td><span class="mobile-cell-label">Station</span>{{ row.name }}</td>
+                  <td class="price-value"><span class="mobile-cell-label">Price</span>₱{{ row.price_php_per_liter }}</td>
+                  <td class="discount-value">
+                    <span class="mobile-cell-label">Discount</span>
                     {% if row.discount_per_liter not in [None, '', 'nan', '0.00'] %}
                       ₱{{ row.discount_per_liter }}/L
                     {% else %}
@@ -349,7 +350,7 @@
 
         <details class="map-collapsible" open>
           <summary>Unifleet Partner Fuel Stations Map</summary>
-          <iframe src="https://www.google.com/maps/d/u/0/embed?mid=1YTyyRvSx1Fan8bbrnRsMBZuIDbrVC7Y&ehbc=2E312F" loading="lazy"></iframe>
+          <iframe title="Map of UniFleet partner fuel stations" src="https://www.google.com/maps/d/u/0/embed?mid=1YTyyRvSx1Fan8bbrnRsMBZuIDbrVC7Y&ehbc=2E312F" loading="lazy"></iframe>
         </details>
       </div>
 
