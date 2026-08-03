@@ -69,4 +69,93 @@ button:hover {
   font-size: 0.95rem;
 }
 
+/* Mobile responsiveness (Brief-6, ARCH-brief-6). Scoped under .mobile-page
+   so it never reaches register/admin templates that share the same base
+   class names (.page-title, .centered-content, .section). */
+@media (max-width: 480px) {
+  .mobile-page .centered-content {
+    max-width: 100%;
+    padding: 0 0.75rem;
+    box-sizing: border-box;
+  }
+
+  .mobile-page .section {
+    padding: 1.25rem 1rem;
+  }
+
+  /* Tap targets: buttons, inputs, selects at least 44x44px */
+  .mobile-page input,
+  .mobile-page select,
+  .mobile-page button,
+  .mobile-page .full-width-input {
+    min-height: 44px;
+    box-sizing: border-box;
+    font-size: 16px; /* prevents iOS auto-zoom-on-focus */
+  }
+
+  .mobile-page button {
+    min-width: 44px;
+  }
+
+  /* Native datetime picker trigger icon — webkit only, ignored elsewhere */
+  .mobile-page input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+    padding: 10px;
+    margin-left: 4px;
+  }
+
+  /* Map: collapsible <details>, sized to fit narrow viewport */
+  .mobile-page .map-collapsible iframe {
+    height: 260px;
+  }
+
+  /* Discount tables: reflow from <table> to stacked label:value cards */
+  .mobile-page .discount-table,
+  .mobile-page .discount-table thead,
+  .mobile-page .discount-table tbody,
+  .mobile-page .discount-table th,
+  .mobile-page .discount-table td,
+  .mobile-page .discount-table tr {
+    display: block;
+    width: 100%;
+  }
+
+  .mobile-page .discount-table thead {
+    display: none;
+  }
+
+  .mobile-page .discount-table tr {
+    margin-bottom: 0.75rem;
+    border: 1px solid #eef3f8;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .mobile-page .discount-table tr:last-child {
+    margin-bottom: 0;
+  }
+
+  .mobile-page .discount-table td {
+    border-bottom: 1px solid #eef3f8;
+    padding: 0.6rem 0.8rem;
+    word-break: break-word;
+  }
+
+  .mobile-page .discount-table td:last-child {
+    border-bottom: none;
+  }
+
+  .mobile-page .discount-table td::before {
+    content: attr(data-label);
+    display: block;
+    font-weight: 700;
+    color: #0054a6;
+    margin-bottom: 0.2rem;
+  }
+
+  /* Payment QR: never shrink below a scannable floor */
+  .mobile-page .payment-qr img {
+    min-width: 200px;
+  }
+}
+
 

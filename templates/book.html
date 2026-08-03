@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Book a Refuel – UniFleet</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <style>
@@ -231,7 +232,7 @@
     }
   </style>
 </head>
-<body>
+<body class="mobile-page">
 
   <header>
     <img src="{{ url_for('static', filename='UniFleet Logo.png') }}" alt="UniFleet Logo">
@@ -329,9 +330,9 @@
               <tbody>
                 {% for row in station_table_by_fuel.get(ft, []) %}
                 <tr>
-                  <td>{{ row.name }}</td>
-                  <td class="price-value">₱{{ row.price_php_per_liter }}</td>
-                  <td class="discount-value">
+                  <td data-label="Station">{{ row.name }}</td>
+                  <td class="price-value" data-label="Price">₱{{ row.price_php_per_liter }}</td>
+                  <td class="discount-value" data-label="Discount">
                     {% if row.discount_per_liter not in [None, '', 'nan', '0.00'] %}
                       ₱{{ row.discount_per_liter }}/L
                     {% else %}
@@ -346,7 +347,10 @@
         </details>
         {% endfor %}
 
-        <iframe src="https://www.google.com/maps/d/u/0/embed?mid=1YTyyRvSx1Fan8bbrnRsMBZuIDbrVC7Y&ehbc=2E312F" loading="lazy"></iframe>
+        <details class="map-collapsible" open>
+          <summary>Unifleet Partner Fuel Stations Map</summary>
+          <iframe src="https://www.google.com/maps/d/u/0/embed?mid=1YTyyRvSx1Fan8bbrnRsMBZuIDbrVC7Y&ehbc=2E312F" loading="lazy"></iframe>
+        </details>
       </div>
 
       <label for="requested_amount_php">Total Fuel Amount (in PHP)</label>
