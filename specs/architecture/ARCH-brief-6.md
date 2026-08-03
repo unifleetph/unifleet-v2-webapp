@@ -226,7 +226,7 @@ Fix the root cause of the "must pinch-zoom" complaint on `/book`: add the missin
 
 ## Task T2: Booking confirmation/payment page mobile responsiveness
 
-> **Status:** not started
+> **Status:** done — 6/8 checklist items fully verified with evidence (screenshots + DOM measurements); item 5 (physical QR scan) not tested with a real second device in this sandbox — QR size/contrast unchanged from working baseline image; item 8 (cross-browser) verified on Chromium only — Safari iOS + Samsung Internet need a manual/real-device check before merge (same WebKit sandbox limitation as T1)
 > **Verification:** ui
 > **Effort:** s
 > **Priority:** high

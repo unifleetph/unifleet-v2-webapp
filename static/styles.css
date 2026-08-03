@@ -87,10 +87,17 @@ button:hover {
   .mobile-page input,
   .mobile-page select,
   .mobile-page button,
-  .mobile-page .full-width-input {
+  .mobile-page .full-width-input,
+  .mobile-page .btn {
     min-height: 44px;
     box-sizing: border-box;
     font-size: 16px; /* prevents iOS auto-zoom-on-focus */
+  }
+
+  .mobile-page .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .mobile-page button {
