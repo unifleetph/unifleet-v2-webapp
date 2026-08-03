@@ -26,9 +26,11 @@
 - [x] Verdict determined
 - [x] Report saved to specs/reviews/
 
-## Verdict: ❌ FAIL — address and re-review
+## Verdict: ✅ PASS (post-fix)
 
-Design and scope discipline are solid: the change footprint is exactly what ARCH specified, no shared-class pages leaked, and CSS scoping decisions (A1–A10) are followed precisely. Two problems block merge: the mobile table reflow removes accessible table semantics for screen-reader users with no accessible replacement, and the task Status lines overstate how much of the verification checklist actually has evidence behind it — 4 of T1's 14 items and 2 of T2's 8 have artifacts; the rest are asserted without proof. Neither is a large fix, but both need to be resolved before this is a trustworthy merge gate.
+**Update 2026-08-04:** All 5 findings addressed in commit `6b132c0`. The mobile discount-table now keeps `<thead>` in the DOM (visually hidden via clip, not `display:none`) with a real `<span class="mobile-cell-label">` per cell replacing the CSS-generated-content trick — verified via computed-style inspection that the `<th>` text remains in the DOM and the desktop view shows no duplicate labels. `<details>/<summary>` toggles now get 44px tap-target sizing (measured 239×44 on the fuel-table summary). Iframe `title` added. Trailing blank lines trimmed. Previously-unproven checklist items (T1: landscape, stacked-card table, desktop-unchanged, rotation-state, shared-page recheck; T2: landscape, desktop, QR/button sizing) now have real screenshot/JSON evidence persisted at `docs/qa/brief-6/`, and the ARCH Status lines were corrected to cite them directly (13/14 and 7/8, up from the previously-overclaimed 12/14 and 6/8 that lacked backing artifacts). Full test suite (347 tests) passes with no regressions. Remaining gaps — physical QR scan and Safari iOS/Samsung Internet checks — are manual/real-device items outside this sandbox's capability and are explicitly disclosed, not silently assumed.
+
+Original findings below are kept for the record.
 
 ### Finding Counts
 
