@@ -90,9 +90,10 @@ button:hover {
     padding: 1.25rem 1rem;
   }
 
-  /* Tap targets: buttons, inputs, selects at least 44x44px */
+  /* Tap targets: buttons, inputs, selects, textareas at least 44x44px */
   .mobile-page input,
   .mobile-page select,
+  .mobile-page textarea,
   .mobile-page button,
   .mobile-page .full-width-input,
   .mobile-page .btn {
@@ -101,10 +102,12 @@ button:hover {
     font-size: 16px; /* prevents iOS auto-zoom-on-focus */
   }
 
-  .mobile-page .btn {
+  .mobile-page .btn,
+  .mobile-page .button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    min-height: 44px;
   }
 
   .mobile-page button {
@@ -186,5 +189,40 @@ button:hover {
   /* Payment QR: never shrink below a scannable floor */
   .mobile-page .payment-qr img {
     min-width: 200px;
+  }
+}
+
+/* Register-only, landscape supplement: the max-width:480px block above
+   covers portrait phones but misses landscape (common landscape widths run
+   667-926px, past that breakpoint). Scoped to .register-page (not
+   .mobile-page) so book.html/booking_success.html, which rely solely on
+   the width breakpoint, are unaffected. */
+@media (max-height: 480px) and (orientation: landscape) {
+  .register-page .centered-content {
+    max-width: 100%;
+    padding: 0 0.75rem;
+    box-sizing: border-box;
+  }
+
+  .register-page input,
+  .register-page select,
+  .register-page textarea,
+  .register-page button,
+  .register-page .btn,
+  .register-page .button {
+    min-height: 44px;
+    box-sizing: border-box;
+    font-size: 16px; /* prevents iOS auto-zoom-on-focus */
+  }
+
+  .register-page .btn,
+  .register-page .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .register-page button {
+    min-width: 44px;
   }
 }

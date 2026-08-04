@@ -1,0 +1,16 @@
+{
+  "r1_register": {"hasMeta": true, "scrollW": 375, "clientW": 375, "noHorizScroll": true},
+  "r1_success": {"hasMeta": true, "scrollW": 375, "clientW": 375, "noHorizScroll": true},
+  "tapTargets": {
+    "contact_name": {"w": 287, "h": 44, "fontSize": "16px"},
+    "areas_textarea": {"w": 287, "h": 57.1875, "fontSize": "16px"},
+    "submit_button": {"w": 287, "h": 61.59375, "fontSize": "16px"},
+    "checkbox": {"w": 14.3, "h": 48.4, "fontSize": "16px", "note": "width unaffected by CSS on native Chromium checkboxes; label (300x48) provides the actual >=44px tappable area, confirmed via checkboxLabelClickToggles"}
+  },
+  "checkboxLabelClickToggles": true,
+  "flashNoOverflow": true,
+  "rotationState": {"stillName": "Rotation Test", "stillAreas": "SLEX, NLEX", "stillChecked": true},
+  "successCtaLandscape": {"width": 300.78125, "height": 44},
+  "adminLoginBodyClass": "",
+  "longTextNoOverflow": true
+}
