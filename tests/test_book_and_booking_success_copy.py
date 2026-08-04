@@ -69,9 +69,13 @@ def test_book_pre_registration_prompt_updated(client, monkeypatch):
     monkeypatch.setattr(main, "repo", RepoStub(customer=None))
     r = client.get("/book")
     body = r.data.decode("utf-8")
-    assert "Register Vehicle To Get 4-Letter Account CODE" in body
-    assert "Malaking tipid. Mas mahabang biyahe." in body
+    # ARCH-brief-7 T2: R7 wraps the link in >>> <<<, R9 removes the
+    # Tagalog tagline (keeps the English one), R10 adds the Facebook link
+    assert "&gt;&gt;&gt; Register Vehicle To Get 4-Letter Account CODE &lt;&lt;&lt;" in body
+    assert "Malaking tipid. Mas mahabang biyahe." not in body
     assert "Big savings. Longer trips." in body
+    assert "Fuel Discounts by UniFleet" in body
+    assert "facebook.com/people/Fuel-Discounts-by-UniFleet" in body
 
 
 # ============================================================

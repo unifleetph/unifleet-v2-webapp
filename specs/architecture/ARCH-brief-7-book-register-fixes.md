@@ -242,7 +242,7 @@ None — the "How It Works" heading and Tagalog tagline are template-content rem
 
 ## Task T2: Terms & Conditions page and book/register copy updates
 
-> **Status:** not started
+> **Status:** done — 10/10 verification checklist items evidenced (screenshots + Playwright DOM checks at `docs/qa/brief-7/`). One footprint deviation: `tests/test_book_and_booking_success_copy.py` (T1's Must-NOT-modify file) needed one assertion updated because R9's Tagalog-tagline removal broke it — flagged and approved by the developer before implementing. Discovered mid-implementation and fixed: `main.py` is not bind-mounted into the persistent dev container (only `data/`/`static`/`templates/` are — confirmed in `docker-compose.yml`), so manual/Playwright verification against the live container required an image rebuild (`docker compose up -d --build web`) to pick up both this task's and T1's `main.py` changes; `make test-db` was unaffected since its compose override bind-mounts the full repo.
 > **Verification:** ui
 > **Effort:** m
 > **Priority:** medium

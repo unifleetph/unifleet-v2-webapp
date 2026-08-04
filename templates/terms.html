@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Terms & Conditions – UniFleet</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <style>
+    header {
+      background-color: #e6f0fb;
+      text-align: center;
+      padding: 1rem;
+    }
+
+    header img {
+      height: 40px;
+    }
+
+    .page-title {
+      background-color: white;
+      text-align: center;
+      padding: 1.2rem 1rem 0.8rem;
+      font-size: 1.8rem;
+      color: #0054a6;
+      font-weight: bold;
+    }
+
+    .centered-content {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2rem 1rem;
+      background-color: white;
+    }
+
+    .terms-body h2 {
+      color: #0054a6;
+      font-size: 1.15rem;
+      margin-top: 1.75rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .terms-body h2:first-child {
+      margin-top: 0;
+    }
+
+    .terms-body p {
+      margin: 0.5rem 0;
+      line-height: 1.5;
+    }
+
+    .terms-body ul {
+      margin: 0.5rem 0;
+      padding-left: 1.4rem;
+      line-height: 1.5;
+    }
+
+    .terms-body hr {
+      border: none;
+      border-top: 1px solid #e3e6ea;
+      margin: 1.5rem 0;
+    }
+
+    .back-link {
+      display: inline-block;
+      margin-top: 2rem;
+      color: #0054a6;
+      font-weight: bold;
+      text-decoration: none;
+    }
+
+    .back-link:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body class="mobile-page">
+
+  <header>
+    <img src="{{ url_for('static', filename='UniFleet Logo.png') }}" alt="UniFleet Logo">
+  </header>
+
+  <div class="page-title">Terms & Conditions</div>
+
+  <main class="centered-content">
+    <div class="terms-body">
+      <h2>1. Acceptance</h2>
+      <p>By using UniFleet, you agree to these Terms &amp; Conditions.</p>
+      <hr>
+
+      <h2>2. UniFleet Credits &amp; Fuel Vouchers</h2>
+      <ul>
+        <li>Funds added to your UniFleet account are stored as <strong>UniFleet Credits</strong>.</li>
+        <li>UniFleet Credits may only be used to purchase eligible fuel vouchers through the UniFleet platform.</li>
+        <li>Each fuel voucher is valid for <strong>one-time redemption only</strong>.</li>
+        <li>If you are unable to redeem your booking, you may retry at another participating station within the <strong>same fuel brand/network</strong> for up to <strong>48 hours</strong> from the time of booking.</li>
+        <li>If the booking remains unused after <strong>48 hours</strong>, the voucher will expire and the applicable value will automatically be returned to your UniFleet Credit balance.</li>
+        <li>UniFleet Credits have <strong>no cash value</strong> and cannot be withdrawn, transferred, or exchanged for cash, except where required by applicable law.</li>
+        <li>Expired, altered, copied, or duplicate vouchers may be rejected.</li>
+      </ul>
+      <hr>
+
+      <h2>3. Voucher Redemption</h2>
+      <p>To redeem a voucher:</p>
+      <ul>
+        <li>Present your UniFleet voucher at a participating station.</li>
+        <li>Verify the driver's identity and vehicle details.</li>
+        <li>Complete the station's redemption process.</li>
+      </ul>
+      <p>Failure to follow the redemption process may result in the voucher being declined.</p>
+      <hr>
+
+      <h2>4. Participating Stations</h2>
+      <ul>
+        <li>Vouchers are valid only at participating UniFleet fuel stations.</li>
+        <li>Where accepted, vouchers may be redeemed at another participating station within the <strong>same fuel brand/network</strong> during the 48-hour validity period.</li>
+      </ul>
+      <hr>
+
+      <h2>5. Official Receipts</h2>
+      <ul>
+        <li>Official Receipts, Sales Invoices, or other tax documents for fuel purchases, if available, are issued by the participating fuel station.</li>
+        <li>UniFleet does <strong>not</strong> issue Official Receipts for fuel purchases.</li>
+        <li>If you require an Official Receipt, please request it directly from the participating fuel station at the time of redemption.</li>
+      </ul>
+      <hr>
+
+      <h2>6. User Responsibilities</h2>
+      <p>You are responsible for ensuring that your booking information is accurate, including:</p>
+      <ul>
+        <li>Driver information</li>
+        <li>Vehicle information</li>
+        <li>Fuel type</li>
+        <li>Fuel amount</li>
+      </ul>
+      <p>UniFleet is not responsible for delays or rejected vouchers resulting from incorrect information.</p>
+      <hr>
+
+      <h2>7. Fraud &amp; Misuse</h2>
+      <p>UniFleet may suspend or terminate accounts involved in fraud, misuse, duplicate redemptions, altered vouchers, or other unauthorized activities.</p>
+      <hr>
+
+      <h2>8. Limitation of Liability</h2>
+      <p>UniFleet provides a platform for booking discounted fuel vouchers.</p>
+      <p>UniFleet is not responsible for:</p>
+      <ul>
+        <li>Fuel quality</li>
+        <li>Pump availability</li>
+        <li>Station service</li>
+        <li>Delays at participating stations</li>
+        <li>Losses resulting from incorrect information provided by users</li>
+      </ul>
+      <hr>
+
+      <h2>9. Changes to These Terms</h2>
+      <p>UniFleet may update these Terms &amp; Conditions or modify participating stations, discounts, redemption procedures, or platform features from time to time.</p>
+      <p>Continued use of UniFleet constitutes acceptance of any updated Terms.</p>
+    </div>
+
+    <a href="{{ url_for('book') }}" class="back-link">&larr; Back to Book a Refuel</a>
+  </main>
+
+</body>
+</html>

@@ -230,6 +230,34 @@
       font-size: 0.9rem;
       font-weight: bold;
     }
+
+    /* Terms-agreement checkbox (Brief-7 T2), same pattern as
+       register.html's existing acknowledge checkbox. */
+    .inline-checkbox {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      margin: 1rem 0 1.5rem;
+    }
+
+    /* Stays this size on mobile too (excluded from styles.css's tap-target
+       min-height rules) — the adjacent label already covers a much larger
+       tappable area, satisfying WCAG 2.5.5/2.5.8's "Equivalent" exception
+       without visually distorting the checkbox. */
+    .inline-checkbox input[type="checkbox"] {
+      width: auto;
+      flex: 0 0 auto;
+      margin: 0.15rem 0 0;
+      transform: scale(1.1);
+    }
+
+    .inline-checkbox label {
+      display: inline;
+      margin: 0;
+      font-weight: 400;
+      line-height: 1.4;
+      text-align: left;
+    }
   </style>
 </head>
 <body class="mobile-page">
@@ -263,17 +291,18 @@
     </form>
     <div style="background-color: #e6f0fb; padding: 1.5rem; border-radius: 8px; margin-top: 1rem;">
       <p style="text-align:center; font-weight:bold; margin-top:0;">
-        <a href="{{ url_for('register') }}">Register Vehicle To Get 4-Letter Account CODE</a>
+        <a href="{{ url_for('register') }}">&gt;&gt;&gt; Register Vehicle To Get 4-Letter Account CODE &lt;&lt;&lt;</a>
       </p>
-      <p style="margin-bottom:0.4rem;"><strong>How It Works</strong></p>
       <ol style="margin-top:0;">
         <li>Register Vehicle (link above)</li>
         <li>Enter Details</li>
         <li>Get CODE</li>
       </ol>
-      <p style="margin-bottom:0;">
-        <strong>Malaking tipid. Mas mahabang biyahe.</strong><br>
+      <p style="margin-bottom:0.5rem;">
         Big savings. Longer trips.
+      </p>
+      <p style="margin-bottom:0;">
+        Follow our Facebook page: <a href="https://www.facebook.com/people/Fuel-Discounts-by-UniFleet/61589914800072/" target="_blank" rel="noopener">Fuel Discounts by UniFleet</a>
       </p>
     </div>
     {% endif %}
@@ -452,7 +481,12 @@
         <input type="text" name="vehicle_plate" class="full-width-input">
       </div>
 
-      <button type="submit">Submit Booking</button>
+      <div class="inline-checkbox">
+        <input type="checkbox" name="agree_terms" id="agree_terms" required>
+        <label for="agree_terms">I agree to the <a href="{{ url_for('terms') }}">Terms &amp; Conditions</a>.</label>
+      </div>
+
+      <button type="submit">Submit Booking &amp; Start Payment</button>
     </form>
     {% endif %}
 

@@ -712,6 +712,10 @@ def register_success():
 def test_success():
     return render_template('register_success.html', account_code="TEST")
 
+@app.route('/terms')
+def terms():
+    return render_template('terms.html')
+
 def _safe_next(target):
     """Only allow same-site relative redirects (guards open-redirect)."""
     return bool(target) and target.startswith('/') and not target.startswith('//')
