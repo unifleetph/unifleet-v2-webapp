@@ -150,7 +150,7 @@ None.
 
 ## Task T1: Mobile-responsive register form and confirmation page
 
-> **Status:** done — 12/12 verification checklist items evidenced (screenshots + Playwright DOM measurements at `docs/qa/register-brief/`). Two implementation deviations from A2 discovered and resolved (see below), both discussed and approved before proceeding.
+> **Status:** done — 12/12 verification checklist items evidenced (screenshots + Playwright DOM measurements at `docs/qa/register-brief/`, including `t1-test-suite-run.txt` for item 12). Two implementation deviations from A2 discovered and resolved (see below), both discussed and approved before proceeding. Code review (`specs/reviews/CODE-REVIEW-PIPELINE-register-mobile-friendly.md`) found 2 must-fix + 3 lower-severity findings, all fixed — see "Post-Review Fixes" below.
 > **Verification:** ui
 > **Effort:** s
 > **Priority:** high
@@ -186,6 +186,18 @@ None — no JS, no logic branches introduced; this is markup + CSS only, so no u
 
 1. **Checkbox tap target (deviates from A2 as originally worded):** the planned "grow via padding" approach doesn't work — Chromium ignores CSS padding for native `<input type="checkbox">` width (confirmed via computed-style/bounding-box measurement: padding had zero effect on width, only `min-height` from the general tap-target rule affected height). Resolved: dropped the padding rule; R4 is satisfied instead by the existing `<label for="acknowledge">` click target, which already covers a ~300×48px tappable region beside the small checkbox — verified via `checkboxLabelClickToggles: true`. No visual change to the checkbox itself, consistent with A2's spirit even though the mechanism differs from what A2 specified.
 2. **Landscape breakpoint gap (new finding, scoped fix added):** `@media(max-width:480px)` doesn't fire on most phones in landscape (common landscape widths run 667–926px, past the breakpoint) — confirmed via measurement (CTA button height reverted to un-fixed 43px in a 667×375 viewport before the fix). This gap also exists in the already-shipped `book.html`/`booking_success.html` from Brief-6, undetected by that review; out of scope to fix there now. For this task, added a new `.register-page`-scoped `@media(max-height:480px) and (orientation:landscape)` block in `static/styles.css` (not touching the shared `.mobile-page` block `book.html` relies on) and a new `register-page` body class on both templates. This is a footprint addition beyond the original ARCH plan — flagged and approved by the developer before implementing.
+
+### Post-Review Fixes (2026-08-04)
+
+Code review found 2 must-fix + 3 lower-severity findings; all addressed:
+
+1. **🟠 Checkbox tap-target selector had no checkbox/radio exclusion** — the generic `.mobile-page input`/`.register-page input` tap-target rule applied `min-height:44px` to the checkbox too, but the existing local override in `register.html` never reset height, stretching the checkbox to a 14×48px rectangle instead of a square (confirmed by the task's own pre-fix evidence: `tapTargets.checkbox: {w:14.3, h:48.4}`). Fixed by adding `:not([type="checkbox"]):not([type="radio"])` to both media blocks' input selector. Re-verified: checkbox now measures 14.3×14.3 (square, matches desktop), label-click toggle still works. Evidence: `t1-11-checkbox-fixed-375.png`, updated `t1-verification-results.json`.
+2. **🟠 Checklist item 12 (test suite) asserted, not evidenced** — `make test-db` was run during implementation (347 passed) but no output was persisted. Fixed by saving the run to `docs/qa/register-brief/t1-test-suite-run.txt` and referencing it in `t1-verification-results.json`.
+3. **🟡 Duplicated tap-target rule set** between the portrait `.mobile-page` block and the landscape `.register-page` block risked drifting out of sync. Fixed by introducing shared `--tap-target-min`/`--tap-target-font` CSS custom properties, referenced via `var()` in both blocks.
+4. **💭 Landscape-breakpoint comment cited width figures to justify a height-keyed media condition.** Reworded to reference height.
+5. **💭 WCAG "Equivalent target" rationale for the checkbox lived only in commit/review discussion, not as code.** Added comments both in `static/styles.css` (next to the exclusion) and `register.html` (next to the `.inline-checkbox input[type="checkbox"]` rule).
+
+Full test suite re-run after fixes: 347 passed, no regressions.
 
 ### Implementation Notes
 

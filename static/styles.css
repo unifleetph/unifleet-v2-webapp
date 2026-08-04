@@ -76,6 +76,14 @@ button:hover {
   display: none;
 }
 
+/* Shared tap-target values, referenced by both the portrait (.mobile-page)
+   and register-only landscape (.register-page) blocks below so they can't
+   drift out of sync with each other. */
+:root {
+  --tap-target-min: 44px;
+  --tap-target-font: 16px;
+}
+
 /* Mobile responsiveness (Brief-6, ARCH-brief-6). Scoped under .mobile-page
    so it never reaches register/admin templates that share the same base
    class names (.page-title, .centered-content, .section). */
@@ -90,16 +98,21 @@ button:hover {
     padding: 1.25rem 1rem;
   }
 
-  /* Tap targets: buttons, inputs, selects, textareas at least 44x44px */
-  .mobile-page input,
+  /* Tap targets: buttons, inputs, selects, textareas at least 44x44px.
+     Checkbox/radio excluded: native controls ignore CSS padding/min-height
+     for their own hit-box in Chromium, and forcing min-height here just
+     stretches them into a thin rectangle instead of a square (see the
+     .inline-checkbox rule below for how checkboxes get their tap target
+     instead — via the adjacent <label>, not their own box). */
+  .mobile-page input:not([type="checkbox"]):not([type="radio"]),
   .mobile-page select,
   .mobile-page textarea,
   .mobile-page button,
   .mobile-page .full-width-input,
   .mobile-page .btn {
-    min-height: 44px;
+    min-height: var(--tap-target-min);
     box-sizing: border-box;
-    font-size: 16px; /* prevents iOS auto-zoom-on-focus */
+    font-size: var(--tap-target-font); /* prevents iOS auto-zoom-on-focus */
   }
 
   .mobile-page .btn,
@@ -107,16 +120,22 @@ button:hover {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-height: 44px;
+    min-height: var(--tap-target-min);
   }
 
+  /* Checkbox: intentionally NOT resized (see exclusion above). The
+     adjacent <label for="acknowledge"> already toggles it and covers a
+     much larger area, satisfying WCAG 2.5.5/2.5.8's "Equivalent" target
+     exception (a same-action control that isn't small) — resizing the
+     checkbox itself isn't required and would visually distort it. */
+
   .mobile-page button {
-    min-width: 44px;
+    min-width: var(--tap-target-min);
   }
 
   /* <details>/<summary> toggles (map, fuel tables) are tap targets too */
   .mobile-page summary {
-    min-height: 44px;
+    min-height: var(--tap-target-min);
     display: flex;
     align-items: center;
   }
@@ -193,10 +212,13 @@ button:hover {
 }
 
 /* Register-only, landscape supplement: the max-width:480px block above
-   covers portrait phones but misses landscape (common landscape widths run
-   667-926px, past that breakpoint). Scoped to .register-page (not
-   .mobile-page) so book.html/booking_success.html, which rely solely on
-   the width breakpoint, are unaffected. */
+   covers portrait phones but misses landscape (common landscape phones
+   report a viewport *height* of roughly 320-430px, past the max-height
+   condition below would need to be — this block's own max-height:480px
+   catches that range). Scoped to .register-page (not .mobile-page) so
+   book.html/booking_success.html, which rely solely on the portrait
+   width breakpoint above, are unaffected. Shares --tap-target-min/-font
+   with the portrait block above so the two can't drift out of sync. */
 @media (max-height: 480px) and (orientation: landscape) {
   .register-page .centered-content {
     max-width: 100%;
@@ -204,15 +226,16 @@ button:hover {
     box-sizing: border-box;
   }
 
-  .register-page input,
+  /* Checkbox/radio excluded — same reason as the portrait block above. */
+  .register-page input:not([type="checkbox"]):not([type="radio"]),
   .register-page select,
   .register-page textarea,
   .register-page button,
   .register-page .btn,
   .register-page .button {
-    min-height: 44px;
+    min-height: var(--tap-target-min);
     box-sizing: border-box;
-    font-size: 16px; /* prevents iOS auto-zoom-on-focus */
+    font-size: var(--tap-target-font); /* prevents iOS auto-zoom-on-focus */
   }
 
   .register-page .btn,
@@ -223,6 +246,6 @@ button:hover {
   }
 
   .register-page button {
-    min-width: 44px;
+    min-width: var(--tap-target-min);
   }
 }

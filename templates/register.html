@@ -63,6 +63,10 @@
       margin: 1rem 0 1.5rem;
     }
 
+    /* Stays this size on mobile too (excluded from styles.css's tap-target
+       min-height rules) — the adjacent label below already toggles this
+       checkbox and covers a much larger area, satisfying WCAG 2.5.5/2.5.8's
+       "Equivalent" target-size exception without visually distorting it. */
     .inline-checkbox input[type="checkbox"] {
       width: auto;            /* don't inherit the 100% form-input width */
       flex: 0 0 auto;
