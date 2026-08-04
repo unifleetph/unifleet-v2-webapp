@@ -1132,8 +1132,7 @@ def book():
             updated = pd.concat([existing, pd.DataFrame([driver_data])], ignore_index=True)
             updated.to_csv(preset_path, index=False, encoding='utf-8-sig')
 
-        due_amount = request.form.get('requested_amount_php')
-        return render_template('booking_success.html', payment_info=PAYMENT_INFO, due_amount=due_amount)
+        return render_template('booking_success.html', payment_info=PAYMENT_INFO, due_amount=computed_pay_php)
 
     # GET: blank form (include min_refuel hint)
     return render_template(

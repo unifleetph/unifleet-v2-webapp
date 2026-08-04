@@ -125,7 +125,9 @@ def test_booking_success_shows_instapay_copy_and_qr(client, monkeypatch):
 
     # R1: PESONet removed, exact amount-due text (Brief-5, ARCH-brief-5 T7)
     assert "PESONet" not in body
-    assert "Amount Due: ₱1" in body
+    # ARCH-brief-7 T1: due_amount = computed_pay_php (total - discount);
+    # discount stubbed to 0 here, so pay == the raw total entered
+    assert "Amount Due: ₱10,000.00" in body
 
     # R2: InstaPay QR present with caption
     assert "instapay_qr.png" in body
@@ -140,3 +142,76 @@ def test_booking_success_shows_instapay_copy_and_qr(client, monkeypatch):
     assert "GoTyme" not in body
     assert "payment_qr.png" not in body
     assert 'alt="UniFleet GoTyme payment QR code"' not in body
+
+
+def test_booking_success_shows_post_discount_amount_due(client, monkeypatch):
+    """ARCH-brief-7 T1: Amount Due must reflect the post-discount amount
+    (total - discount), not the raw pre-discount total entered — proves
+    computed_pay_php, not requested_amount_php, drives the display."""
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    monkeypatch.setattr(
+        main.price_store, "list_stations",
+        lambda fuel_type: [{"id": "teststation", "name": "Test Station",
+                             "price_php_per_liter": 60.0, "updated_at": 0}]
+    )
+    # price ₱60/L, discount ₱5/L; total ₱1200 -> 20L -> discount ₱100 -> pay ₱1,100.00
+    monkeypatch.setattr(main.discount_store, "get_all", lambda fuel_type: {"Test Station": 5.0})
+    monkeypatch.setattr(main.discount_store, "get", lambda station, fuel_type: 5.0)
+
+    resp = client.post("/book", data={
+        "account_code": "HARR",
+        "station": "Test Station",
+        "requested_amount_php": "1200",
+        "refuel_datetime": _valid_refuel(),
+        "driver_mode": "new",
+        "driver_name": "Dave",
+        "vehicle_plate": "XYZ-123",
+        "truck_make": "Isuzu",
+        "truck_model": "NQR",
+        "number_of_wheels": "6",
+        "fuel_type": "Biodiesel",
+        "contact_number": "Harry – 0900-000-0000",
+    })
+
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8")
+    assert "Amount Due: ₱1,100.00" in body
+    assert "Amount Due: ₱1,200.00" not in body
+
+
+def test_booking_rejected_when_discount_exceeds_fuel_amount(client, monkeypatch):
+    """Regression guard (ARCH-brief-7 T1): the computed-pay-<=0 rejection
+    path in main.py's book() sits right next to the due_amount fix and
+    must be unaffected by it — still re-renders book.html with an error,
+    never reaches booking_success.html."""
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    monkeypatch.setattr(
+        main.price_store, "list_stations",
+        lambda fuel_type: [{"id": "teststation", "name": "Test Station",
+                             "price_php_per_liter": 60.0, "updated_at": 0}]
+    )
+    # discount (₱100/L) far exceeds price (₱60/L) — guarantees pay <= 0
+    monkeypatch.setattr(main.discount_store, "get_all", lambda fuel_type: {"Test Station": 100.0})
+    monkeypatch.setattr(main.discount_store, "get", lambda station, fuel_type: 100.0)
+
+    resp = client.post("/book", data={
+        "account_code": "HARR",
+        "station": "Test Station",
+        "requested_amount_php": "1000",
+        "refuel_datetime": _valid_refuel(),
+        "driver_mode": "new",
+        "driver_name": "Dave",
+        "vehicle_plate": "XYZ-123",
+        "truck_make": "Isuzu",
+        "truck_model": "NQR",
+        "number_of_wheels": "6",
+        "fuel_type": "Biodiesel",
+        "contact_number": "Harry – 0900-000-0000",
+    })
+
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8")
+    assert "discount for this station exceeds the fuel amount entered" in body
+    assert "Amount Due" not in body

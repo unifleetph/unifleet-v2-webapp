@@ -134,7 +134,7 @@
 
       <div class="payment-instructions">
         <h2 style="margin-top:0; color:#0054a6;">Next Step: Send Payment</h2>
-        <p class="amount-due">Amount Due: ₱1</p>
+        <p class="amount-due">Amount Due: ₱{{ '{:,.2f}'.format(due_amount|float) }}</p>
 
         <div class="payment-box">
           <h3>🏦 Send to INSTAPAY</h3>
