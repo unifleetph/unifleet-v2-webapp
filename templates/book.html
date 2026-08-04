@@ -258,6 +258,20 @@
       line-height: 1.4;
       text-align: left;
     }
+
+    /* Visually hidden but announced by screen readers (WCAG 3.2.5) —
+       flags the Facebook link's target="_blank" as a context change. */
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
   </style>
 </head>
 <body class="mobile-page">
@@ -302,7 +316,7 @@
         Big savings. Longer trips.
       </p>
       <p style="margin-bottom:0;">
-        Follow our Facebook page: <a href="https://www.facebook.com/people/Fuel-Discounts-by-UniFleet/61589914800072/" target="_blank" rel="noopener">Fuel Discounts by UniFleet</a>
+        Follow our Facebook page: <a href="https://www.facebook.com/people/Fuel-Discounts-by-UniFleet/61589914800072/" target="_blank" rel="noopener">Fuel Discounts by UniFleet<span class="sr-only"> (opens in new tab)</span></a>
       </p>
     </div>
     {% endif %}

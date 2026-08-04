@@ -177,7 +177,7 @@ None — the "How It Works" heading and Tagalog tagline are template-content rem
 
 ## Task T1: Fix Amount Due bug on booking confirmation page
 
-> **Status:** done — all 4 test scenarios pass (`tests/test_book_and_booking_success_copy.py`, 6 tests total in file), full suite 349 passed (347 + 2 new). Regression guard written and confirmed against baseline before the fix landed.
+> **Status:** done — all 3 Test Plan scenarios pass (hardcode removed, post-discount amount, regression guard — `tests/test_book_and_booking_success_copy.py`, 6 tests total in file), full suite 349 passed (347 + 2 new). Regression guard written and confirmed against baseline before the fix landed.
 > **Verification:** test-after
 > **Effort:** s
 > **Priority:** high
@@ -242,7 +242,7 @@ None — the "How It Works" heading and Tagalog tagline are template-content rem
 
 ## Task T2: Terms & Conditions page and book/register copy updates
 
-> **Status:** done — 10/10 verification checklist items evidenced (screenshots + Playwright DOM checks at `docs/qa/brief-7/`). One footprint deviation: `tests/test_book_and_booking_success_copy.py` (T1's Must-NOT-modify file) needed one assertion updated because R9's Tagalog-tagline removal broke it — flagged and approved by the developer before implementing. Discovered mid-implementation and fixed: `main.py` is not bind-mounted into the persistent dev container (only `data/`/`static`/`templates/` are — confirmed in `docker-compose.yml`), so manual/Playwright verification against the live container required an image rebuild (`docker compose up -d --build web`) to pick up both this task's and T1's `main.py` changes; `make test-db` was unaffected since its compose override bind-mounts the full repo.
+> **Status:** done — 10/10 verification checklist items evidenced (screenshots + Playwright DOM checks at `docs/qa/brief-7/`). One footprint deviation: `tests/test_book_and_booking_success_copy.py` (T1's just-landed test file, not explicitly listed in T2's Must-NOT-modify but implicitly T1's footprint) touched 4 assertion lines in `test_book_pre_registration_prompt_updated` — the Tagalog-removal flip (`in body` → `not in body`) was the unavoidable break caused by R9; the other 3 (tightening the account-code link assertion to the full `>>> ... <<<` text, and two new Facebook-link assertions) were additive R7/R10 coverage bundled into the same fix, not strictly required to unbreak the test. Flagged and approved by the developer before implementing. Discovered mid-implementation and fixed: `main.py` is not bind-mounted into the persistent dev container (only `data/`/`static`/`templates/` are — confirmed in `docker-compose.yml`), so manual/Playwright verification against the live container required an image rebuild (`docker compose up -d --build web`) to pick up both this task's and T1's `main.py` changes; `make test-db` was unaffected since its compose override bind-mounts the full repo.
 > **Verification:** ui
 > **Effort:** m
 > **Priority:** medium
