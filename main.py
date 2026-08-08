@@ -953,12 +953,35 @@ def book():
         fuel_type = (request.form.get('fuel_type') or '').strip()
 
         if use_new:
+            # R6/R7 (ARCH-brief-8 T2): all 5 New Driver fields are
+            # mandatory, and Number of Wheels must be >= 2 — enforced
+            # here too since the client-side `required`/`min` attributes
+            # on the (hidden-when-inactive) new-driver fields can be
+            # bypassed.
+            new_driver_name = (request.form.get('driver_name') or '').strip()
+            new_vehicle_plate = (request.form.get('vehicle_plate') or '').strip()
+            new_truck_make = (request.form.get('truck_make') or '').strip()
+            new_truck_model = (request.form.get('truck_model') or '').strip()
+            new_wheels_raw = (request.form.get('number_of_wheels') or '').strip()
+
+            if not (new_driver_name and new_vehicle_plate and new_truck_make
+                    and new_truck_model and new_wheels_raw):
+                return _reject_booking(account_code, "Please fill in all New Driver fields.")
+
+            try:
+                new_wheels = int(new_wheels_raw)
+            except ValueError:
+                return _reject_booking(account_code, "Number of Wheels must be a whole number.")
+
+            if new_wheels < 2:
+                return _reject_booking(account_code, "Number of Wheels must be at least 2.")
+
             driver_data = {
-                'driver_name': request.form.get('driver_name'),
-                'vehicle_plate': request.form.get('vehicle_plate'),
-                'truck_make': request.form.get('truck_make'),
-                'truck_model': request.form.get('truck_model'),
-                'number_of_wheels': request.form.get('number_of_wheels'),
+                'driver_name': new_driver_name,
+                'vehicle_plate': new_vehicle_plate,
+                'truck_make': new_truck_make,
+                'truck_model': new_truck_model,
+                'number_of_wheels': new_wheels_raw,
                 'fuel_type': fuel_type,
             }
         else:

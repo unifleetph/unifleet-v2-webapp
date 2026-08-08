@@ -322,3 +322,90 @@ def test_blank_fuel_type_rejects_booking_no_special_casing(client, monkeypatch):
 
     assert resp.status_code == 200
     assert len(stub.booked) == 0
+
+
+# ============================================================
+# ARCH-brief-8 T2 (R6/R7): New Driver required fields + wheels minimum
+# ============================================================
+
+def _new_driver_payload(**overrides):
+    payload = {
+        "account_code": "HARR", "station": "Test Station",
+        "requested_amount_php": "1000", "refuel_datetime": _valid_refuel(),
+        "driver_mode": "new", "driver_name": "Dave", "vehicle_plate": "XYZ-123",
+        "truck_make": "Isuzu", "truck_model": "NQR", "number_of_wheels": "6",
+        "fuel_type": "Biodiesel", "contact_number": "Harry – 0900-000-0000",
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.parametrize("missing_field", [
+    "driver_name", "vehicle_plate", "truck_make", "truck_model", "number_of_wheels",
+])
+def test_new_driver_missing_required_field_rejects_booking(client, monkeypatch, missing_field):
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Biodiesel",))
+
+    resp = client.post("/book", data=_new_driver_payload(**{missing_field: ""}))
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 0
+
+
+@pytest.mark.parametrize("wheels", ["0", "1"])
+def test_new_driver_wheels_below_minimum_rejects_booking(client, monkeypatch, wheels):
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Biodiesel",))
+
+    resp = client.post("/book", data=_new_driver_payload(number_of_wheels=wheels))
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 0
+
+
+def test_new_driver_wheels_at_minimum_accepts_booking(client, monkeypatch):
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Biodiesel",))
+
+    resp = client.post("/book", data=_new_driver_payload(number_of_wheels="2"))
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 1
+
+
+def test_preset_mode_unaffected_by_new_driver_required_fields(client, monkeypatch, env):
+    """Regression guard: preset mode must not be blocked by the new
+    `required`/`min` attributes on the (hidden) new-driver fields —
+    relies on display:none form controls being exempt from HTML5
+    constraint validation (ARCH A5)."""
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Unleaded",))
+
+    resp = client.post("/book", data={
+        "account_code": "HARR", "station": "Test Station",
+        "requested_amount_php": "1000", "refuel_datetime": _valid_refuel(),
+        "driver_mode": "preset", "driver_select": "Dave|XYZ-123|Isuzu|NQR|6|Unleaded",
+        "fuel_type": "Unleaded", "contact_number": "Harry – 0900-000-0000",
+    })
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 1
+
+
+def test_new_driver_fields_render_required_in_template(client, monkeypatch):
+    """Client-side check: the 5 new-driver inputs carry `required`, and
+    number_of_wheels additionally carries min="2" (R6, R7)."""
+    monkeypatch.setattr(main, "repo", RepoStub(customer=dict(CUST)))
+    resp = client.post("/book", data={"account_code": "HARR"})
+    body = resp.data.decode("utf-8")
+
+    assert 'name="driver_name" class="full-width-input" required' in body
+    assert 'name="number_of_wheels" class="full-width-input" min="2" required' in body
+    assert 'name="truck_make" class="full-width-input" required' in body
+    assert 'name="truck_model" class="full-width-input" required' in body
+    assert 'name="vehicle_plate" class="full-width-input" required' in body

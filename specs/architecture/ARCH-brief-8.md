@@ -237,7 +237,7 @@ Six independent, low-risk copy/layout/asset edits with no business logic: drop t
 
 ## Task T2: New Driver required fields + wheels minimum (R6, R7)
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** test-after
 > **Effort:** s
 > **Priority:** high
