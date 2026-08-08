@@ -28,6 +28,7 @@ VOUCHER_COLUMNS = [
     "truck_make",
     "truck_model",
     "number_of_wheels",
+    "mobile_number",
     "status",
     "redemption_timestamp",
 

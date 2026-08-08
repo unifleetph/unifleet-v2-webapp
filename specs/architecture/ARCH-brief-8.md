@@ -302,7 +302,7 @@ Makes all 5 "New Driver" fields on `/book` mandatory (Driver Full Name, Number o
 
 ## Task T3: `mobile_number` column on `vouchers` (R9 storage)
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** checklist
 > **Effort:** xs
 > **Priority:** high

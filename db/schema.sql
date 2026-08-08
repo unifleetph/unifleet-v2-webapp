@@ -120,6 +120,13 @@ ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS fuel_type VARCHAR(30);
 -- rows stay NULL and fall back to the pre-Brief-5 formula (ARCH-brief-5).
 ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS requested_total_php NUMERIC(12,2);
 
+-- Brief-8 (ARCH-brief-8 T3/T4): booking-time mobile number, collected
+-- alongside the New Driver fields. Digits only, leading zero preserved
+-- (e.g. "09123456789") — country code is a UI-only concern for now
+-- (Philippines/+63, ARCH A2), not persisted separately. Nullable —
+-- historical rows stay NULL, not backfilled.
+ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS mobile_number VARCHAR(20);
+
 -- ============================================================
 -- Presets: per-customer driver/vehicle defaults. UNIQUE on
 -- (account_code, driver_name) prevents duplicate presets for the
