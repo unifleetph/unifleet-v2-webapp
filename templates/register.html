@@ -139,22 +139,27 @@
 
     <form method="POST" action="/register">
       <label for="contact_name">Contact Person Name</label>
-      <input type="text" name="contact_name" id="contact_name" required>
+      <input type="text" name="contact_name" id="contact_name" value="{{ form_values.contact_name if form_values else '' }}" required>
 
       <label for="contact_number">Contact Number (Mobile)</label>
-      <input type="tel" name="contact_number" id="contact_number" required>
+      <div style="display:flex; gap:0.5rem;">
+        <select name="mobile_country_code" id="mobile_country_code" style="flex:0 0 auto;">
+          <option value="+63" selected>+63 (Philippines)</option>
+        </select>
+        <input type="tel" name="contact_number" id="contact_number" style="flex:1 1 auto;" inputmode="numeric" minlength="10" value="{{ form_values.contact_number if form_values else '' }}" required>
+      </div>
 
       <label for="email">Email Address</label>
-      <input type="email" name="email" id="email" required>
+      <input type="email" name="email" id="email" value="{{ form_values.email if form_values else '' }}" required>
 
       <label for="company_name">Company Name (Optional)</label>
-      <input type="text" name="company_name" id="company_name">
+      <input type="text" name="company_name" id="company_name" value="{{ form_values.company_name if form_values else '' }}">
 
       <label for="fleet_size">Total Number of Vehicles in Fleet (Optional)</label>
-      <input type="number" name="fleet_size" id="fleet_size">
+      <input type="number" name="fleet_size" id="fleet_size" value="{{ form_values.fleet_size if form_values else '' }}">
 
       <label for="areas">Preferred Areas for Driver Re-Fueling (Optional)</label>
-      <textarea name="areas" id="areas" placeholder="e.g., SLEX, NLEX, Quezon City, Cavite"></textarea>
+      <textarea name="areas" id="areas" placeholder="e.g., SLEX, NLEX, Quezon City, Cavite">{{ form_values.areas if form_values else '' }}</textarea>
 
       <div class="inline-checkbox">
         <input type="checkbox" name="acknowledge" id="acknowledge" required>

@@ -102,6 +102,7 @@ def _book(client, monkeypatch, repo_stub, amount, price=76.03, discount=5.50):
         "number_of_wheels": "6",
         "fuel_type": "Biodiesel",
         "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
     })
 
 

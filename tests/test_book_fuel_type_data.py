@@ -169,6 +169,7 @@ def test_submitted_fuel_type_independent_of_preset_driver_data(client, monkeypat
         "driver_select": "Dave|XYZ-123|Isuzu|NQR|6|Unleaded",  # preset default: Unleaded
         "fuel_type": "Premium",  # overridden at booking time
         "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
     })
 
     assert resp.status_code == 200

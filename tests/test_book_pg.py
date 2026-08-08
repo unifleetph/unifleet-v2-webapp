@@ -148,6 +148,7 @@ def test_booking_save_resolves_account_code(client, monkeypatch):
         "number_of_wheels": "6",
         "fuel_type": "Biodiesel",
         "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
     })
 
     assert resp.status_code == 200
@@ -187,6 +188,7 @@ def test_booking_row_includes_fuel_type(client, monkeypatch):
         "driver_mode": "new", "driver_name": "Dave", "vehicle_plate": "XYZ-123",
         "truck_make": "Isuzu", "truck_model": "NQR", "number_of_wheels": "6",
         "fuel_type": "Premium", "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
     })
 
     assert resp.status_code == 200
@@ -212,6 +214,7 @@ def test_overridden_fuel_type_persists_as_submitted(client, monkeypatch, env):
         "requested_amount_php": "1000", "refuel_datetime": _valid_refuel(),
         "driver_mode": "preset", "driver_select": "Dave|XYZ-123|Isuzu|NQR|6|Unleaded",
         "fuel_type": "Premium", "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
     })
 
     assert resp.status_code == 200
@@ -240,6 +243,7 @@ def test_override_does_not_mutate_preset_stored_default(client, monkeypatch, env
         "requested_amount_php": "1000", "refuel_datetime": _valid_refuel(),
         "driver_mode": "preset", "driver_select": "Dave|XYZ-123|Isuzu|NQR|6|Unleaded",
         "fuel_type": "Premium", "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
     })
 
     import pandas as pd
@@ -258,6 +262,7 @@ def test_missing_price_for_station_fuel_type_rejects_booking(client, monkeypatch
         "driver_mode": "new", "driver_name": "Dave", "vehicle_plate": "XYZ-123",
         "truck_make": "Isuzu", "truck_model": "NQR", "number_of_wheels": "6",
         "fuel_type": "Unleaded", "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
     })
 
     assert resp.status_code == 200
@@ -276,6 +281,7 @@ def test_price_present_discount_absent_still_succeeds_with_zero_discount(client,
         "driver_mode": "new", "driver_name": "Dave", "vehicle_plate": "XYZ-123",
         "truck_make": "Isuzu", "truck_model": "NQR", "number_of_wheels": "6",
         "fuel_type": "Biodiesel", "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
     })
 
     assert resp.status_code == 200
@@ -298,6 +304,7 @@ def test_no_price_row_at_all_is_not_confused_with_zero_price(client, monkeypatch
         "driver_mode": "new", "driver_name": "Dave", "vehicle_plate": "XYZ-123",
         "truck_make": "Isuzu", "truck_model": "NQR", "number_of_wheels": "6",
         "fuel_type": "Biodiesel", "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
     })
 
     assert resp.status_code == 200
@@ -318,6 +325,7 @@ def test_blank_fuel_type_rejects_booking_no_special_casing(client, monkeypatch):
         "driver_mode": "new", "driver_name": "Dave", "vehicle_plate": "XYZ-123",
         "truck_make": "Isuzu", "truck_model": "NQR", "number_of_wheels": "6",
         "fuel_type": "", "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
     })
 
     assert resp.status_code == 200
@@ -335,6 +343,7 @@ def _new_driver_payload(**overrides):
         "driver_mode": "new", "driver_name": "Dave", "vehicle_plate": "XYZ-123",
         "truck_make": "Isuzu", "truck_model": "NQR", "number_of_wheels": "6",
         "fuel_type": "Biodiesel", "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
     }
     payload.update(overrides)
     return payload
@@ -391,6 +400,7 @@ def test_preset_mode_unaffected_by_new_driver_required_fields(client, monkeypatc
         "requested_amount_php": "1000", "refuel_datetime": _valid_refuel(),
         "driver_mode": "preset", "driver_select": "Dave|XYZ-123|Isuzu|NQR|6|Unleaded",
         "fuel_type": "Unleaded", "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
     })
 
     assert resp.status_code == 200
@@ -409,3 +419,64 @@ def test_new_driver_fields_render_required_in_template(client, monkeypatch):
     assert 'name="truck_make" class="full-width-input" required' in body
     assert 'name="truck_model" class="full-width-input" required' in body
     assert 'name="vehicle_plate" class="full-width-input" required' in body
+
+
+# ============================================================
+# ARCH-brief-8 T4 (R9/R10): mobile_number field on /book
+# ============================================================
+
+def test_book_missing_mobile_number_rejects_booking(client, monkeypatch):
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Biodiesel",))
+
+    resp = client.post("/book", data=_new_driver_payload(mobile_number=""))
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 0
+
+
+def test_book_mobile_number_under_ten_digits_rejects_booking(client, monkeypatch):
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Biodiesel",))
+
+    resp = client.post("/book", data=_new_driver_payload(mobile_number="091234"))
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 0
+
+
+def test_book_mobile_number_stores_digits_with_leading_zero_preserved(client, monkeypatch):
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Biodiesel",))
+
+    resp = client.post("/book", data=_new_driver_payload(mobile_number="09123456789"))
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 1
+    assert stub.booked[0]["mobile_number"] == "09123456789"
+
+
+def test_book_mobile_number_strips_non_digit_characters_on_store(client, monkeypatch):
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Biodiesel",))
+
+    resp = client.post("/book", data=_new_driver_payload(mobile_number="0912-345-6789"))
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 1
+    assert stub.booked[0]["mobile_number"] == "09123456789"
+
+
+def test_book_mobile_number_country_code_select_renders(client, monkeypatch):
+    """Client-side check: /book shows a country-code selector defaulting
+    to +63 (R9)."""
+    monkeypatch.setattr(main, "repo", RepoStub(customer=dict(CUST)))
+    resp = client.post("/book", data={"account_code": "HARR"})
+    body = resp.data.decode("utf-8")
+
+    assert 'name="mobile_country_code"' in body
+    assert '<option value="+63" selected>+63 (Philippines)</option>' in body

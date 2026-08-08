@@ -148,3 +148,46 @@ def test_success_redirect_preserved(client, monkeypatch):
 
     assert resp.status_code == 302
     assert "/register/success?account_code=HARR" in resp.headers["Location"]
+
+
+# ============================================================
+# ARCH-brief-8 T4 (R9/R10): contact_number validation (new reject path)
+# ============================================================
+
+def test_contact_number_under_ten_digits_rejects_registration(client, monkeypatch):
+    """New reject path: register() had no server-side validation before
+    this — a too-short contact_number must now flash an error and
+    re-render the form instead of creating the customer."""
+    stub = RepoStub(exists_seq=[False])
+    _use_repo(monkeypatch, stub)
+
+    form = dict(FORM, contact_number="091234")
+    resp = client.post("/register", data=form)
+
+    assert resp.status_code == 200
+    assert len(stub.created) == 0
+    assert not data_paths.CUSTOMERS_CSV.exists()
+
+
+def test_contact_number_existing_fixture_value_unchanged_on_store(client, monkeypatch):
+    """Regression guard (ARCH A3): the 11-digit fixture value with dashes
+    ("0900-000-0000") passes the new digit-count check (stripping is for
+    the count only) and is stored UNCHANGED — no rewrite of contact_number
+    on this pre-existing field."""
+    stub = RepoStub(exists_seq=[False])
+    _use_repo(monkeypatch, stub)
+
+    client.post("/register", data=FORM)
+
+    assert len(stub.created) == 1
+    assert stub.created[0]["contact_number"] == "0900-000-0000"
+
+
+def test_register_country_code_select_renders(client, monkeypatch):
+    """Client-side check: /register shows a country-code selector
+    defaulting to +63 (R9)."""
+    resp = client.get("/register")
+    body = resp.data.decode("utf-8")
+
+    assert 'name="mobile_country_code"' in body
+    assert '<option value="+63" selected>+63 (Philippines)</option>' in body

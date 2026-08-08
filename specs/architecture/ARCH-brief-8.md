@@ -351,7 +351,7 @@ Adds the `mobile_number` column that T4's validation logic will write to. Follow
 
 ## Task T4: Mobile number field — UI + validation on `/book` and `/register` (R9, R10)
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** m
 > **Priority:** high

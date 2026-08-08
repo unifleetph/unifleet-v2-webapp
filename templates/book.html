@@ -332,6 +332,17 @@
       <label for="contact_number">Name & Mobile Number [for Voucher Delivery]</label>
       <input type="text" name="contact_number" value="{{ customer.contact_name }} – {{ customer.contact_number }}" class="full-width-input" required>
 
+      <!-- Mobile Number (R9/R10, ARCH-brief-8 T4): new, additive field —
+           the free-text field above is left untouched (ARCH Decision #3). -->
+      <label for="mobile_number">Mobile Number</label>
+      <div style="display:flex; gap:0.5rem;">
+        <select name="mobile_country_code" id="mobile_country_code" style="flex:0 0 auto;">
+          <option value="+63" selected>+63 (Philippines)</option>
+        </select>
+        <input type="tel" name="mobile_number" id="mobile_number" class="full-width-input" style="flex:1 1 auto; margin-bottom:0;" inputmode="numeric" pattern="[0-9]{10,}" minlength="10" required>
+      </div>
+      <div class="note" style="margin-top:0.3rem;">Digits only, at least 10 (e.g. 09123456789).</div>
+
       <!-- Fuel Type + Station (T1, ARCH-brief-3-fixes — restored to their
            pre-fuel-types position, ahead of Driver & Vehicle. Fuel Type
            stays paired immediately before Station since the station list

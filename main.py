@@ -651,6 +651,15 @@ def _append_customer_csv_if_absent(new_row):
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
+        # R9/R10 (ARCH-brief-8 T4): contact_number must have >=10 digits.
+        # Validation only — the stripped digit count is checked, but the
+        # stored value is NOT rewritten (ARCH A3: this field predates the
+        # REQ and has existing consumers).
+        contact_number_digits = re.sub(r'\D', '', request.form.get('contact_number') or '')
+        if len(contact_number_digits) < 10:
+            flash("Please enter a valid Contact Number (at least 10 digits).", "error")
+            return render_template('register.html', form_values=request.form)
+
         company_name = request.form.get('company_name', '').strip()
         clean = re.sub(r'[^A-Za-z]', '', company_name.upper())
         account_code = (clean[:4] if len(clean) >= 4 else ''.join(random.choices(string.ascii_uppercase, k=4)))
@@ -994,6 +1003,13 @@ def book():
                 'number_of_wheels': parts[4],
             }
 
+        # R9/R10 (ARCH-brief-8 T4): Mobile Number is required, digits-only,
+        # >=10 digits, leading zero preserved. Additive to the existing
+        # free-text contact_number field, which is untouched (ARCH A3).
+        mobile_number_digits = re.sub(r'\D', '', request.form.get('mobile_number') or '')
+        if len(mobile_number_digits) < 10:
+            return _reject_booking(account_code, "Please enter a valid Mobile Number (at least 10 digits).")
+
         # === NEW: Validate refuel_datetime >= now+24h (Asia/Manila) ===
         refuel_dt_str = (request.form.get('refuel_datetime') or '').strip()
         try:
@@ -1129,6 +1145,7 @@ def book():
 
             'contact_name': request.form.get('contact_number').split('–')[0].strip(),
             'contact_number': request.form.get('contact_number').split('–')[-1].strip(),
+            'mobile_number': mobile_number_digits,
 
             # snapshots
             'price_snapshot_php_per_liter': price_snapshot,

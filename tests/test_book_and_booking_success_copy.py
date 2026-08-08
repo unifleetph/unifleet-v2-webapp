@@ -124,6 +124,7 @@ def test_booking_success_shows_instapay_copy_and_qr(client, monkeypatch):
         "number_of_wheels": "6",
         "fuel_type": "Biodiesel",
         "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
     })
 
     assert resp.status_code == 200
@@ -178,6 +179,7 @@ def test_booking_success_shows_post_discount_amount_due(client, monkeypatch):
         "number_of_wheels": "6",
         "fuel_type": "Biodiesel",
         "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
     })
 
     assert resp.status_code == 200
