@@ -58,6 +58,37 @@
     .button:hover {
       background-color: #e65500;
     }
+
+    .code-reminder {
+      background-color: #fff3cd;
+      color: #7a5c00;
+      font-weight: bold;
+      padding: 0.75rem 1rem;
+      border-radius: 6px;
+      margin: 0 0 1rem 0;
+    }
+
+    /* Mobile spacing cleanup (R8): tighter, more consistent padding at
+       narrow widths than the desktop 2rem default. */
+    @media (max-width: 480px) {
+      .mobile-page.register-page .centered-content {
+        padding: 1.25rem 1rem;
+        margin: 1rem auto 0;
+      }
+
+      .mobile-page.register-page .page-title {
+        padding: 1.25rem 1rem 0.75rem;
+        font-size: 1.5rem;
+      }
+
+      .mobile-page.register-page .code-reminder {
+        margin-bottom: 0.85rem;
+      }
+
+      .mobile-page.register-page .account-code {
+        margin: 0.85rem 0;
+      }
+    }
   </style>
 </head>
 <body class="mobile-page register-page">
@@ -69,6 +100,7 @@
   <div class="page-title">Registration Complete</div>
 
   <main class="centered-content">
+    <p class="code-reminder">Please Screenshot &amp; Save this CODE!</p>
     <p>Thank you for registering your fleet with UniFleet.</p>
     <p>Please <strong>save your 4-letter Account Code</strong> below — you'll need this to book fuel:</p>
 

@@ -310,6 +310,9 @@
         <li>Get CODE</li>
       </ol>
       <p style="margin-bottom:0.5rem;">
+        Malaking tipid. Mas mahabang biyahe.
+      </p>
+      <p style="margin-bottom:0.5rem;">
         Big savings. Longer trips.
       </p>
       <p style="margin-bottom:0;">
@@ -324,7 +327,7 @@
     <form method="POST" class="section">
       <input type="hidden" name="account_code" value="{{ customer.account_code }}">
 
-      <p><strong>Welcome, {{ customer.company_name }}</strong></p>
+      <p><strong>Welcome</strong></p>
 
       <label for="contact_number">Name & Mobile Number [for Voucher Delivery]</label>
       <input type="text" name="contact_number" value="{{ customer.contact_name }} – {{ customer.contact_number }}" class="full-width-input" required>
@@ -496,7 +499,7 @@
 
       <div class="inline-checkbox">
         <input type="checkbox" name="agree_terms" id="agree_terms" required>
-        <label for="agree_terms">I agree to the <a href="{{ url_for('terms') }}">Terms &amp; Conditions</a>.</label>
+        <label for="agree_terms">I agree to the <a href="{{ url_for('terms') }}" target="_blank" rel="noopener">Terms &amp; Conditions</a>.</label>
       </div>
 
       <button type="submit">Submit Booking &amp; Start Payment</button>

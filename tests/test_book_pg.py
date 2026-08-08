@@ -76,7 +76,7 @@ def test_resolves_via_postgres(client, monkeypatch):
     monkeypatch.setattr(main, "repo", RepoStub(customer=dict(CUST)))
     resp = client.post("/book", data={"account_code": "HARR"})
     assert resp.status_code == 200
-    assert b"Welcome, Harrods" in resp.data
+    assert b"<strong>Welcome</strong>" in resp.data
     assert b"Harry" in resp.data
 
 
@@ -85,7 +85,7 @@ def test_unknown_account_renders_empty_form(client, monkeypatch):
     monkeypatch.setattr(main, "repo", RepoStub(customer=None))
     resp = client.post("/book", data={"account_code": "ZZZZ"})
     assert resp.status_code == 200
-    assert b"Welcome, Harrods" not in resp.data
+    assert b"<strong>Welcome</strong>" not in resp.data
     assert b"Enter Your 4-Letter Account Code" in resp.data
 
 
@@ -99,7 +99,8 @@ def test_csv_fallback_on_pg_miss(client, env, monkeypatch):
     monkeypatch.setattr(main, "repo", RepoStub(customer=None))
     resp = client.post("/book", data={"account_code": "HARR"})
     assert resp.status_code == 200
-    assert b"Welcome, Harrods" in resp.data
+    assert b"<strong>Welcome</strong>" in resp.data
+    assert b"Harry" in resp.data
 
 
 def test_pg_down_falls_back_to_csv(client, env, monkeypatch):
@@ -108,7 +109,8 @@ def test_pg_down_falls_back_to_csv(client, env, monkeypatch):
     monkeypatch.setattr(main, "repo", RepoStub(get_error=RuntimeError("pg down")))
     resp = client.post("/book", data={"account_code": "HARR"})
     assert resp.status_code == 200
-    assert b"Welcome, Harrods" in resp.data
+    assert b"<strong>Welcome</strong>" in resp.data
+    assert b"Harry" in resp.data
 
 
 # ============================================================
