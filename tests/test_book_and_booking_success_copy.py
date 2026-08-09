@@ -70,10 +70,13 @@ def test_book_pre_registration_prompt_updated(client, monkeypatch):
     r = client.get("/book")
     body = r.data.decode("utf-8")
     # ARCH-brief-7 T2 (R9 removed the Tagalog tagline, kept the English
-    # one; R10 added the Facebook link) + follow-up: the >>> <<< account-code
-    # callout link was removed entirely. ARCH-brief-8 T1 (R3) re-adds the
-    # Tagalog tagline above the English one.
-    assert "Register Vehicle To Get 4-Letter Account CODE" not in body
+    # one; R10 added the Facebook link) + follow-up (f5cc0c9): the >>> <<<
+    # account-code callout link and "How It Works" heading were removed.
+    # ARCH-brief-8 T1 (R3) re-added the Tagalog tagline; a follow-up
+    # correction restored the >>> <<< link and "How It Works" heading
+    # (image-14.png's full target, not just the tagline).
+    assert "Register Vehicle To Get 4-Letter Account CODE" in body
+    assert "How It Works" in body
     assert "Malaking tipid. Mas mahabang biyahe." in body
     assert "Big savings. Longer trips." in body
     assert "Fuel Discounts by UniFleet" in body
