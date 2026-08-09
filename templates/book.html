@@ -340,10 +340,10 @@
            the free-text field above is left untouched (ARCH Decision #3). -->
       <label for="mobile_number">Mobile Number</label>
       <div style="display:flex; gap:0.5rem;">
-        <select name="mobile_country_code" id="mobile_country_code" style="flex:0 0 auto;">
+        <select name="mobile_country_code" id="mobile_country_code" style="flex:0 0 140px; width:140px;">
           <option value="+63" selected>+63 (Philippines)</option>
         </select>
-        <input type="tel" name="mobile_number" id="mobile_number" class="full-width-input" style="flex:1 1 auto; margin-bottom:0;" inputmode="numeric" pattern="[0-9]{10,15}" minlength="10" maxlength="15" required>
+        <input type="tel" name="mobile_number" id="mobile_number" class="full-width-input" style="flex:1 1 0%; min-width:0; margin-bottom:0;" inputmode="numeric" pattern="[0-9]{10,15}" minlength="10" maxlength="15" required>
       </div>
       <div class="note" style="margin-top:0.3rem;">Digits only, at least 10 (e.g. 09123456789).</div>
 
