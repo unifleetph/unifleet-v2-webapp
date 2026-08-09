@@ -162,7 +162,7 @@
       <textarea name="areas" id="areas" placeholder="e.g., SLEX, NLEX, Quezon City, Cavite">{{ form_values.areas if form_values else '' }}</textarea>
 
       <div class="inline-checkbox">
-        <input type="checkbox" name="acknowledge" id="acknowledge" required>
+        <input type="checkbox" name="acknowledge" id="acknowledge" {% if form_values and form_values.get('acknowledge') %}checked{% endif %} required>
         <label for="acknowledge">I acknowledge that fuel bookings must be done at least 24 hours in advance, otherwise my booking may be cancelled.</label>
       </div>
 

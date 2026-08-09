@@ -386,6 +386,29 @@ def test_new_driver_wheels_at_minimum_accepts_booking(client, monkeypatch):
     assert len(stub.booked) == 1
 
 
+def test_new_driver_wheels_non_numeric_rejects_booking(client, monkeypatch):
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Biodiesel",))
+
+    resp = client.post("/book", data=_new_driver_payload(number_of_wheels="abc"))
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 0
+
+
+@pytest.mark.parametrize("driver_name", ["   ", "\t\n"])
+def test_new_driver_whitespace_only_name_rejects_booking(client, monkeypatch, driver_name):
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Biodiesel",))
+
+    resp = client.post("/book", data=_new_driver_payload(driver_name=driver_name))
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 0
+
+
 def test_preset_mode_unaffected_by_new_driver_required_fields(client, monkeypatch, env):
     """Regression guard: preset mode must not be blocked by the new
     `required`/`min` attributes on the (hidden) new-driver fields —
@@ -469,6 +492,44 @@ def test_book_mobile_number_strips_non_digit_characters_on_store(client, monkeyp
     assert resp.status_code == 200
     assert len(stub.booked) == 1
     assert stub.booked[0]["mobile_number"] == "09123456789"
+
+
+def test_book_mobile_number_exactly_ten_digits_accepts_booking(client, monkeypatch):
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Biodiesel",))
+
+    resp = client.post("/book", data=_new_driver_payload(mobile_number="0912345678"))
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 1
+    assert stub.booked[0]["mobile_number"] == "0912345678"
+
+
+def test_book_mobile_number_exactly_fifteen_digits_accepts_booking(client, monkeypatch):
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Biodiesel",))
+
+    resp = client.post("/book", data=_new_driver_payload(mobile_number="091234567890123"))
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 1
+    assert stub.booked[0]["mobile_number"] == "091234567890123"
+
+
+def test_book_mobile_number_over_fifteen_digits_rejects_booking(client, monkeypatch):
+    """Regression guard for the code-review Critical finding: an oversized
+    mobile number must be rejected before it can reach the VARCHAR(20)
+    vouchers.mobile_number column."""
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Biodiesel",))
+
+    resp = client.post("/book", data=_new_driver_payload(mobile_number="0912345678901234"))
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 0
 
 
 def test_book_mobile_number_country_code_select_renders(client, monkeypatch):

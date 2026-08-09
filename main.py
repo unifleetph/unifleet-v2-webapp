@@ -705,7 +705,7 @@ def register():
 
         if not stored:
             flash("Could not generate a unique account code. Please try registering again.", "error")
-            return render_template('register.html')
+            return render_template('register.html', form_values=request.form)
 
         new_row['account_code'] = account_code
         _append_customer_csv_if_absent(new_row)
@@ -746,6 +746,51 @@ def admin_login():
 def admin_logout():
     session.pop('admin', None)
     return redirect(url_for('admin_login'))
+
+def _validate_new_driver_fields(form):
+    """R6/R7 (ARCH-brief-8 T2): all 5 New Driver fields are mandatory, and
+    Number of Wheels must be >= 2 — enforced here too since the client-side
+    `required`/`min` attributes on the (hidden-when-inactive) new-driver
+    fields can be bypassed. Returns (driver_fields_dict, None) on success,
+    or (None, error_message) on failure."""
+    driver_name = (form.get('driver_name') or '').strip()
+    vehicle_plate = (form.get('vehicle_plate') or '').strip()
+    truck_make = (form.get('truck_make') or '').strip()
+    truck_model = (form.get('truck_model') or '').strip()
+    wheels_raw = (form.get('number_of_wheels') or '').strip()
+
+    if not (driver_name and vehicle_plate and truck_make and truck_model and wheels_raw):
+        return None, "Please fill in all New Driver fields."
+
+    try:
+        wheels = int(wheels_raw)
+    except ValueError:
+        return None, "Number of Wheels must be a whole number."
+
+    if wheels < 2:
+        return None, "Number of Wheels must be at least 2."
+
+    return {
+        'driver_name': driver_name,
+        'vehicle_plate': vehicle_plate,
+        'truck_make': truck_make,
+        'truck_model': truck_model,
+        'number_of_wheels': wheels_raw,
+    }, None
+
+
+def _validate_mobile_number(form):
+    """R9/R10 (ARCH-brief-8 T4): Mobile Number is required, digits-only,
+    10-15 digits (E.164 max), leading zero preserved. Upper bound matters:
+    vouchers.mobile_number is VARCHAR(20) — without it, an oversized value
+    raises on INSERT past the booking-save try/except, straight to a false
+    "Booking Submitted" success page (code-review finding, T4). Returns
+    (digits, None) on success, or (None, error_message) on failure."""
+    digits = re.sub(r'\D', '', form.get('mobile_number') or '')
+    if not (10 <= len(digits) <= 15):
+        return None, "Please enter a valid Mobile Number (10-15 digits)."
+    return digits, None
+
 
 @app.route('/book', methods=['GET', 'POST'])
 def book():
@@ -962,37 +1007,10 @@ def book():
         fuel_type = (request.form.get('fuel_type') or '').strip()
 
         if use_new:
-            # R6/R7 (ARCH-brief-8 T2): all 5 New Driver fields are
-            # mandatory, and Number of Wheels must be >= 2 — enforced
-            # here too since the client-side `required`/`min` attributes
-            # on the (hidden-when-inactive) new-driver fields can be
-            # bypassed.
-            new_driver_name = (request.form.get('driver_name') or '').strip()
-            new_vehicle_plate = (request.form.get('vehicle_plate') or '').strip()
-            new_truck_make = (request.form.get('truck_make') or '').strip()
-            new_truck_model = (request.form.get('truck_model') or '').strip()
-            new_wheels_raw = (request.form.get('number_of_wheels') or '').strip()
-
-            if not (new_driver_name and new_vehicle_plate and new_truck_make
-                    and new_truck_model and new_wheels_raw):
-                return _reject_booking(account_code, "Please fill in all New Driver fields.")
-
-            try:
-                new_wheels = int(new_wheels_raw)
-            except ValueError:
-                return _reject_booking(account_code, "Number of Wheels must be a whole number.")
-
-            if new_wheels < 2:
-                return _reject_booking(account_code, "Number of Wheels must be at least 2.")
-
-            driver_data = {
-                'driver_name': new_driver_name,
-                'vehicle_plate': new_vehicle_plate,
-                'truck_make': new_truck_make,
-                'truck_model': new_truck_model,
-                'number_of_wheels': new_wheels_raw,
-                'fuel_type': fuel_type,
-            }
+            driver_data, error = _validate_new_driver_fields(request.form)
+            if error:
+                return _reject_booking(account_code, error)
+            driver_data['fuel_type'] = fuel_type
         else:
             parts = request.form.get('driver_select').split('|')
             driver_data = {
@@ -1003,12 +1021,9 @@ def book():
                 'number_of_wheels': parts[4],
             }
 
-        # R9/R10 (ARCH-brief-8 T4): Mobile Number is required, digits-only,
-        # >=10 digits, leading zero preserved. Additive to the existing
-        # free-text contact_number field, which is untouched (ARCH A3).
-        mobile_number_digits = re.sub(r'\D', '', request.form.get('mobile_number') or '')
-        if len(mobile_number_digits) < 10:
-            return _reject_booking(account_code, "Please enter a valid Mobile Number (at least 10 digits).")
+        mobile_number_digits, error = _validate_mobile_number(request.form)
+        if error:
+            return _reject_booking(account_code, error)
 
         # === NEW: Validate refuel_datetime >= now+24h (Asia/Manila) ===
         refuel_dt_str = (request.form.get('refuel_datetime') or '').strip()

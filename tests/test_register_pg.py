@@ -163,10 +163,26 @@ def test_contact_number_under_ten_digits_rejects_registration(client, monkeypatc
 
     form = dict(FORM, contact_number="091234")
     resp = client.post("/register", data=form)
+    body = resp.data.decode("utf-8")
 
     assert resp.status_code == 200
     assert len(stub.created) == 0
     assert not data_paths.CUSTOMERS_CSV.exists()
+    assert "Please enter a valid Contact Number" in body
+    # form values (other than the rejected field) are retained on re-render
+    assert 'value="091234"' in body
+    assert 'value="Harrods"' in body
+
+
+def test_contact_number_exactly_ten_digits_accepts_registration(client, monkeypatch):
+    stub = RepoStub(exists_seq=[False])
+    _use_repo(monkeypatch, stub)
+
+    form = dict(FORM, contact_number="0900000000")
+    resp = client.post("/register", data=form)
+
+    assert resp.status_code == 302
+    assert len(stub.created) == 1
 
 
 def test_contact_number_existing_fixture_value_unchanged_on_store(client, monkeypatch):
