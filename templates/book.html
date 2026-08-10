@@ -336,17 +336,6 @@
       <label for="contact_number">Name & Mobile Number [for Voucher Delivery]</label>
       <input type="text" name="contact_number" value="{{ customer.contact_name }} – {{ customer.contact_number }}" class="full-width-input" required>
 
-      <!-- Mobile Number (R9/R10, ARCH-brief-8 T4): new, additive field —
-           the free-text field above is left untouched (ARCH Decision #3). -->
-      <label for="mobile_number">Mobile Number</label>
-      <div style="display:flex; gap:0.5rem;">
-        <select name="mobile_country_code" id="mobile_country_code" class="full-width-input" style="flex:0 0 140px; width:140px; margin-bottom:0;">
-          <option value="+63" selected>+63 (Philippines)</option>
-        </select>
-        <input type="tel" name="mobile_number" id="mobile_number" class="full-width-input" style="flex:1 1 0%; min-width:0; margin-bottom:0;" inputmode="numeric" pattern="[0-9]{10,15}" minlength="10" maxlength="15" required>
-      </div>
-      <div class="note" style="margin-top:0.3rem;">Digits only, at least 10 (e.g. 09123456789).</div>
-
       <!-- Fuel Type + Station (T1, ARCH-brief-3-fixes — restored to their
            pre-fuel-types position, ahead of Driver & Vehicle. Fuel Type
            stays paired immediately before Station since the station list
@@ -484,8 +473,14 @@
       <div id="preset_fields">
         <label for="driver_select">Select from Existing Presets</label>
         <select name="driver_select" id="driver_select" class="full-width-input">
+          {% set submitted_parts = (form_values.get('driver_select', '') if form_values else '').split('|') %}
           {% for row in presets %}
-          <option value="{{ row.driver_name }}|{{ row.vehicle_plate }}|{{ row.truck_make }}|{{ row.truck_model }}|{{ row.number_of_wheels }}|{{ row.fuel_type }}">
+          {% set option_value = row.driver_name ~ '|' ~ row.vehicle_plate ~ '|' ~ row.truck_make ~ '|' ~ row.truck_model ~ '|' ~ row.number_of_wheels|string ~ '|' ~ row.fuel_type ~ '|' ~ row.mobile_number %}
+          {# Match on driver identity (name+plate), not full-string equality —
+             the value's segment count can change across deploys (e.g. this
+             follow-up added a 7th, mobile_number, segment), so an exact
+             match would wrongly drop the retained selection on re-render. #}
+          <option value="{{ option_value }}" {% if submitted_parts[0] == row.driver_name and submitted_parts|length > 1 and submitted_parts[1] == row.vehicle_plate %}selected{% endif %}>
             {{ row.driver_name }} – {{ row.vehicle_plate }}
           </option>
           {% endfor %}
@@ -512,6 +507,22 @@
         <input type="text" name="vehicle_plate" class="full-width-input" required>
       </div>
 
+      <!-- Driver Mobile Number (moved from customer-level, ARCH-brief-8
+           follow-up): a per-driver attribute, persisted to that driver's
+           preset. Always shown+required in "new" mode; shown+required in
+           "preset" mode only when the selected preset has no saved number
+           yet (backfilled on submit) — toggled by updateMobileFieldVisibility(). -->
+      <div id="driver_mobile_fields" style="display: none;">
+        <label for="mobile_number">Driver Mobile Number</label>
+        <div style="display:flex; gap:0.5rem;">
+          <select name="mobile_country_code" id="mobile_country_code" class="full-width-input" style="flex:0 0 140px; width:140px; margin-bottom:0;">
+            <option value="+63" selected>+63 (Philippines)</option>
+          </select>
+          <input type="tel" name="mobile_number" id="mobile_number" class="full-width-input" style="flex:1 1 0%; min-width:0; margin-bottom:0;" inputmode="numeric" pattern="[0-9]{10,15}" minlength="10" maxlength="15">
+        </div>
+        <div class="note" style="margin-top:0.3rem;">Digits only, at least 10 (e.g. 09123456789).</div>
+      </div>
+
       <div class="inline-checkbox">
         <input type="checkbox" name="agree_terms" id="agree_terms" required>
         <label for="agree_terms">I agree to the <a href="{{ url_for('terms') }}" target="_blank" rel="noopener">Terms &amp; Conditions</a>.</label>
@@ -527,6 +538,9 @@
     const modeSelect = document.getElementById('driver_mode');
     const presetFields = document.getElementById('preset_fields');
     const newFields = document.getElementById('new_driver_fields');
+    const driverMobileFields = document.getElementById('driver_mobile_fields');
+    const driverSelectEl = document.getElementById('driver_select');
+    const mobileNumberInput = document.getElementById('mobile_number');
 
     function toggleDriverMode() {
       const mode = modeSelect.value;
@@ -539,8 +553,38 @@
       }
     }
 
-    modeSelect.addEventListener('change', toggleDriverMode);
-    window.addEventListener('load', toggleDriverMode); // Initial load
+    // Driver Mobile Number (moved from customer-level): always required in
+    // "new" mode; in "preset" mode, only shown+required when the selected
+    // preset has no saved number yet (7th pipe segment of driver_select's
+    // value, mirrors how fuel_type is parsed as the 6th segment below).
+    function updateMobileFieldVisibility() {
+      const mode = modeSelect.value;
+      let show = true;
+      if (mode === 'preset' && driverSelectEl) {
+        const parts = (driverSelectEl.value || '').split('|');
+        const presetMobile = (parts[6] || '').trim();
+        show = presetMobile === '';
+      }
+      driverMobileFields.style.display = show ? 'block' : 'none';
+      if (mobileNumberInput) {
+        mobileNumberInput.required = show;
+        if (!show) {
+          mobileNumberInput.value = '';
+        }
+      }
+    }
+
+    modeSelect.addEventListener('change', function () {
+      toggleDriverMode();
+      updateMobileFieldVisibility();
+    });
+    if (driverSelectEl) {
+      driverSelectEl.addEventListener('change', updateMobileFieldVisibility);
+    }
+    window.addEventListener('load', function () {
+      toggleDriverMode(); // Initial load
+      updateMobileFieldVisibility();
+    });
   </script>
 
   <!-- Fuel-type-aware station filtering + live discount calculator

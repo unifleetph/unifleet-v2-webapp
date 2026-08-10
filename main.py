@@ -779,14 +779,19 @@ def _validate_new_driver_fields(form):
     }, None
 
 
-def _validate_mobile_number(form):
-    """R9/R10 (ARCH-brief-8 T4): Mobile Number is required, digits-only,
-    10-15 digits (E.164 max), leading zero preserved. Upper bound matters:
-    vouchers.mobile_number is VARCHAR(20) — without it, an oversized value
-    raises on INSERT past the booking-save try/except, straight to a false
+def _validate_mobile_digits(raw_value):
+    """Mobile Number is digits-only, 10-15 digits (E.164 max), leading zero
+    preserved. Upper bound matters: vouchers.mobile_number (and the preset
+    CSV's mirror column) is bounded — without a max, an oversized value can
+    raise deep in the save path, past validation, straight to a false
     "Booking Submitted" success page (code-review finding, T4). Returns
-    (digits, None) on success, or (None, error_message) on failure."""
-    digits = re.sub(r'\D', '', form.get('mobile_number') or '')
+    (digits, None) on success, or (None, error_message) on failure.
+
+    Driver-level attribute (moved from customer-level, ARCH-brief-8
+    follow-up): called from book()'s new-driver branch (always required)
+    and its preset branch (only when the selected preset has no number
+    saved yet — see the driver_select 7th-segment parsing there)."""
+    digits = re.sub(r'\D', '', raw_value or '')
     if not (10 <= len(digits) <= 15):
         return None, "Please enter a valid Mobile Number (10-15 digits)."
     return digits, None
@@ -919,10 +924,16 @@ def book():
         to "Biodiesel" (ARCH R5).
         """
         preset_path = str(data_paths.preset_csv_path(account_code))
-        presets = pd.read_csv(preset_path, encoding='utf-8-sig').to_dict(orient='records') if os.path.isfile(preset_path) else []
+        presets = pd.read_csv(preset_path, encoding='utf-8-sig', dtype={'mobile_number': str}).to_dict(orient='records') if os.path.isfile(preset_path) else []
         for p in presets:
             if p.get('fuel_type') == 'Diesel':
                 p['fuel_type'] = ''
+            # Legacy presets (saved before ARCH-brief-8's driver-mobile
+            # follow-up) have no mobile_number column/value — normalize to
+            # '' so the template and JS blank-check never see NaN/missing.
+            mobile = p.get('mobile_number')
+            if not mobile or (isinstance(mobile, float) and pd.isna(mobile)):
+                p['mobile_number'] = ''
         return presets
 
     def _reject_booking(account_code, message):
@@ -1011,7 +1022,17 @@ def book():
             if error:
                 return _reject_booking(account_code, error)
             driver_data['fuel_type'] = fuel_type
+
+            # Driver Mobile Number (moved from customer-level, ARCH-brief-8
+            # follow-up): always required when adding a new driver.
+            mobile_digits, error = _validate_mobile_digits(request.form.get('mobile_number'))
+            if error:
+                return _reject_booking(account_code, error)
+            driver_data['mobile_number'] = mobile_digits
         else:
+            # parts[6] (mobile_number), like parts[5] (fuel_type) above it,
+            # is server-rendered from this account's own preset CSV — same
+            # trust model as parts[0..4], not a new attack surface.
             parts = request.form.get('driver_select').split('|')
             driver_data = {
                 'driver_name': parts[0],
@@ -1021,9 +1042,14 @@ def book():
                 'number_of_wheels': parts[4],
             }
 
-        mobile_number_digits, error = _validate_mobile_number(request.form)
-        if error:
-            return _reject_booking(account_code, error)
+            preset_mobile = (parts[6].strip() if len(parts) > 6 else '')
+            if preset_mobile:
+                driver_data['mobile_number'] = preset_mobile
+            else:
+                mobile_digits, error = _validate_mobile_digits(request.form.get('mobile_number'))
+                if error:
+                    return _reject_booking(account_code, "Please enter a valid Mobile Number for this driver (10-15 digits).")
+                driver_data['mobile_number'] = mobile_digits
 
         # === NEW: Validate refuel_datetime >= now+24h (Asia/Manila) ===
         refuel_dt_str = (request.form.get('refuel_datetime') or '').strip()
@@ -1160,7 +1186,7 @@ def book():
 
             'contact_name': request.form.get('contact_number').split('–')[0].strip(),
             'contact_number': request.form.get('contact_number').split('–')[-1].strip(),
-            'mobile_number': mobile_number_digits,
+            'mobile_number': driver_data['mobile_number'],
 
             # snapshots
             'price_snapshot_php_per_liter': price_snapshot,
@@ -1181,7 +1207,7 @@ def book():
             print("⚠️ Failed to create Unverified booking:", e)
 
         preset_path = str(data_paths.preset_csv_path(account_code))
-        existing = pd.read_csv(preset_path, encoding='utf-8-sig') if os.path.isfile(preset_path) else pd.DataFrame()
+        existing = pd.read_csv(preset_path, encoding='utf-8-sig', dtype={'mobile_number': str}) if os.path.isfile(preset_path) else pd.DataFrame()
         plate_key = str(driver_data['vehicle_plate']).strip().upper()
         exists = (
             'vehicle_plate' in existing.columns
@@ -1190,6 +1216,23 @@ def book():
         if not exists:
             updated = pd.concat([existing, pd.DataFrame([driver_data])], ignore_index=True)
             updated.to_csv(preset_path, index=False, encoding='utf-8-sig')
+        else:
+            # Driver Mobile Number backfill (ARCH-brief-8 follow-up): a
+            # legacy preset with no saved number gets one filled in here,
+            # once the customer supplies it for this booking, so future
+            # bookings with this driver won't need to ask again.
+            mask = existing['vehicle_plate'].astype(str).str.strip().str.upper().eq(plate_key)
+            existing_mobile = existing.loc[mask, 'mobile_number'] if 'mobile_number' in existing.columns else pd.Series(dtype=object)
+            needs_backfill = (
+                'mobile_number' not in existing.columns
+                or existing_mobile.isna().any()
+                or existing_mobile.astype(str).str.strip().eq('').any()
+            )
+            if needs_backfill and driver_data.get('mobile_number'):
+                if 'mobile_number' not in existing.columns:
+                    existing['mobile_number'] = ''
+                existing.loc[mask, 'mobile_number'] = driver_data['mobile_number']
+                existing.to_csv(preset_path, index=False, encoding='utf-8-sig')
 
         return render_template('booking_success.html', payment_info=PAYMENT_INFO, due_amount=computed_pay_php)
 

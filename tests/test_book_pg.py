@@ -541,3 +541,169 @@ def test_book_mobile_number_country_code_select_renders(client, monkeypatch):
 
     assert 'name="mobile_country_code"' in body
     assert '<option value="+63" selected>+63 (Philippines)</option>' in body
+
+
+# ============================================================
+# Driver Mobile Number moved to driver/preset level (follow-up to T4):
+# persists on the preset, backfilled for legacy presets missing it.
+# ============================================================
+
+def test_legacy_preset_missing_mobile_number_rejects_booking(client, monkeypatch, env):
+    """A legacy 6-column preset CSV (no mobile_number column at all) with
+    no mobile_number submitted must be rejected — the driver has no number
+    on file yet, so one is required for this booking."""
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Unleaded",))
+
+    preset_path = data_paths.preset_csv_path("HARR")
+    preset_path.write_text(
+        "driver_name,vehicle_plate,truck_make,truck_model,number_of_wheels,fuel_type\n"
+        "Dave,XYZ-123,Isuzu,NQR,6,Unleaded\n"
+    )
+
+    resp = client.post("/book", data={
+        "account_code": "HARR", "station": "Test Station",
+        "requested_amount_php": "1000", "refuel_datetime": _valid_refuel(),
+        "driver_mode": "preset", "driver_select": "Dave|XYZ-123|Isuzu|NQR|6|Unleaded",
+        "fuel_type": "Unleaded", "contact_number": "Harry – 0900-000-0000",
+    })
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 0
+
+
+def test_legacy_preset_with_mobile_number_accepts_and_backfills(client, monkeypatch, env):
+    """A legacy preset with no saved number, given a valid mobile_number
+    for this booking, is accepted AND the preset CSV row is backfilled so
+    future bookings with this driver won't need to ask again."""
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Unleaded",))
+
+    preset_path = data_paths.preset_csv_path("HARR")
+    preset_path.write_text(
+        "driver_name,vehicle_plate,truck_make,truck_model,number_of_wheels,fuel_type\n"
+        "Dave,XYZ-123,Isuzu,NQR,6,Unleaded\n"
+    )
+
+    resp = client.post("/book", data={
+        "account_code": "HARR", "station": "Test Station",
+        "requested_amount_php": "1000", "refuel_datetime": _valid_refuel(),
+        "driver_mode": "preset", "driver_select": "Dave|XYZ-123|Isuzu|NQR|6|Unleaded",
+        "fuel_type": "Unleaded", "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
+    })
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 1
+    assert stub.booked[0]["mobile_number"] == "09123456789"
+
+    import pandas as pd
+    after = pd.read_csv(preset_path, encoding="utf-8-sig", dtype={'mobile_number': str})
+    assert after.iloc[0]["mobile_number"] == "09123456789"
+
+
+def test_preset_with_saved_mobile_number_no_resubmit_needed(client, monkeypatch, env):
+    """A preset that already carries a saved mobile number (7th pipe
+    segment) is accepted with no mobile_number in the POST body at all,
+    and the preset CSV is left unchanged (no backfill write)."""
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Unleaded",))
+
+    preset_path = data_paths.preset_csv_path("HARR")
+    preset_path.write_text(
+        "driver_name,vehicle_plate,truck_make,truck_model,number_of_wheels,fuel_type,mobile_number\n"
+        "Dave,XYZ-123,Isuzu,NQR,6,Unleaded,09123456789\n"
+    )
+    before_mtime = preset_path.stat().st_mtime
+
+    resp = client.post("/book", data={
+        "account_code": "HARR", "station": "Test Station",
+        "requested_amount_php": "1000", "refuel_datetime": _valid_refuel(),
+        "driver_mode": "preset",
+        "driver_select": "Dave|XYZ-123|Isuzu|NQR|6|Unleaded|09123456789",
+        "fuel_type": "Unleaded", "contact_number": "Harry – 0900-000-0000",
+    })
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 1
+    assert stub.booked[0]["mobile_number"] == "09123456789"
+    assert preset_path.stat().st_mtime == before_mtime  # no unnecessary rewrite
+
+
+def test_new_driver_missing_mobile_number_rejects_booking(client, monkeypatch):
+    """Mobile Number is always required when adding a new driver."""
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Biodiesel",))
+
+    resp = client.post("/book", data=_new_driver_payload(mobile_number=""))
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 0
+
+
+def test_new_driver_mobile_number_saved_to_new_preset(client, monkeypatch, env):
+    """A brand-new driver's mobile number is saved into the new preset row."""
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Biodiesel",))
+
+    resp = client.post("/book", data=_new_driver_payload())
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 1
+
+    import pandas as pd
+    preset_path = data_paths.preset_csv_path("HARR")
+    saved = pd.read_csv(preset_path, encoding="utf-8-sig", dtype={'mobile_number': str})
+    assert saved.iloc[0]["mobile_number"] == "09123456789"
+
+
+def test_load_presets_blanks_missing_mobile_number_for_legacy_rows(client, monkeypatch, env):
+    """_load_presets normalizes a missing mobile_number column to '' for
+    legacy rows, so the template/JS never see NaN."""
+    monkeypatch.setattr(main, "repo", RepoStub(customer=dict(CUST)))
+    _stub_priced_station(monkeypatch, fuel_types=("Unleaded",))
+
+    preset_path = data_paths.preset_csv_path("HARR")
+    preset_path.write_text(
+        "driver_name,vehicle_plate,truck_make,truck_model,number_of_wheels,fuel_type\n"
+        "Dave,XYZ-123,Isuzu,NQR,6,Unleaded\n"
+    )
+
+    resp = client.post("/book", data={"account_code": "HARR"})
+    body = resp.data.decode("utf-8")
+
+    assert "Dave|XYZ-123|Isuzu|NQR|6|Unleaded|" in body
+    assert "nan" not in body.lower().split("dave|xyz-123")[-1][:40]
+
+
+def test_driver_select_retains_selection_after_rejected_resubmit(client, monkeypatch, env):
+    """Regression guard: a rejected preset-mode submission (missing mobile
+    number for a legacy preset) must re-render with the same driver_select
+    option marked selected, not silently reset to the first preset."""
+    stub = RepoStub(customer=dict(CUST))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_priced_station(monkeypatch, fuel_types=("Unleaded",))
+
+    preset_path = data_paths.preset_csv_path("HARR")
+    preset_path.write_text(
+        "driver_name,vehicle_plate,truck_make,truck_model,number_of_wheels,fuel_type\n"
+        "Alice,AAA-111,Toyota,Hilux,4,Unleaded\n"
+        "Dave,XYZ-123,Isuzu,NQR,6,Unleaded\n"
+    )
+
+    resp = client.post("/book", data={
+        "account_code": "HARR", "station": "Test Station",
+        "requested_amount_php": "1000", "refuel_datetime": _valid_refuel(),
+        "driver_mode": "preset", "driver_select": "Dave|XYZ-123|Isuzu|NQR|6|Unleaded",
+        "fuel_type": "Unleaded", "contact_number": "Harry – 0900-000-0000",
+    })
+    body = resp.data.decode("utf-8")
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 0
+    assert 'value="Dave|XYZ-123|Isuzu|NQR|6|Unleaded|" selected' in body
