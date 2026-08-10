@@ -544,6 +544,7 @@
 
     function toggleDriverMode() {
       const mode = modeSelect.value;
+      const isNew = mode === 'new';
       if (mode === 'preset') {
         presetFields.style.display = 'block';
         newFields.style.display = 'none';
@@ -551,6 +552,14 @@
         presetFields.style.display = 'none';
         newFields.style.display = 'block';
       }
+      // CSS display:none does NOT exempt a required field from HTML5
+      // constraint validation — a hidden-but-still-required field blocks
+      // submission with an unfocusable "invalid form control" error. Must
+      // explicitly toggle .required alongside visibility, same pattern
+      // already used for mobile_number below.
+      newFields.querySelectorAll('input').forEach(function (el) {
+        el.required = isNew;
+      });
     }
 
     // Driver Mobile Number (moved from customer-level): always required in
