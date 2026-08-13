@@ -184,6 +184,53 @@ def test_customer_with_zero_bookings_renders_empty_history(client, monkeypatch):
 
 
 # ============================================================
+# Booking history — Driver Name / Phone Number columns (T1, ARCH-brief-9)
+# ============================================================
+
+VOUCHER_WITH_DRIVER = {
+    "voucher_id": "UF-3", "account_code": "HARR", "station": "Cleanfuel",
+    "status": "Unverified", "driver_name": "Dave", "mobile_number": "0917-123-4567",
+}
+
+VOUCHER_WITHOUT_DRIVER = {
+    "voucher_id": "UF-4", "account_code": "HARR", "station": "Cleanfuel",
+    "status": "Unverified", "driver_name": "", "mobile_number": "",
+}
+
+
+def test_detail_view_shows_driver_name_and_phone_columns(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(customers=[HARR], vouchers=[VOUCHER_WITH_DRIVER]))
+    _login(client)
+
+    r = client.get("/admin/customers?q=HARR")
+
+    assert b"Driver Name" in r.data
+    assert b"Phone Number" in r.data
+    assert b"Dave" in r.data
+    assert b"0917-123-4567" in r.data
+
+
+def test_booking_table_has_scroll_container(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(customers=[HARR], vouchers=[VOUCHER_WITH_DRIVER]))
+    _login(client)
+
+    r = client.get("/admin/customers?q=HARR")
+
+    assert b"table-scroll" in r.data
+
+
+def test_missing_driver_info_renders_em_dash(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(customers=[HARR], vouchers=[VOUCHER_WITHOUT_DRIVER]))
+    _login(client)
+
+    r = client.get("/admin/customers?q=HARR")
+    body = r.data.decode("utf-8")
+
+    assert "—" in body
+    assert "nan" not in body.lower()
+
+
+# ============================================================
 # Per-customer export
 # ============================================================
 

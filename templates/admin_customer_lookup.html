@@ -31,6 +31,7 @@
     .customer-detail dt { font-weight: 600; color: #374151; margin-top: 8px; }
     .customer-detail dd { margin: 0 0 4px; }
     .muted { color: #6b7280; font-size: 14px; }
+    .table-scroll { overflow-x: auto; }
   </style>
 </head>
 <body>
@@ -70,6 +71,7 @@
     <a class="btn" href="{{ url_for('admin_customer_export', account_code=customer.account_code) }}">Export Bookings CSV</a>
 
     <h2>Booking History</h2>
+    <div class="table-scroll">
     <table>
       <thead>
         <tr>
@@ -78,6 +80,8 @@
           <th>Amount (₱)</th>
           <th>Status</th>
           <th>Date</th>
+          <th>Driver Name</th>
+          <th>Phone Number</th>
         </tr>
       </thead>
       <tbody>
@@ -88,10 +92,13 @@
           <td>{{ b.requested_amount_php }}</td>
           <td>{{ b.status }}</td>
           <td>{{ b.transaction_date }}</td>
+          <td>{{ b.driver_name or '—' }}</td>
+          <td>{{ b.mobile_number or '—' }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
+    </div>
     {% if not bookings %}
       <p class="muted">No bookings yet for this customer.</p>
     {% endif %}
