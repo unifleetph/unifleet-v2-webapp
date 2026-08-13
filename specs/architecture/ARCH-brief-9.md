@@ -273,7 +273,7 @@ Add "Driver Name" and "Phone Number" columns to the per-customer Booking History
 
 ## Task T3: Supplier PDF wording changes
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** checklist
 > **Effort:** xs
 > **Priority:** low
