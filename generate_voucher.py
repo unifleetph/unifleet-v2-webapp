@@ -30,7 +30,7 @@ REQUIRED_COLUMNS = [
 # Keep same variable name and behavior for compatibility.
 BASE_URL = os.environ.get(
     "BASE_URL",
-    "https://c62ded05-595f-42d6-b59c-55cd5cb986e6-00-287s4ts5huint.sisko.replit.dev"
+    "https://unifleet-v2-webapp-staging.up.railway.app"
 ).strip().rstrip("/")
 
 os.makedirs(QR_OUTPUT_DIR, exist_ok=True)  # F2.6: ensure_dirs() above already created it

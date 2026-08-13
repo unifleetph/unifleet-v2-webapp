@@ -214,7 +214,7 @@ Add "Driver Name" and "Phone Number" columns to the per-customer Booking History
 
 ## Task T2: Fix voucher QR fallback URL
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** xs
 > **Priority:** high
