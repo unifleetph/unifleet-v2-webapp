@@ -377,7 +377,7 @@ First sentence on the account registration success page changes from "Thank you 
 
 ## Task T5: Add "View Larger Stations Map" link to /Book page
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** ui
 > **Effort:** xs
 > **Priority:** low

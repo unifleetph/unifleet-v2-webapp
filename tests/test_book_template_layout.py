@@ -79,6 +79,19 @@ def test_discount_info_block_precedes_driver_vehicle(client):
     assert discount_idx < driver_idx
 
 
+def test_book_page_has_stations_map_link(client):
+    """T5, ARCH-brief-9: bold linked 'View Larger Stations Map' text
+    under the embedded map, opening the full map in a new tab."""
+    body = _booking_form(client)
+    assert 'href="https://www.google.com/maps/d/u/0/viewer?mid=1YTyyRvSx1Fan8bbrnRsMBZuIDbrVC7Y&femb=1"' in body
+    assert "View Larger Stations Map" in body
+    link_idx = body.find("View Larger Stations Map")
+    tag_start = body.rfind("<a ", 0, link_idx)
+    tag_end = body.find(">", tag_start)
+    anchor_tag = body[tag_start:tag_end]
+    assert 'target="_blank"' in anchor_tag
+
+
 def test_station_dropdown_has_no_server_rendered_options(client):
     """Regression guard: station population stays client-side via
     window.__STATION_TABLE__, unaffected by the reorder."""
