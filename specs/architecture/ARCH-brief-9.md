@@ -320,7 +320,7 @@ Two literal string edits in the Supplier PDF export: the title changes from "Die
 
 ## Task T4: Update /register/success thank-you text
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** test-after
 > **Effort:** xs
 > **Priority:** low
