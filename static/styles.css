@@ -18,6 +18,10 @@ h1, h2, h3 {
   margin-bottom: 1rem;
 }
 
+a:link, a:visited, a:hover, a:active {
+  color: #0054a6; /* UniFleet Blue — never the browser default visited-purple */
+}
+
 /* Forms */
 form {
   max-width: 640px;

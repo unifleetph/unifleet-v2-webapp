@@ -425,7 +425,7 @@ Add a bold, linked "View Larger Stations Map" text directly under the existing e
 
 ## Task T6: Fix site-wide link color (blue, not purple)
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** ui
 > **Effort:** xs
 > **Priority:** medium
