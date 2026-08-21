@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Register Your Fleet – UniFleet</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <style>
@@ -62,6 +63,10 @@
       margin: 1rem 0 1.5rem;
     }
 
+    /* Stays this size on mobile too (excluded from styles.css's tap-target
+       min-height rules) — the adjacent label below already toggles this
+       checkbox and covers a much larger area, satisfying WCAG 2.5.5/2.5.8's
+       "Equivalent" target-size exception without visually distorting it. */
     .inline-checkbox input[type="checkbox"] {
       width: auto;            /* don't inherit the 100% form-input width */
       flex: 0 0 auto;
@@ -106,7 +111,7 @@
     }
   </style>
 </head>
-<body>
+<body class="mobile-page register-page">
 
   <header>
     <img src="{{ url_for('static', filename='UniFleet Logo.png') }}" alt="UniFleet Logo">
@@ -115,37 +120,49 @@
   <div class="page-title">Register Your Fleet for Discounts</div>
 
   <main class="centered-content">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <ul class="flashes" style="list-style: none; padding: 0; margin: 1rem 0;">
+          {% for category, message in messages %}
+            <li style="background-color: #ffe0e0; color: #a80000; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; font-weight: bold;">
+              {{ message }}
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+
     <section class="info-box">
-      <strong>Save up to ₱1,000 per Diesel re-fuel with the UniFleet fuel discount program!</strong>
-      Sign-up now to receive our Fuel Discount Locator today.<br><br>
-      <strong>How it Works:</strong><br>
-      • Register your fleet & find discounts<br>
-      • Book refuels & pay UniFleet<br>
-      • Redeem pre-paid vouchers at stations for discounts<br><br>
-      <em>Example Voucher:</em> ₱2.00 off per liter for a 200-liter booking
+      <strong>Save up to ₱1,000 on every refill with UniFleet's fuel discount program!</strong>
+      <p>Sign-up to get access to our fuel discounts.</p>
     </section>
 
     <form method="POST" action="/register">
       <label for="contact_name">Contact Person Name</label>
-      <input type="text" name="contact_name" id="contact_name" required>
+      <input type="text" name="contact_name" id="contact_name" value="{{ form_values.contact_name if form_values else '' }}" required>
 
       <label for="contact_number">Contact Number (Mobile)</label>
-      <input type="tel" name="contact_number" id="contact_number" required>
+      <div style="display:flex; gap:0.5rem;">
+        <select name="mobile_country_code" id="mobile_country_code" style="flex:0 0 140px; width:140px; padding:0.6rem; font-size:1rem; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;">
+          <option value="+63" selected>+63 (Philippines)</option>
+        </select>
+        <input type="tel" name="contact_number" id="contact_number" style="flex:1 1 0%; min-width:0;" inputmode="numeric" minlength="10" value="{{ form_values.contact_number if form_values else '' }}" required>
+      </div>
 
       <label for="email">Email Address</label>
-      <input type="email" name="email" id="email" required>
+      <input type="email" name="email" id="email" value="{{ form_values.email if form_values else '' }}" required>
 
-      <label for="company_name">Company Name (If applicable)</label>
-      <input type="text" name="company_name" id="company_name">
+      <label for="company_name">Company Name (Optional)</label>
+      <input type="text" name="company_name" id="company_name" value="{{ form_values.company_name if form_values else '' }}">
 
-      <label for="fleet_size">Total Number of Vehicles in Fleet (If applicable)</label>
-      <input type="number" name="fleet_size" id="fleet_size">
+      <label for="fleet_size">Total Number of Vehicles in Fleet (Optional)</label>
+      <input type="number" name="fleet_size" id="fleet_size" value="{{ form_values.fleet_size if form_values else '' }}">
 
-      <label for="areas">Preferred Areas for Driver Re-Fueling (Select all that apply)</label>
-      <textarea name="areas" id="areas" placeholder="e.g., SLEX, NLEX, Quezon City, Cavite"></textarea>
+      <label for="areas">Preferred Areas for Driver Re-Fueling (Optional)</label>
+      <textarea name="areas" id="areas" placeholder="e.g., SLEX, NLEX, Quezon City, Cavite">{{ form_values.areas if form_values else '' }}</textarea>
 
       <div class="inline-checkbox">
-        <input type="checkbox" name="acknowledge" id="acknowledge" required>
+        <input type="checkbox" name="acknowledge" id="acknowledge" {% if form_values and form_values.get('acknowledge') %}checked{% endif %} required>
         <label for="acknowledge">I acknowledge that fuel bookings must be done at least 24 hours in advance, otherwise my booking may be cancelled.</label>
       </div>
 

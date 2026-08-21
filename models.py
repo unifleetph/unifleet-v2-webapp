@@ -2,10 +2,19 @@
 
 import data_paths  # F2.6: paths come from data_paths
 
+# F3.1 (fuel-types-expansion): the 3 canonical fuel types, used everywhere
+# a fuel type value is stored or selected. Short form — expanded to full
+# display names ("Premium Gasoline", "Unleaded Gasoline") only at the PDF
+# render layer.
+FUEL_TYPES = ["Biodiesel", "Premium", "Unleaded"]
+
 VOUCHER_COLUMNS = [
     "voucher_id",
+    "account_code",
+    "fuel_type",
     "station",
     "requested_amount_php",
+    "requested_total_php",
     "liters_requested",
     "transaction_date",
     "expected_refill_date",
@@ -19,6 +28,7 @@ VOUCHER_COLUMNS = [
     "truck_make",
     "truck_model",
     "number_of_wheels",
+    "mobile_number",
     "status",
     "redemption_timestamp",
 
@@ -46,6 +56,7 @@ CREATE TABLE IF NOT EXISTS vouchers (
   voucher_id TEXT PRIMARY KEY,
   station TEXT,
   requested_amount_php REAL,
+  requested_total_php REAL,
   liters_requested REAL,
   transaction_date TEXT,
   expected_refill_date TEXT,

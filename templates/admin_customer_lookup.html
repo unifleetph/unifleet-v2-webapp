@@ -1,0 +1,131 @@
+<!-- templates/admin_customer_lookup.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>UniFleet — Admin: Customer Lookup</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
+    h1 { margin-bottom: 12px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; }
+    th { background: #f9fafb; font-weight: 600; }
+    .search-form { display: flex; gap: 8px; margin-bottom: 20px; }
+    .search-form input[type="text"] {
+      flex: 1; max-width: 360px; padding: 8px; border: 1px solid #e5e7eb; border-radius: 6px;
+    }
+    .btn {
+      cursor: pointer; padding: 8px 14px; border: 1px solid #e5e7eb; border-radius: 6px;
+      background: #111827; color: white; text-decoration: none; display: inline-block;
+    }
+    a.btn { color: white; }
+    .not-found { color: #991B1B; background: #FEE2E2; padding: 10px 14px; border-radius: 6px; }
+    .picklist { list-style: none; padding: 0; }
+    .picklist li { margin-bottom: 8px; }
+    .picklist a {
+      display: block; padding: 10px 14px; border: 1px solid #e5e7eb; border-radius: 6px;
+      text-decoration: none; color: #111827;
+    }
+    .picklist a:hover { background: #f9fafb; }
+    .customer-detail { background: #f9fafb; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
+    .customer-detail dt { font-weight: 600; color: #374151; margin-top: 8px; }
+    .customer-detail dd { margin: 0 0 4px; }
+    .muted { color: #6b7280; font-size: 14px; }
+    .table-scroll { overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>Customer Lookup</h1>
+
+  <form class="search-form" method="GET" action="{{ url_for('admin_customers') }}">
+    <input type="text" name="q" value="{{ query or '' }}" placeholder="Account code or name">
+    <button class="btn" type="submit">Search</button>
+  </form>
+
+  {% if state == 'not_found' %}
+    <p class="not-found">No customer found for &ldquo;{{ query }}&rdquo;.</p>
+
+  {% elif state == 'picklist' %}
+    <p class="muted">Multiple matches for &ldquo;{{ query }}&rdquo; — pick one:</p>
+    <ul class="picklist">
+      {% for m in matches %}
+      <li>
+        <a href="{{ url_for('admin_customers', q=m.account_code) }}">
+          <strong>{{ m.contact_name }}</strong> — {{ m.account_code }} — {{ m.company_name }}
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+
+  {% elif state == 'detail' %}
+    <dl class="customer-detail">
+      <dt>Account Code</dt><dd>{{ customer.account_code }}</dd>
+      <dt>Contact Name</dt><dd>{{ customer.contact_name }}</dd>
+      <dt>Contact Number</dt><dd>{{ customer.contact_number }}</dd>
+      <dt>Email</dt><dd>{{ customer.email }}</dd>
+      <dt>Company Name</dt><dd>{{ customer.company_name }}</dd>
+      <dt>Fleet Size</dt><dd>{{ customer.fleet_size }}</dd>
+      <dt>Areas</dt><dd>{{ customer.areas }}</dd>
+    </dl>
+
+    <a class="btn" href="{{ url_for('admin_customer_export', account_code=customer.account_code) }}">Export Bookings CSV</a>
+
+    <h2>Booking History</h2>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Voucher ID</th>
+          <th>Station</th>
+          <th>Amount (₱)</th>
+          <th>Status</th>
+          <th>Date</th>
+          <th>Driver Name</th>
+          <th>Phone Number</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in bookings %}
+        <tr>
+          <td>{{ b.voucher_id }}</td>
+          <td>{{ b.station }}</td>
+          <td>{{ b.requested_amount_php }}</td>
+          <td>{{ b.status }}</td>
+          <td>{{ b.transaction_date }}</td>
+          <td>{{ b.driver_name or '—' }}</td>
+          <td>{{ b.mobile_number or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% if not bookings %}
+      <p class="muted">No bookings yet for this customer.</p>
+    {% endif %}
+  {% endif %}
+
+  <h2>All Customers</h2>
+  <a class="btn" href="{{ url_for('admin_customers_export_all') }}">Export to CSV</a>
+  <table id="all-customers-table">
+    <thead>
+      <tr>
+        <th>Customer Name</th>
+        <th>Number</th>
+        <th>Email</th>
+        <th>Driver Name</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in all_customers %}
+      <tr>
+        <td>{{ row.contact_name }}</td>
+        <td>{{ row.contact_number }}</td>
+        <td>{{ row.email }}</td>
+        <td>{{ row.driver_name }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

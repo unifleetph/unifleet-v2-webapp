@@ -91,7 +91,7 @@
             cursor: not-allowed;
         }
 
-        .verify-button {
+        a.verify-button {
             background-color: #28a745;
             color: white;
             border: none;
@@ -101,7 +101,7 @@
             font-size: 14px;
             text-decoration: none;
         }
-        .verify-button:hover {
+        a.verify-button:hover {
             filter: brightness(0.95);
         }
 
@@ -241,11 +241,13 @@
 
     <h1>UniFleet Vouchers Dashboard</h1>
     <div class="subnav">
-        <a href="/register-vehicle" target="_blank">Register Vehicle</a>
+        <a href="/register" target="_blank">Register</a>
         <a href="/book" target="_blank">Book</a>
         <a href="/export_supplier_csv" download>Download Supplier CSV</a>
         <a href="/admin/prices" target="_blank">Admin Prices</a>
-
+        <a href="/admin/stations" target="_blank">Manage Stations</a>
+        <a href="/admin/customers" target="_blank">Customer Lookup</a>
+        <a href="/admin/bookings/export" download>Export All Bookings</a>
 
     </div>
 
@@ -298,6 +300,7 @@
           <tr>
             <th>Voucher ID</th>
             <th>Driver</th>
+            <th>Fuel Type</th>
             <th>Station</th>
             <th>Refuel Date</th>
             <th>Status</th>
@@ -316,6 +319,7 @@
             <tr>
                 <td><a href="/redeem/{{ row['voucher_id'] }}" target="_blank">{{ row['voucher_id'] }}</a></td>
                 <td>{{ row['driver_name'] }}</td>
+                <td>{{ row['fuel_type'] or 'Diesel' }}</td>
                 <td>{{ row['station'] }}</td>
                 <td>
                   {% set ts = row.get('refuel_datetime') or row.get('expected_refill_date') or row.get('transaction_date') %}

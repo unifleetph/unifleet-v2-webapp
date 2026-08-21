@@ -1,4 +1,5 @@
 # persistence.py
+import fcntl
 import os, sqlite3, pandas as pd
 from typing import List, Dict, Optional
 from models import VOUCHER_COLUMNS, SCHEMA_SQL
@@ -112,6 +113,16 @@ class CSVRepo:
 
     def list_all_vouchers(self) -> List[Dict]:
         return self._read().to_dict(orient='records')
+
+    def list_voucher_driver_pairs(self) -> List[Dict]:
+        """Return distinct (account_code, driver_name) pairs across all
+        vouchers (review fix, ARCH-brief-3-fixes T4)."""
+        df = self._read()
+        cols = [c for c in ('account_code', 'driver_name') if c in df.columns]
+        if len(cols) < 2:
+            return []
+        pairs = df[cols].dropna().drop_duplicates()
+        return pairs.to_dict(orient='records')
 
     def get_voucher(self, voucher_id: str) -> Optional[Dict]:
         df = self._read()
@@ -269,6 +280,27 @@ class CSVRepo:
         )
         return self.get_customer(code)
 
+    def create_customer_if_absent(self, data: Dict) -> Optional[Dict]:
+        """Locked read-check-write: returns the stored row on success,
+        None if account_code was already present. Never overwrites an
+        existing row, unlike create_customer(). Serializes callers via
+        an fcntl.flock on a sidecar lock file — POSIX-only, protects
+        against concurrent callers on the same host (the only realistic
+        writer here; the offline backfill script never runs concurrently
+        with live traffic)."""
+        d = data or {}
+        code = str(d.get("account_code") or "").strip().upper()
+        lock_path = str(data_paths.CUSTOMERS_CSV) + ".lock"
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        with open(lock_path, "a+") as lockfile:
+            fcntl.flock(lockfile.fileno(), fcntl.LOCK_EX)
+            try:
+                if self.get_customer(code) is not None:
+                    return None
+                return self.create_customer(d)
+            finally:
+                fcntl.flock(lockfile.fileno(), fcntl.LOCK_UN)
+
     def get_customer(self, account_code: str) -> Optional[Dict]:
         """Fetch a customer by account_code (case-insensitive). None if absent."""
         code = str(account_code or "").strip().upper()
@@ -286,6 +318,19 @@ class CSVRepo:
     def customer_exists(self, account_code: str) -> bool:
         """True if a customer with this account_code (case-insensitive) exists."""
         return self.get_customer(account_code) is not None
+
+    def list_customers(self) -> List[Dict]:
+        """Return every stored customer, fleet_size coerced to int (parity
+        with get_customer)."""
+        df = self._read_customers()
+        if df.empty:
+            return []
+        out = []
+        for _, row in df.iterrows():
+            d = {c: row.get(c, "") for c in CUSTOMER_COLUMNS}
+            d["fleet_size"] = _coerce_fleet_size(d.get("fleet_size"))
+            out.append(d)
+        return out
 
 class DBRepo:
     def __init__(self):

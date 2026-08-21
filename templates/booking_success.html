@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Booking Submitted – UniFleet</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <style>
@@ -78,20 +79,20 @@
       text-decoration: none;
       font-weight: 600;
     }
-    .btn-primary {
+    a.btn-primary {
       background: #ffcc00;
       color: #000;
     }
-    .btn-secondary {
+    a.btn-secondary {
       background: #1a73e8;
       color: #fff;
     }
-    .btn-copy {
+    a.btn-copy {
       margin-left: 8px;
       background: #1a73e8;
       color: #fff;
     }
-    .btn-copy:hover { background: #1558b8; }
+    a.btn-copy:hover { background: #1558b8; }
 
     .fee-note {
       margin-top: 12px;
@@ -119,7 +120,7 @@
     }
   </style>
 </head>
-<body>
+<body class="mobile-page">
 
   <header>
     <img src="{{ url_for('static', filename='UniFleet Logo.png') }}" alt="UniFleet Logo">
@@ -132,22 +133,20 @@
       <p class="success-note">Your refuel request is now pending payment. Complete the payment below to obtain your refuel voucher. </p>
 
       <div class="payment-instructions">
-        <h2 style="margin-top:0; color:#0054a6;">Next Step: Send Payment & Forward Confirmation Screenshot to 0945-149-2369</h2>
-        <p class="amount-due">Amount Due: ₱{{ due_amount }} (InstaPay or PESONet)</p>
+        <h2 style="margin-top:0; color:#0054a6;">Next Step: Send Payment</h2>
+        <p class="amount-due">Amount Due: ₱{{ '{:,.2f}'.format(due_amount|float) }}</p>
 
         <div class="payment-box">
-          <h3>🏦 {{ payment_info.gotyme.label }}</h3>
-          <p><strong>Account Name:</strong> {{ payment_info.gotyme.account_name }}</p>
-          <p>
-            <strong>Account Number:</strong>
-            <span id="gotyme-account">{{ payment_info.gotyme.account_number }}</span>
-          </p>
+          <h3>🏦 Send to INSTAPAY</h3>
+          <p><strong>Account Name:</strong> UniFleet</p>
+          <p><strong>Account Number:</strong> 000228034271</p>
+          <p>Kunan ng screenshot ang iyong payment reference number. Maaaring makipag-ugnayan ang UniFleet para sa kumpirmasyon at beripikasyon.</p>
+          <p>Screenshot your payment reference number. UniFleet may reach out for confirmation and verification.</p>
+        </div>
 
-          <div class="payment-qr">
-            <img src="{{ url_for('static', filename='payment_qr.png') }}"
-                 alt="UniFleet GoTyme payment QR code">
-            <div class="qr-caption">Scan with your banking app (InstaPay / PESONet) to pay.</div>
-          </div>
+        <div class="payment-qr">
+          <img src="{{ url_for('static', filename='instapay_qr.png') }}" alt="InstaPay QR code">
+          <p class="qr-caption">Scan with your banking app (InstaPay) to pay.</p>
         </div>
 
       <div class="btn-row">

@@ -4,6 +4,7 @@ from flask import (
 )
 import os
 import io
+import fcntl
 import hmac
 import subprocess
 import pandas as pd
@@ -28,6 +29,10 @@ except Exception as _e:
 
 # NEW: discounts storage
 from discount_store import DiscountStore, DiscountValueError
+
+# Customer lookup: fuzzy name search (T3, ARCH-customer-details-page)
+from rapidfuzz import process, fuzz
+from models import VOUCHER_COLUMNS, FUEL_TYPES
 
 # F2.4: audit log is now Postgres-backed (audit_log.audit_log table)
 from audit_log import append_audit
@@ -241,7 +246,9 @@ def admin():
         vouchers = []
 
     # NEW: supply station options + persisted selections for the PDF filter UI
-    stations = price_store.list_stations()  # [{id, name, brand, ...}]
+    # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T3/T4/T6 wire up
+    # real fuel-type selection through these call sites.
+    stations = price_store.list_stations("Biodiesel")  # [{id, name, brand, ...}]
     stations = sorted(stations, key=lambda s: (s.get("brand",""), s.get("name","")))
     cookie_val = request.cookies.get("pdf_station_ids", "")
     # Accept either comma or pipe as delimiter
@@ -257,6 +264,175 @@ def admin():
         station_options=stations,
         selected_station_ids=selected_station_ids,
     )
+
+# =========================
+# Admin: Customer Lookup (T3, ARCH-customer-details-page)
+# =========================
+def _normalize_account_code(row):
+    """Uppercase/stripped account_code from any dict-like row, safe
+    against a missing/None value (review fix, ARCH-brief-3-fixes)."""
+    return str((row or {}).get('account_code') or '').strip().upper()
+
+def _all_customer_driver_rows():
+    """One row per distinct driver_name in each customer's booking
+    history; customers with zero bookings still get one row with a
+    blank driver name (T4, ARCH-brief-3-fixes)."""
+    drivers_by_code = {}
+    for pair in repo.list_voucher_driver_pairs():
+        code = _normalize_account_code(pair)
+        if not code:
+            continue
+        name = str(pair.get('driver_name') or '').strip()
+        if name:
+            drivers_by_code.setdefault(code, set()).add(name)
+
+    rows = []
+    for c in repo.list_customers():
+        code = _normalize_account_code(c)
+        driver_names = sorted(drivers_by_code.get(code, set()))
+        if not driver_names:
+            rows.append({
+                'account_code': c['account_code'],
+                'contact_name': c.get('contact_name', ''),
+                'contact_number': c.get('contact_number', ''),
+                'email': c.get('email', ''),
+                'driver_name': '',
+            })
+        else:
+            for name in driver_names:
+                rows.append({
+                    'account_code': c['account_code'],
+                    'contact_name': c.get('contact_name', ''),
+                    'contact_number': c.get('contact_number', ''),
+                    'email': c.get('email', ''),
+                    'driver_name': name,
+                })
+    return rows
+
+@app.route('/admin/customers')
+def admin_customers():
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    all_customers = _all_customer_driver_rows()
+
+    query = (request.args.get('q') or '').strip()
+    if not query:
+        return render_template('admin_customer_lookup.html', state=None, query=query, all_customers=all_customers)
+
+    customer = repo.get_customer(query)
+    matches = None
+    if customer is None:
+        customers = repo.list_customers()
+        choices = {
+            c['account_code']: f"{c.get('contact_name', '')} {c.get('company_name', '')}"
+            for c in customers
+        }
+        results = process.extract(
+            query, choices, scorer=fuzz.WRatio, limit=None, score_cutoff=60
+        )
+        rank = {code: i for i, (_, _, code) in enumerate(results)}
+        matches = sorted(
+            (c for c in customers if c['account_code'] in rank),
+            key=lambda c: rank[c['account_code']],
+        )
+        if len(matches) == 1:
+            customer = matches[0]
+            matches = None
+        elif len(matches) == 0:
+            return render_template('admin_customer_lookup.html', state='not_found', query=query, all_customers=all_customers)
+        else:
+            return render_template(
+                'admin_customer_lookup.html', state='picklist', query=query, matches=matches, all_customers=all_customers
+            )
+
+    bookings = [
+        v for v in repo.list_all_vouchers()
+        if _normalize_account_code(v) == _normalize_account_code(customer)
+    ]
+    return render_template(
+        'admin_customer_lookup.html',
+        state='detail',
+        query=query,
+        customer=customer,
+        bookings=bookings,
+        all_customers=all_customers,
+    )
+
+@app.route('/admin/customers/export_all')
+def admin_customers_export_all():
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    rows = _all_customer_driver_rows()
+    # Header names aligned with _with_customer_contact_columns' export
+    # columns (review fix — was "Number"/"Email", now matches the other
+    # customer-contact export for cross-referencing).
+    export_columns = ["Customer Name", "Customer Number", "Customer Email", "Driver Name"]
+    csv_rows = [{
+        "Customer Name": r["contact_name"],
+        "Customer Number": r["contact_number"],
+        "Customer Email": r["email"],
+        "Driver Name": r["driver_name"],
+    } for r in rows]
+    export_path = str(data_paths.EXPORTS_DIR / "all_customers.csv")
+    pd.DataFrame(csv_rows, columns=export_columns).to_csv(export_path, index=False, encoding='utf-8-sig')
+    # Bulk customer PII export — audit its access (review finding,
+    # security: full contact roster in one request warrants a trail).
+    append_audit("admin_customers_export_all", None, note=f"rows={len(csv_rows)}")
+    return send_file(export_path, as_attachment=True)
+
+# Booking-export-only columns (T3, ARCH-brief-3-fixes): customer contact
+# info joined via account_code at export time. Deliberately NOT added to
+# VOUCHER_COLUMNS — these are derived/joined fields, not part of the
+# persisted voucher shape (ARCH decision A2).
+_EXPORT_COLUMNS = VOUCHER_COLUMNS + ["Customer Name", "Customer Number", "Customer Email"]
+
+def _with_customer_contact_columns(bookings):
+    """Return bookings with Customer Name/Number/Email joined in via each
+    row's account_code. Blank for bookings with no matching customer."""
+    customers_by_code = {
+        _normalize_account_code(c): c
+        for c in repo.list_customers()
+    }
+    out = []
+    for b in bookings:
+        row = dict(b)
+        customer = customers_by_code.get(_normalize_account_code(b))
+        row["Customer Name"] = customer.get("contact_name", "") if customer else ""
+        row["Customer Number"] = customer.get("contact_number", "") if customer else ""
+        row["Customer Email"] = customer.get("email", "") if customer else ""
+        out.append(row)
+    return out
+
+@app.route('/admin/customers/export')
+def admin_customer_export():
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    account_code = (request.args.get('account_code') or '').strip()
+    customer = repo.get_customer(account_code)
+    if customer is None:
+        abort(404)
+
+    bookings = [
+        v for v in repo.list_all_vouchers()
+        if _normalize_account_code(v) == _normalize_account_code(customer)
+    ]
+    bookings = _with_customer_contact_columns(bookings)
+    export_path = str(data_paths.EXPORTS_DIR / f"customer_{customer['account_code']}_bookings.csv")
+    pd.DataFrame(bookings, columns=_EXPORT_COLUMNS).to_csv(export_path, index=False, encoding='utf-8-sig')
+    return send_file(export_path, as_attachment=True)
+
+@app.route('/admin/bookings/export')
+def admin_bookings_export():
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    bookings = _with_customer_contact_columns(repo.list_all_vouchers())
+    export_path = str(data_paths.EXPORTS_DIR / "all_customers_bookings.csv")
+    pd.DataFrame(bookings, columns=_EXPORT_COLUMNS).to_csv(export_path, index=False, encoding='utf-8-sig')
+    return send_file(export_path, as_attachment=True)
 
 # -------------- (CSV upload route stays; you’ll remove visually in admin.html soon) --------------
 @app.route('/upload_csv', methods=['POST'])
@@ -331,6 +507,17 @@ def ops_set_status(voucher_id, new_status):
         except Exception:
             amount = 0.0
 
+        # Brief-5 (ARCH-brief-5, T2): liters/discount must be derived from
+        # requested_total_php (T, what the customer was shown), not
+        # requested_amount_php (pay, what they're charged) — otherwise
+        # total_dispensed doesn't reconstruct to what the calculator
+        # promised. Pre-migration rows have requested_total_php = NULL;
+        # fall back to the pre-Brief-5 formula (base = amount) for those.
+        try:
+            total_for_liters = float(_coalesce(row.get("requested_total_php"), amount))
+        except Exception:
+            total_for_liters = amount
+
         # Prefer booking-time snapshots
         try:
             snap_price = float(row.get("price_snapshot_php_per_liter") or 0)
@@ -348,7 +535,7 @@ def ops_set_status(voucher_id, new_status):
         price = snap_price
         if price <= 0:
             match = None
-            for s in price_store.list_stations():
+            for s in price_store.list_stations("Biodiesel"):  # TEMP (T2 bridge, F3.1)
                 if (s.get("name") or "").strip().lower() == station_name.lower():
                     match = s
                     break
@@ -360,7 +547,7 @@ def ops_set_status(voucher_id, new_status):
             dpl = 0.0
         if dpl == 0.0:
             try:
-                dpl_live = discount_store.get(station_name)
+                dpl_live = discount_store.get(station_name, "Biodiesel")  # TEMP (T2 bridge, F3.1)
                 if dpl_live is not None:
                     dpl = float(dpl_live)
             except Exception:
@@ -369,8 +556,8 @@ def ops_set_status(voucher_id, new_status):
                 disc_captured_at = int(_dt.now().timestamp())
 
         # ---- Do the math (guard against zero price) ----
-        if amount > 0 and price > 0:
-            liters_requested = round(amount / price, 2)
+        if total_for_liters > 0 and price > 0:
+            liters_requested = round(total_for_liters / price, 2)
             discount_total = round(liters_requested * dpl, 2)
             total_dispensed = round(amount + discount_total, 2)
             liters_dispensed = round(liters_requested + (discount_total / price if price else 0), 2)
@@ -427,19 +614,55 @@ def ops_set_status(voucher_id, new_status):
     next_url = request.args.get("next") or request.referrer or url_for("admin")
     return redirect(next_url)
 
+def _append_customer_csv_if_absent(new_row):
+    """Raw-CSV half of /register's dual-write (independent of whichever
+    `repo` backend is active — always keeps data/customers.csv current).
+    Locked against the same sidecar lock file CSVRepo.create_customer_if_absent
+    uses, so if `repo` happens to be CSVRepo too, the two never race or
+    double-append. If account_code is already present (unexpected drift,
+    or repo already wrote it under CSVRepo), skip and warn instead of
+    appending a duplicate row (review fix, account_code uniqueness)."""
+    customers_path = str(data_paths.CUSTOMERS_CSV)
+    lock_path = customers_path + ".lock"
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    with open(lock_path, "a+") as lockfile:
+        fcntl.flock(lockfile.fileno(), fcntl.LOCK_EX)
+        try:
+            if os.path.isfile(customers_path):
+                df = pd.read_csv(customers_path, dtype=str)
+            else:
+                df = pd.DataFrame(columns=list(new_row.keys()))
+
+            for col in new_row.keys():
+                if col not in df.columns:
+                    df[col] = ''
+
+            code = str(new_row.get('account_code') or '').strip().upper()
+            existing = df['account_code'].astype(str).str.strip().str.upper() == code
+            if existing.any():
+                print(f"⚠️ customers.csv already has account_code={code}, skipping duplicate append")
+                return
+
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            df.to_csv(customers_path, index=False, encoding='utf-8-sig')
+        finally:
+            fcntl.flock(lockfile.fileno(), fcntl.LOCK_UN)
+
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
+        # R9/R10 (ARCH-brief-8 T4): contact_number must have >=10 digits.
+        # Validation only — the stripped digit count is checked, but the
+        # stored value is NOT rewritten (ARCH A3: this field predates the
+        # REQ and has existing consumers).
+        contact_number_digits = re.sub(r'\D', '', request.form.get('contact_number') or '')
+        if len(contact_number_digits) < 10:
+            flash("Please enter a valid Contact Number (at least 10 digits).", "error")
+            return render_template('register.html', form_values=request.form)
+
         company_name = request.form.get('company_name', '').strip()
         clean = re.sub(r'[^A-Za-z]', '', company_name.upper())
         account_code = (clean[:4] if len(clean) >= 4 else ''.join(random.choices(string.ascii_uppercase, k=4)))
-
-        # Collision-safe: if the derived code already belongs to a customer,
-        # generate an alternate unique code instead of overwriting them.
-        _attempts = 0
-        while repo.customer_exists(account_code) and _attempts < 10:
-            account_code = ''.join(random.choices(string.ascii_uppercase, k=4))
-            _attempts += 1
 
         def sanitize(v):
             return str(v).strip() if v else ''
@@ -457,27 +680,35 @@ def register():
             'hq_locations': ''
         }
 
-        # Dual-write (transition): persist to Postgres via the repo. On
-        # failure, keep going so the CSV append below still records the
-        # signup (do not lose the registration).
-        try:
-            repo.create_customer(new_row)
-        except Exception as e:
-            print(f"⚠️ create_customer (Postgres) failed for {account_code}: {e}")
+        # Collision-safe: atomically attempt the insert; on collision
+        # (return value None, not an exception), generate a new random
+        # code and retry. create_customer_if_absent() never overwrites
+        # an existing row, unlike create_customer() (review fix,
+        # account_code uniqueness — closes a TOCTOU race + a silent
+        # give-up-after-10-attempts bug that used to let this loop
+        # exit having proceeded with a still-colliding code).
+        _attempts = 0
+        stored = None
+        while _attempts < 10:
+            new_row['account_code'] = account_code
+            try:
+                stored = repo.create_customer_if_absent(dict(new_row))
+            except Exception as e:
+                print(f"⚠️ create_customer_if_absent (Postgres) failed for {account_code}: {e}")
+                stored = "pg_error"  # sentinel: DB unreachable, proceed with this code
+                                      # rather than block registration on an outage —
+                                      # preserves the existing Postgres-down resilience.
+            if stored:
+                break
+            account_code = ''.join(random.choices(string.ascii_uppercase, k=4))
+            _attempts += 1
 
-        customers_path = str(data_paths.CUSTOMERS_CSV)
-        if os.path.isfile(customers_path):
-            df = pd.read_csv(customers_path, dtype=str)
-        else:
-            df = pd.DataFrame(columns=list(new_row.keys()))
+        if not stored:
+            flash("Could not generate a unique account code. Please try registering again.", "error")
+            return render_template('register.html', form_values=request.form)
 
-        # Ensure legacy columns still exist even if older file/header differs
-        for col in new_row.keys():
-            if col not in df.columns:
-                df[col] = ''
-
-        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        df.to_csv(customers_path, index=False, encoding='utf-8-sig')
+        new_row['account_code'] = account_code
+        _append_customer_csv_if_absent(new_row)
         return redirect(f"/register/success?account_code={account_code}")
 
     return render_template('register.html')
@@ -489,6 +720,10 @@ def register_success():
 @app.route('/test_success')
 def test_success():
     return render_template('register_success.html', account_code="TEST")
+
+@app.route('/terms')
+def terms():
+    return render_template('terms.html')
 
 def _safe_next(target):
     """Only allow same-site relative redirects (guards open-redirect)."""
@@ -512,47 +747,55 @@ def admin_logout():
     session.pop('admin', None)
     return redirect(url_for('admin_login'))
 
-@app.route('/register-vehicle', methods=['GET', 'POST'])
-def register_vehicle():
-    if request.method == 'GET':
-        return render_template('register_vehicle.html')
+def _validate_new_driver_fields(form):
+    """R6/R7 (ARCH-brief-8 T2): all 5 New Driver fields are mandatory, and
+    Number of Wheels must be >= 2 — enforced here too since the client-side
+    `required`/`min` attributes on the (hidden-when-inactive) new-driver
+    fields can be bypassed. Returns (driver_fields_dict, None) on success,
+    or (None, error_message) on failure."""
+    driver_name = (form.get('driver_name') or '').strip()
+    vehicle_plate = (form.get('vehicle_plate') or '').strip()
+    truck_make = (form.get('truck_make') or '').strip()
+    truck_model = (form.get('truck_model') or '').strip()
+    wheels_raw = (form.get('number_of_wheels') or '').strip()
 
-    account_code = request.form.get('account_code', '').strip().upper()
-    driver_data = {
-        'driver_name': (request.form.get('driver_name') or '').strip(),
-        'vehicle_plate': (request.form.get('vehicle_plate') or '').strip(),
-        'truck_make': (request.form.get('truck_make') or '').strip(),
-        'truck_model': (request.form.get('truck_model') or '').strip(),
-        'number_of_wheels': (request.form.get('number_of_wheels') or '').strip(),
-        'fuel_type': (request.form.get('fuel_type') or 'Diesel').strip() or 'Diesel',
-    }
+    if not (driver_name and vehicle_plate and truck_make and truck_model and wheels_raw):
+        return None, "Please fill in all New Driver fields."
 
-    # Validate account_code against the customer store (Postgres).
-    if not repo.customer_exists(account_code):
-        flash("Account code not found. Please register your company first.", "error")
-        return render_template('register_vehicle.html', form_values=request.form)
+    try:
+        wheels = int(wheels_raw)
+    except ValueError:
+        return None, "Number of Wheels must be a whole number."
 
-    # Required fields.
-    if not driver_data['driver_name'] or not driver_data['vehicle_plate']:
-        flash("Driver name and plate number are required.", "error")
-        return render_template('register_vehicle.html', form_values=request.form)
+    if wheels < 2:
+        return None, "Number of Wheels must be at least 2."
 
-    # Save preset, dedup by plate (parity with the booking-time write).
-    preset_path = str(data_paths.preset_csv_path(account_code))
-    existing = pd.read_csv(preset_path, encoding='utf-8-sig') if os.path.isfile(preset_path) else pd.DataFrame()
-    plate_key = driver_data['vehicle_plate'].strip().upper()
-    exists = (
-        'vehicle_plate' in existing.columns
-        and existing['vehicle_plate'].astype(str).str.strip().str.upper().eq(plate_key).any()
-    )
-    if not exists:
-        updated = pd.concat([existing, pd.DataFrame([driver_data])], ignore_index=True)
-        updated.to_csv(preset_path, index=False, encoding='utf-8-sig')
-        flash(f"Vehicle {driver_data['vehicle_plate']} registered.", "success")
-    else:
-        flash(f"Vehicle {driver_data['vehicle_plate']} is already registered.", "info")
+    return {
+        'driver_name': driver_name,
+        'vehicle_plate': vehicle_plate,
+        'truck_make': truck_make,
+        'truck_model': truck_model,
+        'number_of_wheels': wheels_raw,
+    }, None
 
-    return redirect(url_for('register_vehicle'))
+
+def _validate_mobile_digits(raw_value):
+    """Mobile Number is digits-only, 10-15 digits (E.164 max), leading zero
+    preserved. Upper bound matters: vouchers.mobile_number (and the preset
+    CSV's mirror column) is bounded — without a max, an oversized value can
+    raise deep in the save path, past validation, straight to a false
+    "Booking Submitted" success page (code-review finding, T4). Returns
+    (digits, None) on success, or (None, error_message) on failure.
+
+    Driver-level attribute (moved from customer-level, ARCH-brief-8
+    follow-up): called from book()'s new-driver branch (always required)
+    and its preset branch (only when the selected preset has no number
+    saved yet — see the driver_select 7th-segment parsing there)."""
+    digits = re.sub(r'\D', '', raw_value or '')
+    if not (10 <= len(digits) <= 15):
+        return None, "Please enter a valid Mobile Number (10-15 digits)."
+    return digits, None
+
 
 @app.route('/book', methods=['GET', 'POST'])
 def book():
@@ -564,14 +807,16 @@ def book():
 
     try:
         # Pull from live price store so new stations auto-appear
-        station_objs = price_store.list_stations()  # [{id, name, brand, ...}]
+        # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T3/T4/T6 wire up
+        # real fuel-type selection through these call sites.
+        station_objs = price_store.list_stations("Biodiesel")  # [{id, name, brand, ...}]
         station_objs = sorted(
             [s for s in station_objs if s.get("name")],
             key=lambda x: str(x.get("name", "")).lower()
         )
 
         # Build read-only station table with discounts
-        discounts = discount_store.get_all() or {}
+        discounts = discount_store.get_all("Biodiesel") or {}  # TEMP (T2 bridge, F3.1)
 
         import re as _re
         def _norm_dashes(s: str) -> str:
@@ -641,10 +886,75 @@ def book():
         station_table = []
         station_table_updated_at = ""
 
+    # ---- Per-fuel-type station data (T4, F3.1) ----
+    # New, parallel to the flat station_names/station_table above (which
+    # stay in place for the current template — T5 rewires book.html to
+    # consume this instead). Availability is price-gated only (T2's
+    # list_stations already excludes unpriced stations); missing discount
+    # just means ₱0, not unavailable.
+    station_table_by_fuel = {}
+    for _ft in FUEL_TYPES:
+        try:
+            ft_stations = price_store.list_stations(_ft)
+            ft_discounts = discount_store.get_all(_ft) or {}
+            station_table_by_fuel[_ft] = [
+                {
+                    "id": s.get("id"),
+                    "name": s.get("name"),
+                    "price_php_per_liter": f"{float(s.get('price_php_per_liter') or 0):.2f}",
+                    "discount_per_liter": f"{float(ft_discounts.get(s.get('name')) or 0):.2f}",
+                }
+                for s in ft_stations
+            ]
+        except Exception as e:
+            print(f"⚠️ Error loading stations for fuel_type={_ft}: {e}")
+            station_table_by_fuel[_ft] = []
+
     # Compute Manila "now + 24h" for form hint and validation baseline
     manila = ZoneInfo("Asia/Manila")
     min_refuel_dt = (datetime.now(manila) + timedelta(hours=24))
     min_refuel = min_refuel_dt.strftime("%Y-%m-%dT%H:%M")
+
+    def _load_presets(account_code):
+        """Load a customer's driver/vehicle presets for the template.
+
+        F3.1 (T4): a preset's stored fuel_type is blanked when it's the
+        legacy sentinel "Diesel" (pre-dates the 3-fuel-type model) \u2014 the
+        Fuel Type field should start unset for those, not silently map
+        to "Biodiesel" (ARCH R5).
+        """
+        preset_path = str(data_paths.preset_csv_path(account_code))
+        presets = pd.read_csv(preset_path, encoding='utf-8-sig', dtype={'mobile_number': str}).to_dict(orient='records') if os.path.isfile(preset_path) else []
+        for p in presets:
+            if p.get('fuel_type') == 'Diesel':
+                p['fuel_type'] = ''
+            # Legacy presets (saved before ARCH-brief-8's driver-mobile
+            # follow-up) have no mobile_number column/value — normalize to
+            # '' so the template and JS blank-check never see NaN/missing.
+            mobile = p.get('mobile_number')
+            if not mobile or (isinstance(mobile, float) and pd.isna(mobile)):
+                p['mobile_number'] = ''
+        return presets
+
+    def _reject_booking(account_code, message):
+        """Flash an error and re-render book.html with the submitted form
+        values retained. Shared by every POST-time validation failure below
+        (ARCH-brief-5 simplification finding: this collapsed 5 verbatim
+        copies of the same render_template call)."""
+        flash(message, "error")
+        base = customer
+        presets = _load_presets(account_code)
+        return render_template(
+            'book.html',
+            customer=base,
+            presets=presets,
+            station_names=station_names,
+            station_table=station_table,
+            station_table_updated_at=station_table_updated_at,
+            station_table_by_fuel=station_table_by_fuel,
+            form_values=request.form,
+            min_refuel=min_refuel
+        )
 
     if request.method == 'POST':
         account_code = request.form.get('account_code', '').strip().upper()
@@ -680,11 +990,11 @@ def book():
                     station_names=station_names,
                     station_table=station_table,
                     station_table_updated_at=station_table_updated_at,
+                    station_table_by_fuel=station_table_by_fuel,
                     min_refuel=min_refuel
                 )
             base = customer
-            preset_path = str(data_paths.preset_csv_path(account_code))
-            presets = pd.read_csv(preset_path, encoding='utf-8-sig').to_dict(orient='records') if os.path.isfile(preset_path) else []
+            presets = _load_presets(account_code)
             return render_template(
                 'book.html',
                 customer=base,
@@ -692,37 +1002,37 @@ def book():
                 station_names=station_names,
                 station_table=station_table,
                 station_table_updated_at=station_table_updated_at,
+                station_table_by_fuel=station_table_by_fuel,
                 min_refuel=min_refuel
             )
 
         driver_mode = request.form.get('driver_mode')
         use_new = driver_mode == 'new'
         if driver_mode == 'preset' and not request.form.get('driver_select'):
-            flash("Please select a preset or switch to 'Add New Driver'", "error")
-            base = customer
-            preset_path = str(data_paths.preset_csv_path(account_code))
-            presets = pd.read_csv(preset_path, encoding='utf-8-sig').to_dict(orient='records') if os.path.isfile(preset_path) else []
-            return render_template(
-                'book.html',
-                customer=base,
-                presets=presets,
-                station_names=station_names,
-                station_table=station_table,
-                station_table_updated_at=station_table_updated_at,
-                form_values=request.form,
-                min_refuel=min_refuel
-            )
+            return _reject_booking(account_code, "Please select a preset or switch to 'Add New Driver'")
+
+        # F3.1 (T4): fuel_type is an independent, booking-level field \u2014
+        # decoupled from driver_data. It pre-fills from the selected
+        # preset client-side (T5), but the submitted value here is always
+        # the source of truth, whether from a preset or a new driver.
+        fuel_type = (request.form.get('fuel_type') or '').strip()
 
         if use_new:
-            driver_data = {
-                'driver_name': request.form.get('driver_name'),
-                'vehicle_plate': request.form.get('vehicle_plate'),
-                'truck_make': request.form.get('truck_make'),
-                'truck_model': request.form.get('truck_model'),
-                'number_of_wheels': request.form.get('number_of_wheels'),
-                'fuel_type': request.form.get('fuel_type')
-            }
+            driver_data, error = _validate_new_driver_fields(request.form)
+            if error:
+                return _reject_booking(account_code, error)
+            driver_data['fuel_type'] = fuel_type
+
+            # Driver Mobile Number (moved from customer-level, ARCH-brief-8
+            # follow-up): always required when adding a new driver.
+            mobile_digits, error = _validate_mobile_digits(request.form.get('mobile_number'))
+            if error:
+                return _reject_booking(account_code, error)
+            driver_data['mobile_number'] = mobile_digits
         else:
+            # parts[6] (mobile_number), like parts[5] (fuel_type) above it,
+            # is server-rendered from this account's own preset CSV — same
+            # trust model as parts[0..4], not a new attack surface.
             parts = request.form.get('driver_select').split('|')
             driver_data = {
                 'driver_name': parts[0],
@@ -730,8 +1040,16 @@ def book():
                 'truck_make': parts[2],
                 'truck_model': parts[3],
                 'number_of_wheels': parts[4],
-                'fuel_type': parts[5]
             }
+
+            preset_mobile = (parts[6].strip() if len(parts) > 6 else '')
+            if preset_mobile:
+                driver_data['mobile_number'] = preset_mobile
+            else:
+                mobile_digits, error = _validate_mobile_digits(request.form.get('mobile_number'))
+                if error:
+                    return _reject_booking(account_code, "Please enter a valid Mobile Number for this driver (10-15 digits).")
+                driver_data['mobile_number'] = mobile_digits
 
         # === NEW: Validate refuel_datetime >= now+24h (Asia/Manila) ===
         refuel_dt_str = (request.form.get('refuel_datetime') or '').strip()
@@ -739,36 +1057,10 @@ def book():
             # HTML datetime-local is naive; interpret as Manila local
             refuel_dt_mnl = datetime.strptime(refuel_dt_str, "%Y-%m-%dT%H:%M").replace(tzinfo=manila)
             if refuel_dt_mnl < min_refuel_dt:
-                flash("Refuel Date & Time must be at least 24 hours from now (Asia/Manila).", "error")
-                base = customer
-                preset_path = str(data_paths.preset_csv_path(account_code))
-                presets = pd.read_csv(preset_path, encoding='utf-8-sig').to_dict(orient='records') if os.path.isfile(preset_path) else []
-                return render_template(
-                    'book.html',
-                    customer=base,
-                    presets=presets,
-                    station_names=station_names,
-                    station_table=station_table,
-                    station_table_updated_at=station_table_updated_at,
-                    form_values=request.form,
-                    min_refuel=min_refuel
-                )
+                return _reject_booking(account_code, "Refuel Date & Time must be at least 24 hours from now (Asia/Manila).")
         except Exception:
             # If parsing fails, treat as invalid
-            flash("Please enter a valid Refuel Date & Time (YYYY-MM-DDTHH:MM).", "error")
-            base = customer
-            preset_path = str(data_paths.preset_csv_path(account_code))
-            presets = pd.read_csv(preset_path, encoding='utf-8-sig').to_dict(orient='records') if os.path.isfile(preset_path) else []
-            return render_template(
-                'book.html',
-                customer=base,
-                presets=presets,
-                station_names=station_names,
-                station_table=station_table,
-                station_table_updated_at=station_table_updated_at,
-                form_values=request.form,
-                min_refuel=min_refuel
-            )
+            return _reject_booking(account_code, "Please enter a valid Refuel Date & Time (YYYY-MM-DDTHH:MM).")
 
         # ---- CAPTURE BOOKING-TIME SNAPSHOTS (price & discount) ----
         station_name = (request.form.get('station') or '').strip()
@@ -785,14 +1077,20 @@ def book():
             s = _re.sub(r'[\s-]+', '_', s)
             return s.strip('_')
 
-        # 1) live price snapshot (from price_store)
+        # 1) live price snapshot (from price_store) — also the
+        # server-side availability gate: a booking for a (station,
+        # fuel_type) combo with no price row is rejected outright,
+        # independent of whatever the client-side UI showed (ARCH A6,
+        # R7). match is checked for None explicitly, not falsiness —
+        # a transient 0.0 price from a DB hiccup must not be treated
+        # the same as "no price row exists".
         price_snapshot = 0.0
         price_snapshot_updated_at = 0
+        match = None
+        target_norm = _norm_dashes(station_name)
+        target_slug = _slug(station_name)
         try:
-            stations = price_store.list_stations()
-            match = None
-            target_norm = _norm_dashes(station_name)
-            target_slug = _slug(station_name)
+            stations = price_store.list_stations(fuel_type)
             for s in stations:
                 if _norm_dashes(s.get("id")) == target_norm:
                     match = s
@@ -807,19 +1105,39 @@ def book():
                     if _slug(s.get("name")) == target_slug:
                         match = s
                         break
-            if match:
-                price_snapshot = float(match.get("price_php_per_liter") or 0)
-                price_snapshot_updated_at = int(match.get("updated_at") or 0)
         except Exception as _e:
             print("⚠️ price snapshot error:", _e)
 
-        # 2) live discount snapshot (from discount_store)
+        if match is None:
+            return _reject_booking(
+                account_code,
+                f"“{station_name}” does not have a price set for {fuel_type or 'the selected fuel type'}. "
+                "Please choose a different station or fuel type."
+            )
+
+        price_snapshot = float(match.get("price_php_per_liter") or 0)
+        price_snapshot_updated_at = int(match.get("updated_at") or 0)
+
+        # A matched price row of exactly 0 is a data glitch, not a valid
+        # price to book against — reject rather than silently dropping
+        # the discount and charging the full entered amount (ARCH-brief-5
+        # correctness finding: this used to charge full price with no
+        # discount and no error shown).
+        if price_snapshot <= 0:
+            return _reject_booking(
+                account_code,
+                f"“{station_name}” has an invalid live price right now and can't be booked. "
+                "Please choose a different station or try again shortly."
+            )
+
+        # 2) live discount snapshot (from discount_store) — absence here
+        # just means ₱0 discount, never blocks the booking (R10).
         dpl_snapshot = 0.0
         dpl_captured_at = int(datetime.utcnow().timestamp())
         try:
-            val = discount_store.get(station_name)
+            val = discount_store.get(station_name, fuel_type)
             if val is None:
-                all_discounts = discount_store.get_all() or {}
+                all_discounts = discount_store.get_all(fuel_type) or {}
                 for k, v in all_discounts.items():
                     if _norm_dashes(k) == target_norm or _slug(k) == target_slug:
                         val = v
@@ -831,10 +1149,32 @@ def book():
 
         print(f"[BOOK] snapshots: {price_snapshot} {dpl_snapshot} {price_snapshot_updated_at} {dpl_captured_at} (station='{station_name}')")
 
+        # Brief-5 (ARCH-brief-5, T2): the calculator's input now means
+        # "total fuel amount" (T), not prepaid cash. requested_total_php
+        # stores T as entered; requested_amount_php keeps its existing
+        # meaning (amount charged) — pay = T - discount(T), where the
+        # discount uses the same liters=T/price formula the client showed.
+        requested_total_php = float(request.form.get('requested_amount_php') or 0)
+
+        if requested_total_php <= 0:
+            return _reject_booking(account_code, "Please enter a fuel amount greater than ₱0.")
+
+        liters_for_total = requested_total_php / price_snapshot
+        discount_for_total = liters_for_total * dpl_snapshot
+        computed_pay_php = round(requested_total_php - discount_for_total, 2)
+
+        if computed_pay_php <= 0:
+            return _reject_booking(
+                account_code,
+                "The discount for this station exceeds the fuel amount entered. "
+                "Please enter a larger amount."
+            )
+
         row = {
             'account_code': account_code,
             'station': station_name,
-            'requested_amount_php': float(request.form.get('requested_amount_php') or 0),
+            'requested_amount_php': computed_pay_php,
+            'requested_total_php': requested_total_php,
             'refuel_datetime': refuel_dt_str,  # keep original string
 
             'driver_name': driver_data['driver_name'],
@@ -842,10 +1182,11 @@ def book():
             'truck_make': driver_data['truck_make'],
             'truck_model': driver_data['truck_model'],
             'number_of_wheels': driver_data['number_of_wheels'],
-            'fuel_type': driver_data['fuel_type'],
+            'fuel_type': fuel_type,  # F3.1: independent booking-level field, not driver_data (T3 owns validation)
 
             'contact_name': request.form.get('contact_number').split('–')[0].strip(),
             'contact_number': request.form.get('contact_number').split('–')[-1].strip(),
+            'mobile_number': driver_data['mobile_number'],
 
             # snapshots
             'price_snapshot_php_per_liter': price_snapshot,
@@ -866,7 +1207,7 @@ def book():
             print("⚠️ Failed to create Unverified booking:", e)
 
         preset_path = str(data_paths.preset_csv_path(account_code))
-        existing = pd.read_csv(preset_path, encoding='utf-8-sig') if os.path.isfile(preset_path) else pd.DataFrame()
+        existing = pd.read_csv(preset_path, encoding='utf-8-sig', dtype={'mobile_number': str}) if os.path.isfile(preset_path) else pd.DataFrame()
         plate_key = str(driver_data['vehicle_plate']).strip().upper()
         exists = (
             'vehicle_plate' in existing.columns
@@ -875,9 +1216,25 @@ def book():
         if not exists:
             updated = pd.concat([existing, pd.DataFrame([driver_data])], ignore_index=True)
             updated.to_csv(preset_path, index=False, encoding='utf-8-sig')
+        else:
+            # Driver Mobile Number backfill (ARCH-brief-8 follow-up): a
+            # legacy preset with no saved number gets one filled in here,
+            # once the customer supplies it for this booking, so future
+            # bookings with this driver won't need to ask again.
+            mask = existing['vehicle_plate'].astype(str).str.strip().str.upper().eq(plate_key)
+            existing_mobile = existing.loc[mask, 'mobile_number'] if 'mobile_number' in existing.columns else pd.Series(dtype=object)
+            needs_backfill = (
+                'mobile_number' not in existing.columns
+                or existing_mobile.isna().any()
+                or existing_mobile.astype(str).str.strip().eq('').any()
+            )
+            if needs_backfill and driver_data.get('mobile_number'):
+                if 'mobile_number' not in existing.columns:
+                    existing['mobile_number'] = ''
+                existing.loc[mask, 'mobile_number'] = driver_data['mobile_number']
+                existing.to_csv(preset_path, index=False, encoding='utf-8-sig')
 
-        due_amount = request.form.get('requested_amount_php')
-        return render_template('booking_success.html', payment_info=PAYMENT_INFO, due_amount=due_amount)
+        return render_template('booking_success.html', payment_info=PAYMENT_INFO, due_amount=computed_pay_php)
 
     # GET: blank form (include min_refuel hint)
     return render_template(
@@ -887,6 +1244,7 @@ def book():
         station_names=station_names,
         station_table=station_table,
         station_table_updated_at=station_table_updated_at,
+        station_table_by_fuel=station_table_by_fuel,
         min_refuel=min_refuel
     )
 @app.route('/discount-locator')
@@ -912,6 +1270,11 @@ def supplier_api(voucher_id):
 
         # Snapshot-first values with legacy fallback
         req   = _coalesce(r.get("requested_amount_php"), 0) or 0
+        # Brief-5 (ARCH-brief-5 correctness finding): liters must be derived
+        # from the entered total (T), not the post-discount pay amount, or
+        # a still-Unverified voucher (liters_requested not yet populated by
+        # ops_set_status) reports understated liters to the supplier.
+        req_total = _coalesce(r.get("requested_total_php"), req) or 0
         price = _coalesce(r.get("price_snapshot_php_per_liter"), r.get("live_price_php_per_liter"))
         disc  = _coalesce(r.get("discount_snapshot_php_per_liter"), r.get("discount_per_liter"))
 
@@ -923,7 +1286,7 @@ def supplier_api(voucher_id):
             if (liters_req is None or str(liters_req).strip() == "") and price not in (None, "", "nan"):
                 p = float(price)
                 if p > 0:
-                    liters_req = round(float(req) / p, 2)
+                    liters_req = round(float(req_total) / p, 2)
         except Exception:
             pass
 
@@ -982,6 +1345,10 @@ def export_supplier_csv():
             vid   = str(r.get("voucher_id", "")).strip()
             stat  = r.get("station", "") or ""
             req   = _coalesce(r.get("requested_amount_php"), 0) or 0
+            # Brief-5 (ARCH-brief-5 correctness finding): same fix as
+            # supplier_api() above — derive liters from the entered total,
+            # not the post-discount pay amount.
+            req_total = _coalesce(r.get("requested_total_php"), req) or 0
 
             price = _coalesce(r.get("price_snapshot_php_per_liter"), r.get("live_price_php_per_liter"))
             disc  = _coalesce(r.get("discount_snapshot_php_per_liter"), r.get("discount_per_liter"))
@@ -994,7 +1361,7 @@ def export_supplier_csv():
                 if (liters_req is None or str(liters_req).strip() == "") and price not in (None, "", "nan"):
                     p = float(price)
                     if p > 0:
-                        liters_req = round(float(req) / p, 2)
+                        liters_req = round(float(req_total) / p, 2)
             except Exception:
                 pass
 
@@ -1051,10 +1418,132 @@ discount_store = DiscountStore()
 def admin_prices():
     if not require_admin(request):
         return redirect(url_for('admin_login', next=request.path))
-    stations = price_store.list_stations()
-    stations = sorted(stations, key=lambda s: (s.get("brand",""), s.get("name","")))
-    discounts = discount_store.get_all()
-    return render_template("admin_prices.html", stations=stations, discounts=discounts)
+
+    # T7 (F3.1) / T3 (ARCH-station-management): 6-column layout — price +
+    # discount per fuel type. Base station list now comes from
+    # list_all_stations() (no price join), so bare (unpriced) and
+    # inactive stations both appear; price/discount data is overlaid
+    # per fuel type on top, same shape as before.
+    all_stations = {}
+    for s in price_store.list_all_stations():
+        sid = s["id"]
+        all_stations[sid] = {
+            "id": sid, "brand": s.get("brand"), "name": s.get("name"),
+            "location": s.get("location"), "is_active": s.get("is_active", True),
+        }
+
+    fuels_by_station = {}
+    for ft in FUEL_TYPES:
+        for s in price_store.list_stations(ft, include_inactive=True):
+            sid = s["id"]
+            all_stations.setdefault(sid, {
+                "id": sid, "brand": s.get("brand"), "name": s.get("name"), "location": s.get("location"),
+            })
+            fuels_by_station.setdefault(sid, {})[ft] = {
+                "price": s.get("price_php_per_liter"),
+                "price_updated_at": s.get("updated_at") or 0,
+                "discount": None,
+                "discount_updated_at": 0,
+            }
+        for name, info in (discount_store.get_all_with_updated_at(ft) or {}).items():
+            for sid, st in all_stations.items():
+                if st["name"] == name and ft in fuels_by_station.get(sid, {}):
+                    fuels_by_station[sid][ft]["discount"] = info["value"]
+                    fuels_by_station[sid][ft]["discount_updated_at"] = info["updated_at"]
+
+    def _readable(epoch):
+        if not epoch:
+            return "—"
+        return datetime.fromtimestamp(epoch, tz=ZoneInfo("Asia/Manila")).strftime("%Y-%m-%d %H:%M")
+
+    stations = sorted(all_stations.values(), key=lambda s: (s.get("brand") or "", s.get("name") or ""))
+    for s in stations:
+        s["fuels"] = fuels_by_station.get(s["id"], {})
+        for ft_info in s["fuels"].values():
+            ft_info["price_updated_readable"] = _readable(ft_info["price_updated_at"])
+            ft_info["discount_updated_readable"] = _readable(ft_info["discount_updated_at"])
+
+    return render_template("admin_prices.html", stations=stations, fuel_types=FUEL_TYPES)
+
+def _admin_stations_back():
+    key = request.args.get("key", "").strip()
+    target = url_for("admin_stations")
+    if key:
+        target = f"{target}?key={key}"
+    return redirect(target)
+
+@app.route("/admin/stations", methods=["GET", "POST"])
+def admin_stations():
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    if request.method == "POST":
+        brand = (request.form.get("brand") or "").strip()
+        name = (request.form.get("name") or "").strip()
+        location = (request.form.get("location") or "").strip()
+
+        if not brand or not name:
+            flash("Brand and name are required.", "error")
+            return _admin_stations_back()
+
+        try:
+            station_id = price_store.generate_unique_station_id(brand, name)
+            price_store.upsert_station({
+                "id": station_id, "brand": brand, "name": name, "location": location,
+            })
+            flash(f"Created station “{name}”.", "success")
+        except Exception as e:
+            flash(f"Failed to create station: {e}", "error")
+        return _admin_stations_back()
+
+    stations = price_store.list_all_stations()
+    stations = sorted(stations, key=lambda s: (s.get("brand") or "", s.get("name") or ""))
+    return render_template("admin_stations.html", stations=stations)
+
+@app.route("/admin/stations/<station_id>/edit", methods=["POST"])
+def admin_stations_edit(station_id):
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    brand = (request.form.get("brand") or "").strip()
+    name = (request.form.get("name") or "").strip()
+    location = (request.form.get("location") or "").strip()
+
+    existing = next((s for s in price_store.list_all_stations() if s["id"] == station_id), None)
+    if existing is None:
+        abort(404)
+
+    try:
+        price_store.upsert_station({
+            "id": station_id, "brand": brand or existing["brand"],
+            "name": name or existing["name"], "location": location or existing.get("location"),
+        })
+        flash(f"Updated station “{station_id}”.", "success")
+    except Exception as e:
+        flash(f"Failed to update station: {e}", "error")
+    return _admin_stations_back()
+
+@app.route("/admin/stations/<station_id>/deactivate", methods=["POST"])
+def admin_stations_deactivate(station_id):
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+    try:
+        price_store.set_station_active(station_id, False)
+    except KeyError:
+        abort(404)
+    flash(f"Deactivated station “{station_id}”.", "success")
+    return _admin_stations_back()
+
+@app.route("/admin/stations/<station_id>/reactivate", methods=["POST"])
+def admin_stations_reactivate(station_id):
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+    try:
+        price_store.set_station_active(station_id, True)
+    except KeyError:
+        abort(404)
+    flash(f"Reactivated station “{station_id}”.", "success")
+    return _admin_stations_back()
 
 @app.route("/admin/prices/update", methods=["POST"])
 def admin_prices_update():
@@ -1063,12 +1552,47 @@ def admin_prices_update():
     try:
         payload = request.get_json(force=True) or {}
         station_id = str(payload.get("station_id", "")).strip()
+        fuel_type = str(payload.get("fuel_type", "")).strip()
         new_price = float(payload.get("price", 0))
 
-        before = price_store.get_station(station_id) or {}
+        if fuel_type not in FUEL_TYPES:
+            return jsonify({"ok": False, "error": f"Invalid fuel_type: {fuel_type!r}"}), 400
+
+        # Brief-5 (ARCH-brief-5, T4): discount_per_liter is optional, for
+        # backward compat with a price-only payload. When present, both
+        # price and discount are validated BEFORE either is written
+        # (all-or-nothing per fuel type, R15) — same 0-15 bound as the
+        # legacy admin_discounts_update route. Treat a present-but-null/
+        # empty value the same as absent, not as "invalid" — the combined
+        # save UI always includes this key, so an empty discount input
+        # must mean "leave discount untouched", not "reject the whole save".
+        raw_discount = payload.get("discount_per_liter")
+        has_discount = raw_discount is not None and str(raw_discount).strip() != ""
+        new_discount = None
+        if has_discount:
+            try:
+                new_discount = float(raw_discount)
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "Discount must be a number.", "field": "discount"}), 400
+            if new_discount < 0 or new_discount > 15:
+                return jsonify({"ok": False, "error": "Discount must be between 0 and 15 PHP/L.", "field": "discount"}), 400
+
+        if new_price <= 0 or new_price > 200:
+            return jsonify({"ok": False, "error": "Unreasonable price. Must be 0 < price ≤ 200.", "field": "price"}), 400
+
+        station_name = None
+        if has_discount:
+            for s in price_store.list_all_stations():
+                if s.get("id") == station_id:
+                    station_name = s.get("name")
+                    break
+            if station_name is None:
+                return jsonify({"ok": False, "error": f"Station '{station_id}' not found"}), 404
+
+        before = price_store.get_station(station_id, fuel_type) or {}
         old_price = before.get("price_php_per_liter")
 
-        updated = price_store.set_price(station_id, new_price)
+        updated = price_store.set_price(station_id, fuel_type, new_price)
 
         append_price_history(
             station_id=station_id,
@@ -1077,12 +1601,46 @@ def admin_prices_update():
             updated_unix=updated["updated_at"]
         )
 
-        return jsonify({
+        if has_discount:
+            try:
+                discount_store.set(station_name, fuel_type, new_discount, actor="admin", reason="manual update")
+            except Exception as discount_err:
+                # price_store.set_price and discount_store.set are separate
+                # DB round-trips (no shared transaction), so the price write
+                # above may have already committed. Best-effort compensating
+                # rollback to honor the "all-or-nothing" contract for the
+                # common case (a price row already existed); if it didn't
+                # exist before, there's no clean rollback path, so say so
+                # plainly rather than falsely claiming nothing was saved.
+                if old_price is not None:
+                    try:
+                        price_store.set_price(station_id, fuel_type, old_price)
+                        return jsonify({
+                            "ok": False,
+                            "error": f"Discount save failed; price change was rolled back: {discount_err}",
+                            "field": "discount",
+                        }), 500
+                    except Exception:
+                        pass
+                return jsonify({
+                    "ok": False,
+                    "error": (
+                        f"Discount save failed. Price was already saved as "
+                        f"{updated['price_php_per_liter']} and could not be rolled back: {discount_err}"
+                    ),
+                    "field": "discount",
+                }), 500
+
+        response = {
             "ok": True,
             "station_id": station_id,
             "price_php_per_liter": updated["price_php_per_liter"],
             "updated_at": updated["updated_at"],
-        })
+        }
+        if has_discount:
+            response["discount_per_liter"] = new_discount
+
+        return jsonify(response)
     except KeyError as e:
         return jsonify({"ok": False, "error": str(e)}), 404
     except ValueError as e:
@@ -1090,10 +1648,23 @@ def admin_prices_update():
     except Exception:
         return jsonify({"ok": False, "error": "server_error"}), 500
 
+def _resolve_fuel_type_param() -> str:
+    """Read ?fuel_type= for the 3 public read-only /api/v1/* endpoints.
+
+    Deliberately more lenient than T6's admin write-endpoint validation
+    (ARCH A8): missing or unrecognized values fall back silently to
+    "Biodiesel" rather than 400ing, since these are public, read-only,
+    with unknown-identity external (supplier) and internal consumers
+    who predate the fuel-types feature entirely.
+    """
+    ft = (request.args.get("fuel_type") or "").strip()
+    return ft if ft in FUEL_TYPES else "Biodiesel"
+
+
 # Read-only API for previews
 @app.route("/api/v1/prices", methods=["GET"])
 def api_prices_list():
-    stations = price_store.list_stations()
+    stations = price_store.list_stations(_resolve_fuel_type_param())
     return jsonify({"stations": stations})
 
 # =========================
@@ -1106,6 +1677,7 @@ def admin_discounts_update():
 
     key = request.args.get("key", "").strip()
     station = (request.form.get("station") or "").strip()
+    fuel_type = (request.form.get("fuel_type") or "").strip()
     raw_value = (request.form.get("discount_per_liter") or "").strip()
 
     def _back():
@@ -1116,6 +1688,10 @@ def admin_discounts_update():
 
     if not station:
         flash("Station is required.", "error")
+        return _back()
+
+    if fuel_type not in FUEL_TYPES:
+        flash(f"Invalid fuel type: “{fuel_type}”.", "error")
         return _back()
 
     if raw_value == "":
@@ -1133,7 +1709,7 @@ def admin_discounts_update():
         return _back()
 
     try:
-        discount_store.set(station, value, actor="admin", reason="manual update")
+        discount_store.set(station, fuel_type, value, actor="admin", reason="manual update")
         flash(f"Saved discount {value:.2f} PHP/L for “{station}”.", "success")
     except DiscountValueError as e:
         flash(str(e), "error")
@@ -1145,7 +1721,7 @@ def admin_discounts_update():
 @app.route("/api/v1/discounts", methods=["GET"])
 def api_discounts_list():
     try:
-        return jsonify({"discounts": discount_store.get_all()})
+        return jsonify({"discounts": discount_store.get_all(_resolve_fuel_type_param())})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1171,7 +1747,7 @@ def api_price_preview():
         dpl = 0.0
 
     def _norm(s): return str(s or "").strip().lower()
-    stations = price_store.list_stations()
+    stations = price_store.list_stations(_resolve_fuel_type_param())
     match = None
     for s in stations:
         if _norm(s.get("id")) == _norm(station_q):
@@ -1194,10 +1770,21 @@ def api_price_preview():
     if amount <= 0 or price <= 0:
         return jsonify({"ok": False, "error": "invalid amount or price"}), 400
 
+    # Brief-5 (ARCH-brief-5, T3): amount now means "total fuel amount" (T),
+    # not prepaid cash — liters_requested/discount_total formulas are
+    # unchanged (still amount/price and liters*dpl), but total_dispensed
+    # is the entered total itself (T), and you_pay_php is the new
+    # subtract-based charge, mirroring book()'s server-side calc (T2).
     liters_requested = round(amount / price, 2)
     discount_total = round(liters_requested * dpl, 2)
-    total_dispensed = round(amount + discount_total, 2)
+    you_pay_php = round(amount - discount_total, 2)
+    total_dispensed = amount
     liters_dispensed = round(liters_requested + (discount_total / price if price else 0), 2)
+
+    # Mirror book()'s R10 rejection: a discount that meets or exceeds the
+    # entered total is not a valid preview, not a negative charge to display.
+    if you_pay_php <= 0:
+        return jsonify({"ok": False, "error": "discount exceeds the entered amount"}), 400
 
     is_stale = False
     if ts <= 0:
@@ -1217,6 +1804,7 @@ def api_price_preview():
         "discount_per_liter": dpl,
         "liters_requested": liters_requested,
         "discount_total": discount_total,
+        "you_pay_php": you_pay_php,
         "total_dispensed": total_dispensed,
         "liters_dispensed": liters_dispensed
     })
@@ -1286,7 +1874,9 @@ def supplier_sheet_pdf():
     cookie_station_ids = [s.strip() for s in cookie_val_norm.split(",") if s.strip()]
 
     # 3) default to all
-    all_stations = price_store.list_stations()
+    # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T3/T4/T6 wire up
+    # real fuel-type selection through these call sites.
+    all_stations = price_store.list_stations("Biodiesel")
     all_ids = [s.get("id") for s in all_stations if s.get("id")]
 
     selected_ids = query_station_ids or cookie_station_ids or all_ids

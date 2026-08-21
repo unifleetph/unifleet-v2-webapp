@@ -467,6 +467,57 @@ def test_create_unverified_booking_does_not_overwrite_provided_dates(schema_db):
 
 
 # ============================================================
+# account_code persistence (T1, ARCH-customer-details-page)
+# ============================================================
+
+def test_voucher_columns_includes_account_code():
+    """models.VOUCHER_COLUMNS must include account_code so both CSVRepo
+    and PostgresRepo overlay it from caller-supplied booking data."""
+    from models import VOUCHER_COLUMNS
+    assert "account_code" in VOUCHER_COLUMNS
+
+
+def test_fk_columns_no_longer_includes_account_code():
+    """db.postgres_repo._FK_COLUMNS must be station_id only now that
+    account_code lives in VOUCHER_COLUMNS — otherwise the generated
+    INSERT lists account_code twice and Postgres rejects it."""
+    from db.postgres_repo import _FK_COLUMNS
+    assert _FK_COLUMNS == ("station_id",)
+
+
+def test_create_unverified_booking_with_account_code_round_trips(schema_db):
+    """account_code supplied at booking time is persisted and readable
+    back via get_voucher, with no duplicate-column SQL error."""
+    repo = PostgresRepo(dsn=schema_db)
+    try:
+        repo.create_customer({"account_code": "HARR", "contact_name": "Harry"})
+        result = repo.create_unverified_booking({
+            "driver_name": "Account Code Driver",
+            "account_code": "HARR",
+        })
+        fetched = repo.get_voucher(result["voucher_id"])
+    finally:
+        repo.close()
+
+    assert result["account_code"] == "HARR"
+    assert fetched["account_code"] == "HARR"
+
+
+def test_create_unverified_booking_without_account_code_still_succeeds(schema_db):
+    """A booking dict with no account_code key still succeeds, with a
+    NULL account_code (nullable FK), no crash."""
+    repo = PostgresRepo(dsn=schema_db)
+    try:
+        result = repo.create_unverified_booking({
+            "driver_name": "No Account Driver",
+        })
+    finally:
+        repo.close()
+
+    assert result["account_code"] is None
+
+
+# ============================================================
 # update_voucher_fields
 # ============================================================
 
