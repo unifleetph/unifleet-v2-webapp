@@ -18,6 +18,23 @@
       background-color: white;
       text-align: center;
       padding: 1.5rem 1rem 1rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .success-icon {
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      background: #2e7d32;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.6rem;
+      margin-bottom: 10px;
+    }
+    .page-title-text {
       font-size: 1.8rem;
       color: #0054a6;
       font-weight: bold;
@@ -57,14 +74,15 @@
     .success-note p:last-child { margin-bottom: 0; }
 
     .bdo-note {
-      display: inline-flex;
+      display: flex;
+      width: fit-content;
       align-items: center;
       gap: 6px;
       background: #eaf2fd;
       color: #0b3e75;
       border-radius: 20px;
       padding: 6px 14px;
-      margin: 10px 0 0;
+      margin: 10px auto 0;
       font-size: 0.9rem;
       font-weight: 600;
     }
@@ -165,6 +183,8 @@
       margin: 16px 0 4px;
     }
     .payment-qr img {
+      display: block;
+      margin: 0 auto;
       width: 220px;
       max-width: 70%;
       height: auto;
@@ -186,7 +206,10 @@
     <img src="{{ url_for('static', filename='UniFleet Logo.png') }}" alt="UniFleet Logo">
   </header>
 
-  <div class="page-title">Booking Submitted</div>
+  <div class="page-title">
+    <div class="success-icon">✓</div>
+    <div class="page-title-text">Booking Submitted!</div>
+  </div>
 
   <main class="centered-content">
     <section class="section">
