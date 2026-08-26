@@ -96,6 +96,9 @@
             <form method="POST" action="{{ ('/admin/stations/' ~ s.id ~ '/reactivate?key=') ~ (request.args.get('key') or '') }}">
               <button class="btn btn-reactivate" type="submit">Reactivate</button>
             </form>
+            <form method="POST" action="{{ ('/admin/stations/' ~ s.id ~ '/delete?key=') ~ (request.args.get('key') or '') }}" onsubmit="return confirm('Delete station “{{ s.name }}”? This cannot be undone.');">
+              <button class="btn btn-danger" type="submit">Delete</button>
+            </form>
             {% endif %}
           </td>
       </tr>

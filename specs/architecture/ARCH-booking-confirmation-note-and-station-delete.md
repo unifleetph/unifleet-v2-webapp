@@ -310,7 +310,7 @@ Add `price_store.delete_station(station_id)`, which deletes a station's `price_h
 
 ## Task T3: Admin stations delete button
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** ui
 > **Effort:** s
 > **Priority:** medium

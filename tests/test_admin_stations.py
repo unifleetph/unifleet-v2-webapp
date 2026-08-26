@@ -331,6 +331,34 @@ def test_get_admin_stations_renders_inactive_row_css_class(client, fake_price_st
     assert 'class="inactive-row"' in r.data.decode("utf-8")
 
 
+def test_get_admin_stations_delete_button_only_for_inactive_stations(client, fake_price_store):
+    _login(client)
+    fake_price_store.stations["active1"] = {
+        "id": "active1", "brand": "A", "name": "Active One", "location": "X", "is_active": True,
+    }
+    fake_price_store.stations["inactive1"] = {
+        "id": "inactive1", "brand": "B", "name": "Inactive One", "location": "Y", "is_active": False,
+    }
+
+    body = client.get("/admin/stations").data.decode("utf-8")
+
+    active_row = body.split('data-station-id="active1"')[1].split("</tr>")[0]
+    inactive_row = body.split('data-station-id="inactive1"')[1].split("</tr>")[0]
+    assert "/admin/stations/active1/delete" not in active_row
+    assert "/admin/stations/inactive1/delete" in inactive_row
+
+
+def test_get_admin_stations_delete_form_preserves_key_query_param(client, fake_price_store):
+    _login(client)
+    fake_price_store.stations["inactive1"] = {
+        "id": "inactive1", "brand": "B", "name": "Inactive One", "location": "Y", "is_active": False,
+    }
+
+    body = client.get("/admin/stations?key=testkey").data.decode("utf-8")
+
+    assert "/admin/stations/inactive1/delete?key=testkey" in body
+
+
 # ============================================================
 # Key-Auth Redirect Preservation (review fix, High finding)
 # ============================================================
