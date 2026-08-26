@@ -1234,7 +1234,13 @@ def book():
                 existing.loc[mask, 'mobile_number'] = driver_data['mobile_number']
                 existing.to_csv(preset_path, index=False, encoding='utf-8-sig')
 
-        return render_template('booking_success.html', payment_info=PAYMENT_INFO, due_amount=computed_pay_php)
+        return render_template(
+            'booking_success.html',
+            payment_info=PAYMENT_INFO,
+            due_amount=computed_pay_php,
+            requested_total_php=requested_total_php,
+            discount_for_total=discount_for_total,
+        )
 
     # GET: blank form (include min_refuel hint)
     return render_template(
