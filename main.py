@@ -1545,6 +1545,31 @@ def admin_stations_reactivate(station_id):
     flash(f"Reactivated station “{station_id}”.", "success")
     return _admin_stations_back()
 
+@app.route("/admin/stations/<station_id>/delete", methods=["POST"])
+def admin_stations_delete(station_id):
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    existing = next((s for s in price_store.list_all_stations() if s["id"] == station_id), None)
+    if existing is None:
+        abort(404)
+
+    has_bookings = any(
+        (v.get("station") or "") == existing["name"] for v in repo.list_all_vouchers()
+    )
+    if has_bookings:
+        flash("Cannot delete: station has existing bookings.", "error")
+        return _admin_stations_back()
+
+    try:
+        price_store.delete_station(station_id)
+    except Exception as e:
+        flash(f"Failed to delete station: {e}", "error")
+        return _admin_stations_back()
+
+    flash(f"Deleted station “{station_id}”.", "success")
+    return _admin_stations_back()
+
 @app.route("/admin/prices/update", methods=["POST"])
 def admin_prices_update():
     if not require_admin(request):

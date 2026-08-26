@@ -238,7 +238,7 @@ Replace the current pending-payment paragraph on the booking confirmation page w
 
 ## Task T2: Station delete — backend logic
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** m
 > **Priority:** high
