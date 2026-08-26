@@ -170,6 +170,16 @@ None.
   - **Impact if unresolved:** Minor copy variance.
   - **Suggested default:** `"Cannot delete: station has existing bookings."` (from the REQ's suggested default).
 
+## Post-Review Addendum (2026-08-26)
+
+Phase 5 review (`specs/reviews/CODE-REVIEW-PIPELINE-booking-confirmation-note-and-station-delete.md`) surfaced 3 findings, fixed in a follow-up commit on top of T1-T3:
+
+- **A1 extended:** the booking-history guard (A1) was bypassable by renaming a station before deleting it, since it matched on the mutable `name` field. Fixed by adding the same booking-history check (extracted into a shared `_station_has_bookings(name)` helper in `main.py`) to `admin_stations_edit` — a rename is now blocked if the station's *current* name has booking history, closing the loophole for all future renames. This extends the Change Footprint: `main.py`'s `admin_stations_edit` route is now also modified (was previously untouched by T1-T3). Residual risk: stations already renamed *before* this fix shipped are not retroactively protected — out of scope to backfill.
+- **R3 hardening:** `admin_stations_delete` now also checks `existing["is_active"]` server-side and blocks with a flash if the station is still active, instead of relying solely on the template hiding the button.
+- **Error-handling consistency:** `admin_stations_delete` now catches `KeyError` from `price_store.delete_station` and returns 404, matching `deactivate`/`reactivate`, instead of falling through to the generic `except Exception` flash path.
+
+All three fixes covered by new tests in `tests/test_admin_stations.py`; full suite 408/408 passing.
+
 ## Out of Scope
 
 - Station deactivation flow itself (reason: already exists, unrelated to this change).

@@ -1500,6 +1500,16 @@ def admin_stations():
     stations = sorted(stations, key=lambda s: (s.get("brand") or "", s.get("name") or ""))
     return render_template("admin_stations.html", stations=stations)
 
+def _station_has_bookings(station_name):
+    """True if any voucher was recorded against this station name.
+
+    Bookings link to a station by name snapshot, not station_id (the
+    booking flow never populates vouchers.station_id) — so this is the
+    only reliable way to detect booking history for a station.
+    """
+    return any((v.get("station") or "") == station_name for v in repo.list_all_vouchers())
+
+
 @app.route("/admin/stations/<station_id>/edit", methods=["POST"])
 def admin_stations_edit(station_id):
     if not require_admin(request):
@@ -1512,6 +1522,10 @@ def admin_stations_edit(station_id):
     existing = next((s for s in price_store.list_all_stations() if s["id"] == station_id), None)
     if existing is None:
         abort(404)
+
+    if name and name != existing["name"] and _station_has_bookings(existing["name"]):
+        flash("Cannot rename: station has existing bookings under its current name.", "error")
+        return _admin_stations_back()
 
     try:
         price_store.upsert_station({
@@ -1554,15 +1568,18 @@ def admin_stations_delete(station_id):
     if existing is None:
         abort(404)
 
-    has_bookings = any(
-        (v.get("station") or "") == existing["name"] for v in repo.list_all_vouchers()
-    )
-    if has_bookings:
+    if existing.get("is_active"):
+        flash("Cannot delete: station must be deactivated first.", "error")
+        return _admin_stations_back()
+
+    if _station_has_bookings(existing["name"]):
         flash("Cannot delete: station has existing bookings.", "error")
         return _admin_stations_back()
 
     try:
         price_store.delete_station(station_id)
+    except KeyError:
+        abort(404)
     except Exception as e:
         flash(f"Failed to delete station: {e}", "error")
         return _admin_stations_back()
