@@ -147,6 +147,21 @@ def test_booking_success_shows_instapay_copy_and_qr(client, monkeypatch):
     assert "Send to INSTAPAY" in body
     assert "000228034271" in body
 
+    # Brief-10 R1: reassurance note replaces the old pending-payment paragraph
+    assert "Thank you for ordering from UniFleet." in body
+    assert "We are working to confirm your transaction." in body
+    assert "We'll get back to you as soon as we can." in body
+    assert "Your refuel request is now pending payment" not in body
+
+    # Brief-10 R2: BDO transfer note sits between the QR image and its
+    # existing InstaPay caption
+    bdo_text = "FREE BDO Transfer using BDO App"
+    assert bdo_text in body
+    qr_pos = body.index("instapay_qr.png")
+    bdo_pos = body.index(bdo_text)
+    caption_pos = body.index("Scan with your banking app (InstaPay) to pay.")
+    assert qr_pos < bdo_pos < caption_pos
+
     # regression guard: this repo previously reverted a GoTyme QR attempt —
     # must not reintroduce it
     assert "GoTyme" not in body

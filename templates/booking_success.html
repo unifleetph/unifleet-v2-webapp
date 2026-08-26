@@ -37,9 +37,36 @@
     }
 
     .success-note {
-      font-size: 1rem;
-      color: #222;
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      background: #f8f9fa;
+      border: 1px solid #e3e6ea;
+      border-radius: 10px;
+      padding: 14px;
       margin: 0 0 1rem 0;
+      font-size: 0.95rem;
+      color: #222;
+    }
+    .success-note .success-note-icon {
+      flex: 0 0 auto;
+      font-size: 1.1rem;
+      line-height: 1.3;
+    }
+    .success-note p { margin: 0 0 4px 0; }
+    .success-note p:last-child { margin-bottom: 0; }
+
+    .bdo-note {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #eaf2fd;
+      color: #0b3e75;
+      border-radius: 20px;
+      padding: 6px 14px;
+      margin: 10px 0 0;
+      font-size: 0.9rem;
+      font-weight: 600;
     }
 
     .payment-instructions { margin-top: 10px; }
@@ -130,7 +157,14 @@
 
   <main class="centered-content">
     <section class="section">
-      <p class="success-note">Your refuel request is now pending payment. Complete the payment below to obtain your refuel voucher. </p>
+      <div class="success-note">
+        <span class="success-note-icon">ℹ️</span>
+        <span>
+          <p>Thank you for ordering from UniFleet.</p>
+          <p>We are working to confirm your transaction.</p>
+          <p>We'll get back to you as soon as we can.</p>
+        </span>
+      </div>
 
       <div class="payment-instructions">
         <h2 style="margin-top:0; color:#0054a6;">Next Step: Send Payment</h2>
@@ -146,6 +180,7 @@
 
         <div class="payment-qr">
           <img src="{{ url_for('static', filename='instapay_qr.png') }}" alt="InstaPay QR code">
+          <p class="bdo-note">🏦 FREE BDO Transfer using BDO App</p>
           <p class="qr-caption">Scan with your banking app (InstaPay) to pay.</p>
         </div>
 
