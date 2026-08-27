@@ -257,6 +257,90 @@ def test_set_station_active_unknown_id_raises_key_error():
 
 
 # ============================================================
+# delete_station (T2, ARCH-booking-confirmation-note-and-station-delete)
+# ============================================================
+
+def test_delete_station_removes_bare_station(test_station):
+    price_store.delete_station(test_station)
+
+    assert test_station not in {s["id"] for s in price_store.list_all_stations(include_inactive=True)}
+
+
+def test_delete_station_cascades_prices_and_price_history(test_station, schema_db):
+    price_store.set_price(test_station, "Biodiesel", 60.0)
+
+    price_store.delete_station(test_station)
+
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM prices WHERE station_id = %s", (test_station,))
+            assert cur.fetchone() is None
+            cur.execute("SELECT 1 FROM price_history WHERE station_id = %s", (test_station,))
+            assert cur.fetchone() is None
+
+
+def test_delete_station_cascades_discounts_and_discount_history(test_station, schema_db):
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO discounts (station_id, fuel_type, discount_per_liter, updated_at) "
+                "VALUES (%s, %s, %s, NOW())",
+                (test_station, "Biodiesel", 2.0),
+            )
+            cur.execute(
+                "INSERT INTO discount_history "
+                "(station_id, fuel_type, old_discount_per_liter, new_discount_per_liter, timestamp_iso) "
+                "VALUES (%s, %s, %s, %s, NOW())",
+                (test_station, "Biodiesel", 0.0, 2.0),
+            )
+        conn.commit()
+
+    price_store.delete_station(test_station)
+
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM discounts WHERE station_id = %s", (test_station,))
+            assert cur.fetchone() is None
+            cur.execute("SELECT 1 FROM discount_history WHERE station_id = %s", (test_station,))
+            assert cur.fetchone() is None
+
+
+def test_delete_station_unknown_id_raises_key_error():
+    with pytest.raises(KeyError):
+        price_store.delete_station("does_not_exist_xyz")
+
+
+def test_delete_station_rolls_back_entirely_on_partial_failure(test_station, schema_db):
+    price_store.set_price(test_station, "Biodiesel", 60.0)
+
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO vouchers (voucher_id, station_id) VALUES (%s, %s)",
+                (f"pytest_v_{test_station}", test_station),
+            )
+        conn.commit()
+
+    try:
+        with pytest.raises(Exception):
+            price_store.delete_station(test_station)
+
+        with psycopg.connect(schema_db) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM stations WHERE id = %s", (test_station,))
+                assert cur.fetchone() is not None
+                cur.execute("SELECT 1 FROM prices WHERE station_id = %s", (test_station,))
+                assert cur.fetchone() is not None
+                cur.execute("SELECT 1 FROM price_history WHERE station_id = %s", (test_station,))
+                assert cur.fetchone() is not None
+    finally:
+        with psycopg.connect(schema_db) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM vouchers WHERE voucher_id = %s", (f"pytest_v_{test_station}",))
+            conn.commit()
+
+
+# ============================================================
 # Regression Guard
 # ============================================================
 

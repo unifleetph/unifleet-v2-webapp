@@ -381,6 +381,27 @@ def set_station_active(station_id: str, is_active: bool) -> Dict[str, Any]:
     return dict(r)
 
 
+def delete_station(station_id: str) -> None:
+    """Delete a station's price/discount rows, then the station itself,
+    in one transaction. Raises KeyError if the station doesn't exist.
+
+    Does not check for booking history — that's the caller's
+    responsibility (main.py checks vouchers by station name before
+    calling this, per ARCH decision A1).
+    """
+    pool = get_pool()
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            if not _station_exists(cur, station_id):
+                raise KeyError(f"Station '{station_id}' not found")
+            cur.execute("DELETE FROM price_history WHERE station_id = %s", (station_id,))
+            cur.execute("DELETE FROM discount_history WHERE station_id = %s", (station_id,))
+            cur.execute("DELETE FROM prices WHERE station_id = %s", (station_id,))
+            cur.execute("DELETE FROM discounts WHERE station_id = %s", (station_id,))
+            cur.execute("DELETE FROM stations WHERE id = %s", (station_id,))
+        conn.commit()
+
+
 # ============================================================
 # Internal helpers
 # ============================================================

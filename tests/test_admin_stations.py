@@ -42,6 +42,7 @@ class FakePriceStore:
         self.stations = {}  # id -> station dict
         self.upsert_calls = []
         self.active_calls = []
+        self.delete_calls = []
 
     def list_all_stations(self, include_inactive=True):
         stations = list(self.stations.values())
@@ -66,12 +67,33 @@ class FakePriceStore:
         self.stations[station_id]["is_active"] = is_active
         return self.stations[station_id]
 
+    def delete_station(self, station_id):
+        self.delete_calls.append(station_id)
+        if station_id not in self.stations:
+            raise KeyError(f"Station '{station_id}' not found")
+        del self.stations[station_id]
+
 
 @pytest.fixture
 def fake_price_store(monkeypatch):
     fps = FakePriceStore()
     monkeypatch.setattr(main, "price_store", fps)
     return fps
+
+
+class FakeRepo:
+    def __init__(self, vouchers=None):
+        self._vouchers = vouchers or []
+
+    def list_all_vouchers(self):
+        return list(self._vouchers)
+
+
+@pytest.fixture
+def fake_repo(monkeypatch):
+    repo = FakeRepo()
+    monkeypatch.setattr(main, "repo", repo)
+    return repo
 
 
 # ============================================================
@@ -123,7 +145,7 @@ def test_post_admin_stations_missing_name_flashes_error_and_does_not_create(clie
 # Edit
 # ============================================================
 
-def test_post_admin_stations_edit_updates_identity(client, fake_price_store):
+def test_post_admin_stations_edit_updates_identity(client, fake_price_store, fake_repo):
     _login(client)
     fake_price_store.stations["petron_makati"] = {
         "id": "petron_makati", "brand": "Petron", "name": "Makati", "location": "EDSA", "is_active": True,
@@ -196,6 +218,128 @@ def test_post_admin_stations_reactivate_unknown_id_returns_404(client, fake_pric
 
 
 # ============================================================
+# Delete (T2, ARCH-booking-confirmation-note-and-station-delete)
+# ============================================================
+
+def test_post_admin_stations_delete_succeeds_no_booking_history(client, fake_price_store, fake_repo):
+    _login(client)
+    fake_price_store.stations["petron_makati"] = {
+        "id": "petron_makati", "brand": "Petron", "name": "Makati", "location": "EDSA", "is_active": False,
+    }
+    fake_repo._vouchers = [{"station": "Some Other Station"}]
+
+    r = client.post("/admin/stations/petron_makati/delete")
+
+    assert r.status_code == 302
+    assert fake_price_store.delete_calls == ["petron_makati"]
+
+
+def test_post_admin_stations_delete_blocked_matching_voucher_name(client, fake_price_store, fake_repo):
+    _login(client)
+    fake_price_store.stations["petron_makati"] = {
+        "id": "petron_makati", "brand": "Petron", "name": "Makati", "location": "EDSA", "is_active": False,
+    }
+    fake_repo._vouchers = [{"station": "Makati"}]
+
+    r = client.post("/admin/stations/petron_makati/delete", follow_redirects=True)
+
+    assert fake_price_store.delete_calls == []
+    body = r.data.decode("utf-8")
+    assert "Cannot delete: station has existing bookings." in body
+
+
+def test_post_admin_stations_delete_unknown_id_returns_404(client, fake_price_store, fake_repo):
+    _login(client)
+
+    r = client.post("/admin/stations/does_not_exist/delete")
+
+    assert r.status_code == 404
+
+
+def test_post_admin_stations_delete_preserves_key_query_param_on_redirect(client, fake_price_store, fake_repo):
+    _login(client)
+    fake_price_store.stations["petron_makati"] = {
+        "id": "petron_makati", "brand": "Petron", "name": "Makati", "location": "EDSA", "is_active": False,
+    }
+
+    r = client.post("/admin/stations/petron_makati/delete?key=testkey")
+
+    assert r.status_code == 302
+    assert "key=testkey" in r.headers["Location"]
+
+
+def test_post_admin_stations_delete_store_error_flashes_instead_of_500(client, fake_price_store, fake_repo, monkeypatch):
+    fake_price_store.stations["petron_makati"] = {
+        "id": "petron_makati", "brand": "Petron", "name": "Makati", "location": "EDSA", "is_active": False,
+    }
+    def _raise(*a, **kw):
+        raise RuntimeError("db unavailable")
+    monkeypatch.setattr(fake_price_store, "delete_station", _raise)
+    _login(client)
+
+    r = client.post("/admin/stations/petron_makati/delete")
+
+    assert r.status_code == 302
+
+
+def test_post_admin_stations_delete_blocked_when_station_active(client, fake_price_store, fake_repo):
+    _login(client)
+    fake_price_store.stations["petron_makati"] = {
+        "id": "petron_makati", "brand": "Petron", "name": "Makati", "location": "EDSA", "is_active": True,
+    }
+
+    r = client.post("/admin/stations/petron_makati/delete", follow_redirects=True)
+
+    assert fake_price_store.delete_calls == []
+    assert "petron_makati" in fake_price_store.stations
+    assert "Cannot delete: station must be deactivated first." in r.data.decode("utf-8")
+
+
+def test_post_admin_stations_delete_unknown_id_race_returns_404(client, fake_price_store, fake_repo, monkeypatch):
+    fake_price_store.stations["petron_makati"] = {
+        "id": "petron_makati", "brand": "Petron", "name": "Makati", "location": "EDSA", "is_active": False,
+    }
+    def _raise(*a, **kw):
+        raise KeyError("Station 'petron_makati' not found")
+    monkeypatch.setattr(fake_price_store, "delete_station", _raise)
+    _login(client)
+
+    r = client.post("/admin/stations/petron_makati/delete")
+
+    assert r.status_code == 404
+
+
+def test_post_admin_stations_edit_rename_blocked_when_station_has_bookings(client, fake_price_store, fake_repo):
+    _login(client)
+    fake_price_store.stations["petron_makati"] = {
+        "id": "petron_makati", "brand": "Petron", "name": "Makati", "location": "EDSA", "is_active": True,
+    }
+    fake_repo._vouchers = [{"station": "Makati"}]
+
+    r = client.post("/admin/stations/petron_makati/edit", data={
+        "brand": "Petron", "name": "Makati Renamed", "location": "EDSA",
+    }, follow_redirects=True)
+
+    assert len(fake_price_store.upsert_calls) == 0
+    assert "Cannot rename: station has existing bookings under its current name." in r.data.decode("utf-8")
+
+
+def test_post_admin_stations_edit_rename_allowed_when_no_bookings(client, fake_price_store, fake_repo):
+    _login(client)
+    fake_price_store.stations["petron_makati"] = {
+        "id": "petron_makati", "brand": "Petron", "name": "Makati", "location": "EDSA", "is_active": True,
+    }
+    fake_repo._vouchers = [{"station": "Some Other Station"}]
+
+    r = client.post("/admin/stations/petron_makati/edit", data={
+        "brand": "Petron", "name": "Makati Renamed", "location": "EDSA",
+    })
+
+    assert r.status_code == 302
+    assert len(fake_price_store.upsert_calls) == 1
+
+
+# ============================================================
 # Template Rendering (T4, ARCH-station-management)
 # ============================================================
 
@@ -242,6 +386,34 @@ def test_get_admin_stations_renders_inactive_row_css_class(client, fake_price_st
     r = client.get("/admin/stations")
 
     assert 'class="inactive-row"' in r.data.decode("utf-8")
+
+
+def test_get_admin_stations_delete_button_only_for_inactive_stations(client, fake_price_store):
+    _login(client)
+    fake_price_store.stations["active1"] = {
+        "id": "active1", "brand": "A", "name": "Active One", "location": "X", "is_active": True,
+    }
+    fake_price_store.stations["inactive1"] = {
+        "id": "inactive1", "brand": "B", "name": "Inactive One", "location": "Y", "is_active": False,
+    }
+
+    body = client.get("/admin/stations").data.decode("utf-8")
+
+    active_row = body.split('data-station-id="active1"')[1].split("</tr>")[0]
+    inactive_row = body.split('data-station-id="inactive1"')[1].split("</tr>")[0]
+    assert "/admin/stations/active1/delete" not in active_row
+    assert "/admin/stations/inactive1/delete" in inactive_row
+
+
+def test_get_admin_stations_delete_form_preserves_key_query_param(client, fake_price_store):
+    _login(client)
+    fake_price_store.stations["inactive1"] = {
+        "id": "inactive1", "brand": "B", "name": "Inactive One", "location": "Y", "is_active": False,
+    }
+
+    body = client.get("/admin/stations?key=testkey").data.decode("utf-8")
+
+    assert "/admin/stations/inactive1/delete?key=testkey" in body
 
 
 # ============================================================
@@ -312,7 +484,7 @@ def test_post_admin_stations_create_store_error_flashes_instead_of_500(client, f
     assert r.status_code == 302
 
 
-def test_post_admin_stations_edit_store_error_flashes_instead_of_500(client, fake_price_store, monkeypatch):
+def test_post_admin_stations_edit_store_error_flashes_instead_of_500(client, fake_price_store, fake_repo, monkeypatch):
     fake_price_store.stations["petron_makati"] = {
         "id": "petron_makati", "brand": "Petron", "name": "Makati", "location": "EDSA", "is_active": True,
     }
@@ -337,6 +509,7 @@ def test_post_admin_stations_edit_store_error_flashes_instead_of_500(client, fak
     ("post", "/admin/stations/some_id/edit"),
     ("post", "/admin/stations/some_id/deactivate"),
     ("post", "/admin/stations/some_id/reactivate"),
+    ("post", "/admin/stations/some_id/delete"),
 ])
 def test_all_station_routes_require_admin(client, fake_price_store, method, path):
     r = getattr(client, method)(path)

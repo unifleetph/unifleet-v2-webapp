@@ -18,6 +18,23 @@
       background-color: white;
       text-align: center;
       padding: 1.5rem 1rem 1rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .success-icon {
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      background: #2e7d32;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.6rem;
+      margin-bottom: 10px;
+    }
+    .page-title-text {
       font-size: 1.8rem;
       color: #0054a6;
       font-weight: bold;
@@ -37,9 +54,37 @@
     }
 
     .success-note {
-      font-size: 1rem;
-      color: #222;
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      background: #f8f9fa;
+      border: 1px solid #e3e6ea;
+      border-radius: 10px;
+      padding: 14px;
       margin: 0 0 1rem 0;
+      font-size: 0.95rem;
+      color: #222;
+    }
+    .success-note .success-note-icon {
+      flex: 0 0 auto;
+      font-size: 1.1rem;
+      line-height: 1.3;
+    }
+    .success-note p { margin: 0 0 4px 0; }
+    .success-note p:last-child { margin-bottom: 0; }
+
+    .bdo-note {
+      display: flex;
+      width: fit-content;
+      align-items: center;
+      gap: 6px;
+      background: #eaf2fd;
+      color: #0b3e75;
+      border-radius: 20px;
+      padding: 6px 14px;
+      margin: 10px auto 0;
+      font-size: 0.9rem;
+      font-weight: 600;
     }
 
     .payment-instructions { margin-top: 10px; }
@@ -57,11 +102,44 @@
       color: #0b3e75;
     }
 
-    .amount-due {
+    .amount-summary {
+      background: #f8f9fa;
+      border: 1px solid #e3e6ea;
+      border-radius: 10px;
+      padding: 14px;
+      margin: 10px 0 20px 0;
+    }
+    .amount-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: 4px 0;
+    }
+    .amount-row + .amount-row {
+      border-top: 1px solid #e3e6ea;
+    }
+    .amount-row-due {
       font-size: 1.2rem;
       font-weight: bold;
       color: #b00020; /* red for importance */
-      margin: 10px 0 20px 0;
+    }
+    .amount-row-total {
+      font-size: 0.95rem;
+      color: #666;
+    }
+    .amount-row-save {
+      font-size: 0.95rem;
+      color: #1e7e34; /* green */
+      font-weight: 600;
+    }
+
+    .confirmation-note {
+      margin: 10px 0 0;
+      font-size: 0.92rem;
+      color: #555;
+    }
+    .confirmation-note + .confirmation-note {
+      margin-top: 4px;
     }
 
     .btn-row {
@@ -105,6 +183,8 @@
       margin: 16px 0 4px;
     }
     .payment-qr img {
+      display: block;
+      margin: 0 auto;
       width: 220px;
       max-width: 70%;
       height: auto;
@@ -126,28 +206,54 @@
     <img src="{{ url_for('static', filename='UniFleet Logo.png') }}" alt="UniFleet Logo">
   </header>
 
-  <div class="page-title">Booking Submitted</div>
+  <div class="page-title">
+    <div class="success-icon">✓</div>
+    <div class="page-title-text">Booking Submitted!</div>
+  </div>
 
   <main class="centered-content">
     <section class="section">
-      <p class="success-note">Your refuel request is now pending payment. Complete the payment below to obtain your refuel voucher. </p>
+      <div class="success-note">
+        <span class="success-note-icon">ℹ️</span>
+        <span>
+          <p>Thank you for ordering from UniFleet.</p>
+          <p>We are working to confirm your transaction.</p>
+          <p>We'll get back to you as soon as we can.</p>
+        </span>
+      </div>
 
       <div class="payment-instructions">
         <h2 style="margin-top:0; color:#0054a6;">Next Step: Send Payment</h2>
-        <p class="amount-due">Amount Due: ₱{{ '{:,.2f}'.format(due_amount|float) }}</p>
+
+        <div class="amount-summary">
+          <div class="amount-row amount-row-due">
+            <span>Amount Due:</span>
+            <span>₱{{ '{:,.2f}'.format(due_amount|float) }}</span>
+          </div>
+          <div class="amount-row amount-row-total">
+            <span>Total requested:</span>
+            <span>₱{{ '{:,.2f}'.format(requested_total_php|float) }}</span>
+          </div>
+          <div class="amount-row amount-row-save">
+            <span>You save:</span>
+            <span>₱{{ '{:,.2f}'.format(discount_for_total|float) }}</span>
+          </div>
+        </div>
 
         <div class="payment-box">
           <h3>🏦 Send to INSTAPAY</h3>
           <p><strong>Account Name:</strong> UniFleet</p>
           <p><strong>Account Number:</strong> 000228034271</p>
-          <p>Kunan ng screenshot ang iyong payment reference number. Maaaring makipag-ugnayan ang UniFleet para sa kumpirmasyon at beripikasyon.</p>
-          <p>Screenshot your payment reference number. UniFleet may reach out for confirmation and verification.</p>
         </div>
 
         <div class="payment-qr">
           <img src="{{ url_for('static', filename='instapay_qr.png') }}" alt="InstaPay QR code">
+          <p class="bdo-note">🏦 FREE BDO Transfer using BDO App</p>
           <p class="qr-caption">Scan with your banking app (InstaPay) to pay.</p>
         </div>
+
+        <p class="confirmation-note">Kunan ng screenshot ang iyong payment reference number. Maaaring makipag-ugnayan ang UniFleet para sa kumpirmasyon at beripikasyon.</p>
+        <p class="confirmation-note">Screenshot your payment reference number. UniFleet may reach out for confirmation and verification.</p>
 
       <div class="btn-row">
         <a href="{{ url_for('book') }}" class="btn btn-primary">← Make another booking</a>

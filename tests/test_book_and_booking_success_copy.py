@@ -4,6 +4,7 @@ pre-registration prompt, /register's info-box, and the booking
 confirmation page (Brief-4).
 """
 
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -11,6 +12,14 @@ import pytest
 
 import data_paths
 import main
+
+
+def _assert_amount_row(body, label, value_text):
+    """Amount-summary rows render label and value as separate <span>s
+    (for the label-left/value-right layout) — match across the tag
+    boundary rather than requiring them in one text node."""
+    pattern = re.escape(label) + r"</span>\s*<span>" + re.escape(value_text) + r"</span>"
+    assert re.search(pattern, body), f"expected row {label!r} / {value_text!r} not found in body"
 
 
 CUST = {
@@ -137,7 +146,9 @@ def test_booking_success_shows_instapay_copy_and_qr(client, monkeypatch):
     assert "PESONet" not in body
     # ARCH-brief-7 T1: due_amount = computed_pay_php (total - discount);
     # discount stubbed to 0 here, so pay == the raw total entered
-    assert "Amount Due: ₱10,000.00" in body
+    _assert_amount_row(body, "Amount Due:", "₱10,000.00")
+    _assert_amount_row(body, "Total requested:", "₱10,000.00")
+    _assert_amount_row(body, "You save:", "₱0.00")
 
     # R2: InstaPay QR present with caption
     assert "instapay_qr.png" in body
@@ -146,6 +157,30 @@ def test_booking_success_shows_instapay_copy_and_qr(client, monkeypatch):
     # unrelated payment-box content unchanged
     assert "Send to INSTAPAY" in body
     assert "000228034271" in body
+
+    # Brief-10 R1: reassurance note replaces the old pending-payment paragraph
+    assert "Thank you for ordering from UniFleet." in body
+    assert "We are working to confirm your transaction." in body
+    assert "We'll get back to you as soon as we can." in body
+    assert "Your refuel request is now pending payment" not in body
+
+    # Brief-10 R2: BDO transfer note sits between the QR image and its
+    # existing InstaPay caption
+    bdo_text = "FREE BDO Transfer using BDO App"
+    assert bdo_text in body
+    qr_pos = body.index("instapay_qr.png")
+    bdo_pos = body.index(bdo_text)
+    caption_pos = body.index("Scan with your banking app (InstaPay) to pay.")
+    assert qr_pos < bdo_pos < caption_pos
+
+    # confirmation-request paragraphs sit after the QR caption, plain
+    # (unboxed), before the "Make another booking" button
+    tagalog_pos = body.index("Kunan ng screenshot ang iyong payment reference number.")
+    english_pos = body.index(
+        "Screenshot your payment reference number. UniFleet may reach out for confirmation and verification."
+    )
+    button_pos = body.index("Make another booking")
+    assert caption_pos < tagalog_pos < english_pos < button_pos
 
     # regression guard: this repo previously reverted a GoTyme QR attempt —
     # must not reintroduce it
@@ -187,7 +222,7 @@ def test_booking_success_shows_post_discount_amount_due(client, monkeypatch):
 
     assert resp.status_code == 200
     body = resp.data.decode("utf-8")
-    assert "Amount Due: ₱1,100.00" in body
+    _assert_amount_row(body, "Amount Due:", "₱1,100.00")
     assert "Amount Due: ₱1,200.00" not in body
 
 
