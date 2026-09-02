@@ -207,7 +207,7 @@ A single `_exclude_deleted(vouchers)` helper filters out soft-deleted orders (`d
 
 ## Task T4: Admin UI — Delete Order column, scroll, confirm, flash toasts
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** ui
 > **Effort:** m
 > **Priority:** high

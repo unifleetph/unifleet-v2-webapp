@@ -235,6 +235,46 @@
           text-decoration: none;
         }
         .btn-secondary:hover { background: #eef3f9; }
+
+        /* Delete Order column (REQ-delete-order-button): horizontal scroll
+           wrapper so existing columns keep fixed width instead of being
+           squeezed to fit the new column. */
+        .table-scroll {
+          overflow-x: auto;
+        }
+
+        .delete-order-button {
+            background-color: #fff;
+            color: #b45309;
+            border: 1px solid #d97706;
+            padding: 6px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .delete-order-button:hover {
+            background-color: #fffbeb;
+        }
+
+        .delete-order-button[disabled] {
+            background-color: #f3f4f6;
+            color: #9ca3af;
+            border-color: #d1d5db;
+            cursor: not-allowed;
+        }
+
+        #toast {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            background: #111827;
+            color: #fff;
+            padding: 10px 12px;
+            border-radius: 8px;
+            opacity: 0;
+            transition: opacity .25s;
+        }
     </style>
 </head>
 <body>
@@ -295,6 +335,7 @@
     <h2>All Vouchers</h2>
     <input type="text" id="searchInput" onkeyup="filterTable()" placeholder="Search vouchers..." style="margin-bottom: 15px; padding: 8px; width: 100%; max-width: 400px;">
 
+    <div class="table-scroll">
     <table>
         <thead>
           <tr>
@@ -311,6 +352,7 @@
             <th>Total</th>
             <th>PNG</th>
             <th>Delete PNGs</th>
+            <th>Delete Order</th>
           </tr>
         </thead>
 
@@ -387,11 +429,52 @@
                         <button class="delete-button" disabled>Deleted</button>
                     {% endif %}
                 </td>
+                <td>
+                    {% if row['status'] == 'Redeemed' %}
+                        <button class="delete-order-button" disabled title="Cannot delete a redeemed order">Delete Order</button>
+                    {% else %}
+                        <form method="POST" action="/admin/orders/{{ row['voucher_id'] }}/delete" onsubmit="return confirm('Delete order “{{ row['voucher_id'] }}”? This cannot be undone from the dashboard.');">
+                            <button type="submit" class="delete-order-button">Delete Order</button>
+                        </form>
+                    {% endif %}
+                </td>
             </tr>
 
             {% endfor %}
         </tbody>
     </table>
+    </div>
+
+    <!-- Flash payload (for toast bridge) -->
+    <script id="flash-data" type="application/json">
+      {{ get_flashed_messages(with_categories=true) | tojson }}
+    </script>
+
+    <div id="toast"></div>
+
+    <script>
+        function toast(msg, ok=true) {
+            const el = document.getElementById('toast');
+            el.textContent = msg;
+            el.style.background = ok ? '#111827' : '#b91c1c';
+            el.style.opacity = 1;
+            setTimeout(() => el.style.opacity = 0, 1800);
+        }
+        (function showFlashes() {
+            try {
+                const payload = document.getElementById('flash-data')?.textContent || '[]';
+                const flashes = JSON.parse(payload);
+                if (Array.isArray(flashes)) {
+                    flashes.forEach(([category, message]) => {
+                        const ok = (category !== 'error' && category !== 'danger');
+                        toast(message, ok);
+                    });
+                }
+            } catch (e) {
+                // ignore
+            }
+        })();
+    </script>
 
     <script>
         function filterTable() {
