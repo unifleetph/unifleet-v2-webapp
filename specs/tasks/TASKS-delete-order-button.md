@@ -55,7 +55,7 @@ Add a nullable `deleted_at` TIMESTAMPTZ column to the `vouchers` table so orders
 
 ## Task T2: Delete-order backend route
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** high

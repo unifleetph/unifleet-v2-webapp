@@ -446,16 +446,44 @@ def upload_csv():
         print(result.stderr)
     return redirect(url_for('admin'))
 
+def _delete_voucher_pngs(voucher_id):
+    """Remove both QR PNGs for a voucher, if present. Shared by delete_png()
+    and admin_orders_delete() so the cleanup logic can't diverge."""
+    for path in [str(data_paths.qr_png_path(voucher_id)), str(data_paths.official_qr_png_path(voucher_id))]:
+        if os.path.exists(path):
+            os.remove(path)
+
 @app.route('/delete_png/<voucher_id>', methods=['POST'])
 def delete_png(voucher_id):
     try:
-        for path in [str(data_paths.qr_png_path(voucher_id)), str(data_paths.official_qr_png_path(voucher_id))]:
-            if os.path.exists(path):
-                os.remove(path)
+        _delete_voucher_pngs(voucher_id)
         return redirect(url_for('admin'))
     except Exception as e:
         print(f"❌ Error deleting PNGs for {voucher_id}: {e}")
         return f"<h2>Error deleting PNGs for {voucher_id}: {str(e)}</h2>", 500
+
+@app.route('/admin/orders/<voucher_id>/delete', methods=['POST'])
+def admin_orders_delete(voucher_id):
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    row = repo.get_voucher(voucher_id)
+    if row is None:
+        flash(f"Order “{voucher_id}” was not found (already deleted?).", "error")
+        return redirect(url_for('admin'))
+
+    status = (row.get("status") or "").strip()
+    if status == "Redeemed":
+        flash(f"Cannot delete order “{voucher_id}”: it has already been redeemed.", "error")
+        return redirect(url_for('admin'))
+
+    now = datetime.utcnow().isoformat(timespec='seconds')
+    repo.update_voucher_fields(voucher_id, {"deleted_at": now})
+    _delete_voucher_pngs(voucher_id)
+    append_audit("delete_order", voucher_id, from_status=status, to_status="Deleted")
+    flash(f"Deleted order “{voucher_id}”.", "success")
+
+    return redirect(url_for('admin'))
 
 @app.route('/redeem/<voucher_id>', methods=['GET'])
 def redeem_page(voucher_id):
