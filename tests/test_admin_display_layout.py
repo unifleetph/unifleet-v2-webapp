@@ -198,6 +198,27 @@ def test_admin_dashboard_excludes_deleted_orders(client, monkeypatch):
 # Delete Order column (T4, ARCH-delete-order-button)
 # ============================================================
 
+def test_admin_dashboard_backfills_to_50_when_deletions_present(client, monkeypatch):
+    # code-review fix: _exclude_deleted() must not shrink the displayed
+    # count below 50 when deleted rows fall within the fetched window.
+    rows = []
+    for i in range(3):
+        rows.append({"voucher_id": f"UF-DEL-{i}", "driver_name": "Dave",
+                     "station": "Cleanfuel", "status": "Unverified",
+                     "fuel_type": "Premium", "deleted_at": "2026-09-02T00:00:00"})
+    for i in range(52):
+        rows.append({"voucher_id": f"UF-OK-{i}", "driver_name": "Dave",
+                     "station": "Cleanfuel", "status": "Unverified", "fuel_type": "Premium"})
+    monkeypatch.setattr(main, "repo", RepoStub(rows))
+    _login(client)
+
+    r = client.get("/admin")
+    body = r.data.decode("utf-8")
+
+    assert body.count('<a href="/redeem/UF-OK-') == 50
+    assert "UF-DEL-" not in body
+
+
 def test_admin_dashboard_has_delete_order_column(client, monkeypatch):
     monkeypatch.setattr(main, "repo", RepoStub([]))
     _login(client)

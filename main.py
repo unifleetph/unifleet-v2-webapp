@@ -241,7 +241,12 @@ def admin():
         return redirect(url_for('admin_login', next=request.path))
     # existing voucher table data
     try:
-        vouchers = _exclude_deleted(repo.list_recent_vouchers(limit=50))
+        # Over-fetch before filtering so soft-deleted rows don't shrink the
+        # displayed count below 50 (code review finding: filtering after an
+        # already-LIMIT-ed query can't backfill from the next-most-recent
+        # undeleted rows). 200 is a generous cushion against a heavy-deletion
+        # day without querying the whole table.
+        vouchers = _exclude_deleted(repo.list_recent_vouchers(limit=200))[:50]
         for row in vouchers:
             vid = str(row.get("voucher_id", "")).strip()
             png_1 = data_paths.qr_png_path(vid).exists()
@@ -494,14 +499,14 @@ def admin_orders_delete(voucher_id):
 @app.route('/redeem/<voucher_id>', methods=['GET'])
 def redeem_page(voucher_id):
     row = repo.get_voucher(voucher_id)
-    if not row:
+    if not row or row.get('deleted_at'):
         return f"<h2>Voucher ID '{voucher_id}' not found.</h2>", 404
     return render_template('redeem.html', voucher=row)
 
 @app.route('/redeem/<voucher_id>', methods=['POST'])
 def mark_redeemed(voucher_id):
     row = repo.get_voucher(voucher_id)
-    if not row:
+    if not row or row.get('deleted_at'):
         return f"<h2>Voucher ID '{voucher_id}' not found.</h2>", 404
     current_status = str(row.get('status', '')).strip()
     allowed = (current_status in ('', 'Unverified', 'Unredeemed'))
