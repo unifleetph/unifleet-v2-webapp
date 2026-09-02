@@ -45,6 +45,9 @@ VOUCHER_COLUMNS = [
     "discount_snapshot_php_per_liter",
     "discount_snapshot_captured_at",
 
+    # --- NEW (REQ-profit-margin: margin % live at checkout-start) ---
+    "margin_pct_at_booking",
+
     # (these may already exist in your project; keep them if present)
     "discount_total_php",
     "total_dispensed_php",

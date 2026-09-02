@@ -269,3 +269,24 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp
     ON audit_log(timestamp);
+
+-- ============================================================
+-- Margin settings: single global profit-margin % (REQ-profit-margin).
+-- Singleton row (id=1). Deducted from the supplier discount at
+-- display/booking time; the raw discount value in `discounts`
+-- is never modified.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS margin_settings (
+    id            SMALLINT     PRIMARY KEY DEFAULT 1,
+    margin_pct    NUMERIC(5,2) NOT NULL DEFAULT 0,
+    updated_at    TIMESTAMPTZ,
+    updated_by    TEXT
+);
+
+INSERT INTO margin_settings (id, margin_pct)
+VALUES (1, 0)
+ON CONFLICT DO NOTHING;
+
+-- Booking-time margin snapshot (REQ-profit-margin R7/R8): the margin %
+-- live when the customer started checkout, frozen on the voucher row.
+ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS margin_pct_at_booking NUMERIC(5,2);
