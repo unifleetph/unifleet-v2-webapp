@@ -60,3 +60,29 @@ def test_get_redeem_page_still_works_for_non_deleted_order(client, monkeypatch):
     resp = client.get("/redeem/UF-3")
 
     assert resp.status_code == 200
+
+
+# ============================================================
+# /ops/voucher/<id>/status/<status> (Verify action)
+# ============================================================
+
+def test_ops_set_status_404s_for_deleted_order(client, monkeypatch):
+    monkeypatch.setattr(main, "OPS_TOKEN", "")
+    repo = FakeRepo([_deleted_voucher("UF-4", status="Unverified")])
+    monkeypatch.setattr(main, "repo", repo)
+
+    resp = client.get("/ops/voucher/UF-4/status/Unredeemed")
+
+    assert resp.status_code == 404
+    assert repo.set_status_calls == []
+
+
+def test_ops_set_status_still_works_for_non_deleted_order(client, monkeypatch):
+    monkeypatch.setattr(main, "OPS_TOKEN", "")
+    monkeypatch.setattr(main, "repo", FakeRepo([
+        {"voucher_id": "UF-5", "status": "Unverified"},
+    ]))
+
+    resp = client.get("/ops/voucher/UF-5/status/Redeemed")
+
+    assert resp.status_code != 404

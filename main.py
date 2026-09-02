@@ -528,7 +528,7 @@ def ops_set_status(voucher_id, new_status):
     if new_status not in allowed_targets:
         return f"<h2>Invalid status '{new_status}'.</h2>", 400
     row = repo.get_voucher(voucher_id)
-    if not row:
+    if not row or row.get('deleted_at'):
         return f"<h2>Voucher ID '{voucher_id}' not found.</h2>", 404
     prev = str(row.get('status','')).strip()
 
