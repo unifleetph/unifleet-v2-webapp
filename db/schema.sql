@@ -98,7 +98,9 @@ CREATE TABLE IF NOT EXISTS vouchers (
 
     discount_total_php               NUMERIC(12,2),
     total_dispensed_php              NUMERIC(12,2),
-    computed_at                      TIMESTAMPTZ
+    computed_at                      TIMESTAMPTZ,
+
+    deleted_at                       TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_vouchers_status            ON vouchers(status);
@@ -119,6 +121,13 @@ ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS fuel_type VARCHAR(30);
 -- wrong number from the discounted charge amount. Nullable — historical
 -- rows stay NULL and fall back to the pre-Brief-5 formula (ARCH-brief-5).
 ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS requested_total_php NUMERIC(12,2);
+
+-- REQ-delete-order-button: soft-delete flag for the admin "Delete Order"
+-- action. NULL = order is visible everywhere; a timestamp = soft-deleted
+-- (hidden from the admin table, Supplier PDF, and other exports, but the
+-- row itself is retained — audit_log only captures a thin event trail,
+-- not a full row snapshot, so hard-deleting would lose data).
+ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
 -- Brief-8 (ARCH-brief-8 T3/T4): booking-time mobile number, collected
 -- alongside the New Driver fields. Digits only, leading zero preserved

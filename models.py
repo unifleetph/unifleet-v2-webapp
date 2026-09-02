@@ -36,6 +36,9 @@ VOUCHER_COLUMNS = [
     "created_at",
     "updated_at",
 
+    # --- NEW (soft-delete, REQ-delete-order-button) ---
+    "deleted_at",
+
     # --- NEW (booking-time snapshots we’ll freeze in main.py) ---
     "price_snapshot_php_per_liter",
     "price_snapshot_updated_at",
