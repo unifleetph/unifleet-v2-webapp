@@ -228,6 +228,12 @@ def home():
 def serve_qr_asset(filename):
     return send_from_directory(str(data_paths.QR_DIR), filename)
 
+def _exclude_deleted(vouchers):
+    """Filter out soft-deleted orders (deleted_at set) from a list of voucher
+    rows. Shared across every customer/supplier/admin-facing read path so the
+    exclusion rule lives in one place (REQ-delete-order-button, R8)."""
+    return [v for v in vouchers if not v.get("deleted_at")]
+
 @app.route('/admin')
 def admin():
     # Admin dashboard — gated by session login or legacy ?key= fallback.
@@ -235,7 +241,7 @@ def admin():
         return redirect(url_for('admin_login', next=request.path))
     # existing voucher table data
     try:
-        vouchers = repo.list_recent_vouchers(limit=50)
+        vouchers = _exclude_deleted(repo.list_recent_vouchers(limit=50))
         for row in vouchers:
             vid = str(row.get("voucher_id", "")).strip()
             png_1 = data_paths.qr_png_path(vid).exists()
@@ -347,7 +353,7 @@ def admin_customers():
             )
 
     bookings = [
-        v for v in repo.list_all_vouchers()
+        v for v in _exclude_deleted(repo.list_all_vouchers())
         if _normalize_account_code(v) == _normalize_account_code(customer)
     ]
     return render_template(
@@ -416,7 +422,7 @@ def admin_customer_export():
         abort(404)
 
     bookings = [
-        v for v in repo.list_all_vouchers()
+        v for v in _exclude_deleted(repo.list_all_vouchers())
         if _normalize_account_code(v) == _normalize_account_code(customer)
     ]
     bookings = _with_customer_contact_columns(bookings)
@@ -429,7 +435,7 @@ def admin_bookings_export():
     if not require_admin(request):
         return redirect(url_for('admin_login', next=request.path))
 
-    bookings = _with_customer_contact_columns(repo.list_all_vouchers())
+    bookings = _with_customer_contact_columns(_exclude_deleted(repo.list_all_vouchers()))
     export_path = str(data_paths.EXPORTS_DIR / "all_customers_bookings.csv")
     pd.DataFrame(bookings, columns=_EXPORT_COLUMNS).to_csv(export_path, index=False, encoding='utf-8-sig')
     return send_file(export_path, as_attachment=True)
@@ -1370,7 +1376,7 @@ def export_supplier_csv():
       Driver, Plate, Status, Refuel Date
     """
     try:
-        rows = repo.list_all_vouchers()
+        rows = _exclude_deleted(repo.list_all_vouchers())
         if not rows:
             return "<h2>No vouchers to export.</h2>", 200
 
@@ -1958,7 +1964,7 @@ def supplier_sheet_pdf():
     selected_ids = query_station_ids or cookie_station_ids or all_ids
 
     # Build PDF in-memory (Unredeemed only)
-    rows = repo.list_all_vouchers()
+    rows = _exclude_deleted(repo.list_all_vouchers())
     vouchers = [r for r in rows if (r.get("status") or "").strip() == "Unredeemed"]
     pdf_bytes = build_supplier_pdf(
         vouchers=vouchers,

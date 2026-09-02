@@ -129,7 +129,7 @@ Write the Redeemed-blocked test first (defines the contract's core constraint), 
 
 ## Task T3: Deleted-order exclusion across read paths
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** high

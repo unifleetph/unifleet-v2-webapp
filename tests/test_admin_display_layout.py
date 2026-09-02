@@ -174,3 +174,21 @@ def test_dashboard_fuel_type_shows_real_value_when_present(client, monkeypatch):
     r = client.get("/admin")
     body = r.data.decode("utf-8")
     assert "<td>Premium</td>" in body
+
+
+# ============================================================
+# Deleted-order exclusion (T3, ARCH-delete-order-button)
+# ============================================================
+
+def test_admin_dashboard_excludes_deleted_orders(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub([
+        {"voucher_id": "UF-VISIBLE", "driver_name": "Dave", "station": "Cleanfuel",
+         "status": "Unverified", "fuel_type": "Premium"},
+        {"voucher_id": "UF-DELETED", "driver_name": "Dave", "station": "Cleanfuel",
+         "status": "Unverified", "fuel_type": "Premium", "deleted_at": "2026-09-02T00:00:00"},
+    ]))
+    _login(client)
+    r = client.get("/admin")
+    body = r.data.decode("utf-8")
+    assert "UF-VISIBLE" in body
+    assert "UF-DELETED" not in body

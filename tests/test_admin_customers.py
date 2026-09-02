@@ -183,6 +183,20 @@ def test_customer_with_zero_bookings_renders_empty_history(client, monkeypatch):
     assert b"UF-1" not in r.data
 
 
+def test_detail_view_excludes_deleted_orders(client, monkeypatch):
+    deleted_voucher = {
+        "voucher_id": "UF-9", "account_code": "HARR", "station": "Cleanfuel",
+        "status": "Unverified", "deleted_at": "2026-09-02T00:00:00",
+    }
+    monkeypatch.setattr(main, "repo", RepoStub(customers=[HARR], vouchers=[VOUCHERS[0], deleted_voucher]))
+    _login(client)
+
+    r = client.get("/admin/customers?q=HARR")
+
+    assert b"UF-1" in r.data
+    assert b"UF-9" not in r.data
+
+
 # ============================================================
 # Booking history — Driver Name / Phone Number columns (T1, ARCH-brief-9)
 # ============================================================
