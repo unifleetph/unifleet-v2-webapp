@@ -61,9 +61,15 @@ def client(monkeypatch):
         lambda fuel_type: [dict(s) for s in PRICED_STATIONS] if fuel_type == "Biodiesel" else []
     )
     monkeypatch.setattr(
-        main.discount_store, "get_all",
-        lambda fuel_type: dict(DISCOUNTS) if fuel_type == "Biodiesel" else {}
+        main.discount_store, "get_all_with_exempt",
+        lambda fuel_type: (
+            {name: {"value": value, "margin_exempt": True} for name, value in DISCOUNTS.items()}
+            if fuel_type == "Biodiesel" else {}
+        )
     )
+    # REQ-profit-margin: 0% so this file's discount-display assertions
+    # keep exercising raw values unchanged.
+    monkeypatch.setattr(main.margin_store, "get", lambda: 0.0)
     main.app.config.update(TESTING=True)
     return main.app.test_client()
 

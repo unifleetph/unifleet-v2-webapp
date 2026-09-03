@@ -141,7 +141,7 @@ Adds the permanent per-row grandfather marker: a brand-new `(station_id, fuel_ty
 
 ## Task T3: `/book` margin application + Approve-flow snapshot fix
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** test-after
 > **Effort:** m
 > **Priority:** critical

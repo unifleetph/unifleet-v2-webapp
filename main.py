@@ -29,6 +29,7 @@ except Exception as _e:
 
 # NEW: discounts storage
 from discount_store import DiscountStore, DiscountValueError
+from margin_store import MarginStore
 
 # Customer lookup: fuzzy name search (T3, ARCH-customer-details-page)
 from rapidfuzz import process, fuzz
@@ -585,10 +586,16 @@ def ops_set_status(voucher_id, new_status):
         if dpl < 0:
             dpl = 0.0
         if dpl == 0.0:
+            # Live fallback for a missing/never-captured snapshot — margin
+            # must still apply here (REQ-profit-margin), the same as the
+            # booking-time snapshot capture, or a booking approved via
+            # this path would leak the raw supplier discount.
             try:
-                dpl_live = discount_store.get(station_name, "Biodiesel")  # TEMP (T2 bridge, F3.1)
-                if dpl_live is not None:
-                    dpl = float(dpl_live)
+                dpl_live_entry = discount_store.get_with_exempt(station_name, "Biodiesel")  # TEMP (T2 bridge, F3.1)
+                if dpl_live_entry is not None:
+                    dpl = MarginStore.apply(
+                        float(dpl_live_entry["value"]), margin_store.get(), dpl_live_entry["margin_exempt"]
+                    )
             except Exception:
                 pass
             if not disc_captured_at:
@@ -836,6 +843,20 @@ def _validate_mobile_digits(raw_value):
     return digits, None
 
 
+def _margin_adjusted_discounts(fuel_type):
+    """Customer-facing discounts for `fuel_type`: raw discount_store
+    values run through the global margin, except for margin_exempt
+    (grandfathered) rows, which pass through unchanged (REQ-profit-margin
+    R4/R5/R6). Same {name: value} shape as discount_store.get_all(), so
+    callers built for that shape don't need to change."""
+    margin_pct = margin_store.get()
+    raw = discount_store.get_all_with_exempt(fuel_type) or {}
+    return {
+        name: MarginStore.apply(info["value"], margin_pct, info["margin_exempt"])
+        for name, info in raw.items()
+    }
+
+
 @app.route('/book', methods=['GET', 'POST'])
 def book():
     customers_path = str(data_paths.CUSTOMERS_CSV)
@@ -855,7 +876,7 @@ def book():
         )
 
         # Build read-only station table with discounts
-        discounts = discount_store.get_all("Biodiesel") or {}  # TEMP (T2 bridge, F3.1)
+        discounts = _margin_adjusted_discounts("Biodiesel")  # TEMP (T2 bridge, F3.1)
 
         import re as _re
         def _norm_dashes(s: str) -> str:
@@ -935,7 +956,7 @@ def book():
     for _ft in FUEL_TYPES:
         try:
             ft_stations = price_store.list_stations(_ft)
-            ft_discounts = discount_store.get_all(_ft) or {}
+            ft_discounts = _margin_adjusted_discounts(_ft)
             station_table_by_fuel[_ft] = [
                 {
                     "id": s.get("id"),
@@ -1170,19 +1191,26 @@ def book():
             )
 
         # 2) live discount snapshot (from discount_store) — absence here
-        # just means ₱0 discount, never blocks the booking (R10).
+        # just means ₱0 discount, never blocks the booking (R10). The
+        # margin % live right now is captured too (REQ-profit-margin
+        # R7/R8): this single POST is both "checkout-start" and "confirm"
+        # (no separate cart step), so this is the one moment margin is
+        # ever read for this booking — never re-derived afterward.
         dpl_snapshot = 0.0
         dpl_captured_at = int(datetime.utcnow().timestamp())
+        margin_pct_at_booking = margin_store.get()
         try:
-            val = discount_store.get(station_name, fuel_type)
-            if val is None:
-                all_discounts = discount_store.get_all(fuel_type) or {}
+            entry = discount_store.get_with_exempt(station_name, fuel_type)
+            if entry is None:
+                all_discounts = discount_store.get_all_with_exempt(fuel_type) or {}
                 for k, v in all_discounts.items():
                     if _norm_dashes(k) == target_norm or _slug(k) == target_slug:
-                        val = v
+                        entry = v
                         break
-            if val is not None:
-                dpl_snapshot = float(val)
+            if entry is not None:
+                dpl_snapshot = MarginStore.apply(
+                    float(entry["value"]), margin_pct_at_booking, entry["margin_exempt"]
+                )
         except Exception as _e:
             print("⚠️ discount snapshot error:", _e)
 
@@ -1232,6 +1260,7 @@ def book():
             'price_snapshot_updated_at': price_snapshot_updated_at,
             'discount_snapshot_php_per_liter': dpl_snapshot,
             'discount_snapshot_captured_at': dpl_captured_at,
+            'margin_pct_at_booking': margin_pct_at_booking,
 
             'status': 'Unverified',
             'created_at': datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1458,6 +1487,7 @@ def export_supplier_csv():
 # Admin: Live Prices (pre-DB)
 # =========================
 discount_store = DiscountStore()
+margin_store = MarginStore()
 
 @app.route("/admin/prices")
 def admin_prices():
