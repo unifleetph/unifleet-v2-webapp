@@ -77,13 +77,13 @@ Adds the single global profit-margin setting the admin edits, plus the pure `app
 
 ## Task T2: Grandfather-flag wiring in `discount_store.py`
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** high
 > **Depends on:** None
 > **Satisfies REQs:** R4, R5
-> **Footprint slice:** Modified: `discount_store.py` (`.set()`/`.set_many()` insert branch; new exempt-aware read method)
+> **Footprint slice:** Modified: `discount_store.py` (`.set()`/`.set_many()` insert branch; new exempt-aware read method), `db/schema.sql` (`discounts.margin_exempt` column — same cross-task gap as T1 hit with `vouchers.margin_pct_at_booking`: the column must exist in the same task that starts reading/writing it)
 > **High-risk areas touched:** None
 
 ### Description

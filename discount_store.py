@@ -121,6 +121,45 @@ class DiscountStore:
             for r in rows
         }
 
+    def get_all_with_exempt(self, fuel_type: str) -> Dict[str, Dict[str, Any]]:
+        """Like get_all(), but each entry also carries margin_exempt
+        (REQ-profit-margin T2), so callers can decide whether to run
+        the value through the margin transform."""
+        pool = get_pool(dsn=self._dsn)
+        with pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("""
+                    SELECT s.display_name AS name, d.discount_per_liter AS value,
+                           d.margin_exempt AS margin_exempt
+                    FROM stations s
+                    JOIN discounts d ON d.station_id = s.id AND d.fuel_type = %s
+                """, (fuel_type,))
+                rows = cur.fetchall()
+        return {
+            r["name"]: {"value": float(r["value"]), "margin_exempt": bool(r["margin_exempt"])}
+            for r in rows
+        }
+
+    def get_with_exempt(self, station: str, fuel_type: str) -> Optional[Dict[str, Any]]:
+        """Like get(), but also returns margin_exempt. None if no
+        discount row exists for this (station, fuel_type)."""
+        key = self._normalize_station(station)
+        if not key:
+            return None
+        pool = get_pool(dsn=self._dsn)
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT d.discount_per_liter, d.margin_exempt
+                    FROM discounts d
+                    JOIN stations s ON s.id = d.station_id
+                    WHERE s.display_name = %s AND d.fuel_type = %s
+                """, (key, fuel_type))
+                row = cur.fetchone()
+        if row is None or row[0] is None:
+            return None
+        return {"value": float(row[0]), "margin_exempt": bool(row[1])}
+
     def get(self, station: str, fuel_type: str) -> Optional[float]:
         """Return discount for a (station, fuel_type) combo, or None if
         not set or station unknown. None means ₱0 downstream, not
@@ -189,9 +228,14 @@ class DiscountStore:
                     new_val = None
                 else:
                     new_val = self._validate_and_round(discount_per_liter)
+                    # margin_exempt is only ever written here, on the
+                    # INSERT side (FALSE = "genuinely new row, margin
+                    # applies"). The ON CONFLICT DO UPDATE branch never
+                    # assigns it, so editing an existing row can never
+                    # flip its grandfather status (REQ-profit-margin R5).
                     cur.execute("""
-                        INSERT INTO discounts (station_id, fuel_type, discount_per_liter, updated_at)
-                        VALUES (%s, %s, %s, NOW())
+                        INSERT INTO discounts (station_id, fuel_type, discount_per_liter, updated_at, margin_exempt)
+                        VALUES (%s, %s, %s, NOW(), FALSE)
                         ON CONFLICT (station_id, fuel_type) DO UPDATE
                         SET discount_per_liter = EXCLUDED.discount_per_liter,
                             updated_at = NOW()
@@ -268,9 +312,10 @@ class DiscountStore:
                         new_val = None
                     else:
                         new_val = self._validate_and_round(value)
+                        # Same margin_exempt insert-only rule as .set() above.
                         cur.execute("""
-                            INSERT INTO discounts (station_id, fuel_type, discount_per_liter, updated_at)
-                            VALUES (%s, %s, %s, NOW())
+                            INSERT INTO discounts (station_id, fuel_type, discount_per_liter, updated_at, margin_exempt)
+                            VALUES (%s, %s, %s, NOW(), FALSE)
                             ON CONFLICT (station_id, fuel_type) DO UPDATE
                             SET discount_per_liter = EXCLUDED.discount_per_liter,
                                 updated_at = NOW()

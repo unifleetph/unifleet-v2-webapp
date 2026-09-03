@@ -214,8 +214,16 @@ CREATE TABLE IF NOT EXISTS discounts (
     fuel_type              VARCHAR(30)  NOT NULL DEFAULT 'Biodiesel',
     discount_per_liter    NUMERIC(8,4) NOT NULL,
     updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    margin_exempt         BOOLEAN      NOT NULL DEFAULT TRUE,
     PRIMARY KEY (station_id, fuel_type)
 );
+
+-- REQ-profit-margin (T2): grandfathers every row that existed before this
+-- column was added (DEFAULT TRUE backfills them at ALTER time). Only a
+-- genuinely new row, inserted after ship, is written with margin_exempt
+-- = FALSE by discount_store.py — never assigned here by an UPDATE, so an
+-- edit to an existing row can never flip it.
+ALTER TABLE discounts ADD COLUMN IF NOT EXISTS margin_exempt BOOLEAN NOT NULL DEFAULT TRUE;
 
 DO $$
 BEGIN
