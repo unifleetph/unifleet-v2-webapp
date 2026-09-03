@@ -278,7 +278,7 @@ Adds the admin-facing HTTP surface for reading and writing the global margin: a 
 
 ## Task T5: Admin margin UI field
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** ui
 > **Effort:** xs
 > **Priority:** medium
