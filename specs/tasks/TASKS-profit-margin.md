@@ -220,7 +220,7 @@ Write the Approve-flow fallback tests first (highest-risk, easiest to get wrong)
 
 ## Task T4: `admin_margin_update` route + `admin_prices()` context wiring
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** high

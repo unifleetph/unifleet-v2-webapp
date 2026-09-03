@@ -29,7 +29,7 @@ except Exception as _e:
 
 # NEW: discounts storage
 from discount_store import DiscountStore, DiscountValueError
-from margin_store import MarginStore
+from margin_store import MarginStore, MarginValueError
 
 # Customer lookup: fuzzy name search (T3, ARCH-customer-details-page)
 from rapidfuzz import process, fuzz
@@ -1538,7 +1538,10 @@ def admin_prices():
             ft_info["price_updated_readable"] = _readable(ft_info["price_updated_at"])
             ft_info["discount_updated_readable"] = _readable(ft_info["discount_updated_at"])
 
-    return render_template("admin_prices.html", stations=stations, fuel_types=FUEL_TYPES)
+    return render_template(
+        "admin_prices.html", stations=stations, fuel_types=FUEL_TYPES,
+        margin_pct=margin_store.get()
+    )
 
 def _admin_stations_back():
     key = request.args.get("key", "").strip()
@@ -1661,6 +1664,20 @@ def admin_stations_delete(station_id):
 
     flash(f"Deleted station “{station_id}”.", "success")
     return _admin_stations_back()
+
+@app.route("/admin/margin/update", methods=["POST"])
+def admin_margin_update():
+    if not require_admin(request):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    try:
+        payload = request.get_json(force=True) or {}
+        new_margin = payload.get("margin_pct")
+        margin_store.set(new_margin, actor="admin", reason="manual update")
+        return jsonify({"ok": True, "margin_pct": float(new_margin)})
+    except MarginValueError as e:
+        return jsonify({"ok": False, "error": str(e), "field": "margin_pct"}), 400
+    except Exception:
+        return jsonify({"ok": False, "error": "server_error"}), 500
 
 @app.route("/admin/prices/update", methods=["POST"])
 def admin_prices_update():
