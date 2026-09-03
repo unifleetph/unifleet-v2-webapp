@@ -1198,8 +1198,9 @@ def book():
         # ever read for this booking — never re-derived afterward.
         dpl_snapshot = 0.0
         dpl_captured_at = int(datetime.utcnow().timestamp())
-        margin_pct_at_booking = margin_store.get()
+        margin_pct_at_booking = 0.0
         try:
+            margin_pct_at_booking = margin_store.get()
             entry = discount_store.get_with_exempt(station_name, fuel_type)
             if entry is None:
                 all_discounts = discount_store.get_all_with_exempt(fuel_type) or {}

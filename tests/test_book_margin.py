@@ -185,3 +185,38 @@ def test_margin_changed_after_booking_does_not_retroactively_change_stored_snaps
     # original, frozen values, not anything derived from the new margin.
     assert booked["discount_snapshot_php_per_liter"] == original_snapshot
     assert booked["margin_pct_at_booking"] == original_margin
+
+
+def test_post_book_degrades_gracefully_when_margin_lookup_fails(client, monkeypatch):
+    """Code-review finding: margin_store.get() must fail the same way
+    every sibling lookup in this function does — degrade to a safe
+    default and keep the booking working, never 500 the whole request
+    (matches the file's own "never blocks the booking" invariant)."""
+    _stub_station(monkeypatch, margin_pct=12.25, exempt=False, raw_discount=10.0)
+
+    def _raise():
+        raise RuntimeError("pool exhausted")
+
+    monkeypatch.setattr(main.margin_store, "get", _raise)
+
+    resp = client.post("/book", data={
+        "account_code": "HARR",
+        "station": "EcoOil - Cainta",
+        "requested_amount_php": "1000",
+        "refuel_datetime": _valid_refuel(),
+        "driver_mode": "new",
+        "driver_name": "Dave",
+        "vehicle_plate": "XYZ-123",
+        "truck_make": "Isuzu",
+        "truck_model": "NQR",
+        "number_of_wheels": "6",
+        "fuel_type": "Biodiesel",
+        "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
+    })
+
+    assert resp.status_code == 200
+    assert len(main.repo.booked) == 1
+    booked = main.repo.booked[0]
+    assert booked["margin_pct_at_booking"] == 0.0
+    assert booked["discount_snapshot_php_per_liter"] == 0.0
