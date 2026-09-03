@@ -26,9 +26,11 @@
 - [x] Verdict determined
 - [x] Report saved to specs/reviews/
 
-## Verdict: ❌ FAIL
+## Verdict: ✅ PASS WITH FINDINGS
 
-The core mechanism is well-built: the grandfather flag is structurally un-flippable (insert-only write, verified independently by 3 checks), the Postgres `DEFAULT TRUE` backfill semantics are correct, margin math is validated and tested, and the single-request booking flow correctly collapses R7/R8 into "read once, never re-derive." Auth and injection surfaces are clean. But two issues are real must-fix items: a pre-existing public endpoint (`/api/v1/discounts`) still leaks the raw, un-margin-adjusted discount — a genuine R6 gap that both the REQ and ARCH missed — and a new DB call in the booking POST path sits outside the existing degrade-gracefully error handling, so a transient DB hiccup can 500 an entire booking instead of falling back to ₱0 like every sibling lookup in that function does.
+*(Updated 2026-09-03: both must-fix findings below are now resolved — commits `0ba3890` and `36dcfac`. Original verdict was ❌ FAIL; re-verified after fixes, no must-fix findings remain.)*
+
+The core mechanism is well-built: the grandfather flag is structurally un-flippable (insert-only write, verified independently by 3 checks), the Postgres `DEFAULT TRUE` backfill semantics are correct, margin math is validated and tested, and the single-request booking flow correctly collapses R7/R8 into "read once, never re-derive." Auth and injection surfaces are clean. Both originally-found must-fix issues are now fixed and covered by regression tests. Several should-fix items remain (audit-log gap, redundant DB calls, query duplication, test-strength gaps) — see below.
 
 ### Finding Counts
 
@@ -107,7 +109,7 @@ Auth on the new route (`require_admin`, identical pattern to sibling routes), al
 
 | # | Severity | File | Line | Issue | Recommendation |
 |---|---|---|---|---|---|
-| 1 | 🟠 High | `main.py` | 1201 | `margin_pct_at_booking = margin_store.get()` in the `/book` POST handler sits **outside** the `try/except` block wrapping the rest of the discount-snapshot logic. Every sibling lookup in this function (price snapshot, discount snapshot) degrades to a safe default and logs on failure, per the function's own stated design ("absence here just means ₱0 discount, never blocks the booking"). This one call breaks that invariant: a transient DB error (pool exhaustion, dropped connection) propagates unhandled and 500s the entire booking request — untested by `test_book_margin.py`. | Move the call inside the adjacent `try` block (default to `0.0` on failure, same as `dpl_snapshot`), or give it its own `try/except Exception as _e: print("⚠️ margin lookup error:", _e); margin_pct_at_booking = 0.0`. |
+| 1 | 🟠 High (**✅ Fixed**) | `main.py` | 1201 | `margin_pct_at_booking = margin_store.get()` in the `/book` POST handler sits **outside** the `try/except` block wrapping the rest of the discount-snapshot logic. Every sibling lookup in this function (price snapshot, discount snapshot) degrades to a safe default and logs on failure, per the function's own stated design ("absence here just means ₱0 discount, never blocks the booking"). This one call breaks that invariant: a transient DB error (pool exhaustion, dropped connection) propagates unhandled and 500s the entire booking request — untested by `test_book_margin.py`. | Fixed in commit `36dcfac` — moved inside the existing `try` block, defaults to `0.0` on failure. New regression test `test_post_book_degrades_gracefully_when_margin_lookup_fails` proves the old code 500'd (RED) and the fix keeps the booking succeeding with margin_pct_at_booking/discount_snapshot both 0.0 (GREEN). Full suite 473 passed. |
 
 **Manual checks (⚠️):**
 - `ops_set_status`'s Approve-flow fallback (`main.py` ~593-600) uses a bare `except Exception: pass` with no logging around the new `get_with_exempt`/`margin_store.get()` calls — traced and confirmed safe (fails closed, `dpl` stays `0.0`, cannot leak raw discount), but now guards financial logic with zero observability. Pre-existing pattern in that exact block, not introduced by this diff — worth a log line but not a blocking finding.
@@ -159,7 +161,9 @@ Auth on the new route (`require_admin`, identical pattern to sibling routes), al
 
 ### Must Fix (🔴 Critical / 🟠 High)
 - ~~**task-completion #1** — `/api/v1/discounts` leaks raw discount~~ — ✅ **Fixed in commit `0ba3890`**.
-- **error-handling #1** — `margin_store.get()` in `/book` POST must degrade gracefully like its sibling lookups, not 500 the booking on a DB blip. **Still open.**
+- ~~**error-handling #1** — `margin_store.get()` in `/book` POST must degrade gracefully~~ — ✅ **Fixed in commit `36dcfac`**.
+
+**Both must-fix items resolved. Nothing blocking remains.**
 
 ### Should Address (🟡 Medium)
 - Wire `append_audit` into `admin_margin_update` (closes both the A8 gap and the unused `reason` parameter).
