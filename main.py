@@ -1854,8 +1854,10 @@ def admin_discounts_update():
 
 @app.route("/api/v1/discounts", methods=["GET"])
 def api_discounts_list():
+    # REQ-profit-margin (R6): this is a public, unauthenticated endpoint —
+    # same margin-adjusted view as /book, never the raw supplier discount.
     try:
-        return jsonify({"discounts": discount_store.get_all(_resolve_fuel_type_param())})
+        return jsonify({"discounts": _margin_adjusted_discounts(_resolve_fuel_type_param())})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
