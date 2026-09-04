@@ -5,7 +5,7 @@ directly (no reportlab dependency) plus a smoke test of the real
 build_supplier_pdf() call.
 """
 
-from report_pdf import _fuel_type_display, _build_supplier_row, build_supplier_pdf
+from report_pdf import _fuel_type_display, _build_supplier_row, build_supplier_pdf, FAQ_ENTRIES
 
 
 # ============================================================
@@ -88,3 +88,34 @@ def test_existing_columns_retain_values_and_order():
     # row[4] is the new Fuel Type column
     assert row[5] == "UF-1"            # Voucher ID
     assert row[6] == ""                # Name/Signature
+
+
+# ============================================================
+# FAQ section — redemption-window entry (REQ-brief-11-faq-redemption-window)
+# ============================================================
+
+def test_faq_has_four_entries_redemption_window_appended_last():
+    assert len(FAQ_ENTRIES) == 4
+    question, answer = FAQ_ENTRIES[3]
+    assert question.startswith("Q: How long do I have to redeem it?")
+    assert "48 hrs unredeemed will go back to UniFleet wallet" in answer
+
+
+def test_faq_redemption_window_question_is_bilingual():
+    question, _ = FAQ_ENTRIES[3]
+    assert "How long do I have to redeem it?" in question
+    assert "Gaano katagal bago mag-expire ang voucher?" in question
+
+
+def test_faq_redemption_window_answer_is_bilingual():
+    _, answer = FAQ_ENTRIES[3]
+    assert "48 hrs unredeemed will go back to UniFleet wallet" in answer
+    assert "Kung hindi ma-redeem sa loob ng 48 oras, ang halaga ay babalik sa UniFleet wallet." in answer
+
+
+def test_faq_existing_three_entries_unchanged():
+    """Regression guard: appending the new entry must not disturb the
+    existing 3 FAQ entries' content or order."""
+    assert FAQ_ENTRIES[0][0].startswith("Q: How do I redeem a voucher?")
+    assert FAQ_ENTRIES[1][0].startswith("Q: What if a driver goes to the wrong station?")
+    assert FAQ_ENTRIES[2][0].startswith("Q: Who do I contact if there’s an issue?")
