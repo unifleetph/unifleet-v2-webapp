@@ -54,6 +54,7 @@ _TIMESTAMPTZ_COLUMNS = frozenset({
     "price_snapshot_updated_at",
     "discount_snapshot_captured_at",
     "computed_at",
+    "deleted_at",
 })
 
 

@@ -98,7 +98,9 @@ CREATE TABLE IF NOT EXISTS vouchers (
 
     discount_total_php               NUMERIC(12,2),
     total_dispensed_php              NUMERIC(12,2),
-    computed_at                      TIMESTAMPTZ
+    computed_at                      TIMESTAMPTZ,
+
+    deleted_at                       TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_vouchers_status            ON vouchers(status);
@@ -119,6 +121,13 @@ ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS fuel_type VARCHAR(30);
 -- wrong number from the discounted charge amount. Nullable — historical
 -- rows stay NULL and fall back to the pre-Brief-5 formula (ARCH-brief-5).
 ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS requested_total_php NUMERIC(12,2);
+
+-- REQ-delete-order-button: soft-delete flag for the admin "Delete Order"
+-- action. NULL = order is visible everywhere; a timestamp = soft-deleted
+-- (hidden from the admin table, Supplier PDF, and other exports, but the
+-- row itself is retained — audit_log only captures a thin event trail,
+-- not a full row snapshot, so hard-deleting would lose data).
+ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
 -- Brief-8 (ARCH-brief-8 T3/T4): booking-time mobile number, collected
 -- alongside the New Driver fields. Digits only, leading zero preserved
@@ -205,8 +214,16 @@ CREATE TABLE IF NOT EXISTS discounts (
     fuel_type              VARCHAR(30)  NOT NULL DEFAULT 'Biodiesel',
     discount_per_liter    NUMERIC(8,4) NOT NULL,
     updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    margin_exempt         BOOLEAN      NOT NULL DEFAULT TRUE,
     PRIMARY KEY (station_id, fuel_type)
 );
+
+-- REQ-profit-margin (T2): grandfathers every row that existed before this
+-- column was added (DEFAULT TRUE backfills them at ALTER time). Only a
+-- genuinely new row, inserted after ship, is written with margin_exempt
+-- = FALSE by discount_store.py — never assigned here by an UPDATE, so an
+-- edit to an existing row can never flip it.
+ALTER TABLE discounts ADD COLUMN IF NOT EXISTS margin_exempt BOOLEAN NOT NULL DEFAULT TRUE;
 
 DO $$
 BEGIN
@@ -260,3 +277,24 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp
     ON audit_log(timestamp);
+
+-- ============================================================
+-- Margin settings: single global profit-margin % (REQ-profit-margin).
+-- Singleton row (id=1). Deducted from the supplier discount at
+-- display/booking time; the raw discount value in `discounts`
+-- is never modified.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS margin_settings (
+    id            SMALLINT     PRIMARY KEY DEFAULT 1,
+    margin_pct    NUMERIC(5,2) NOT NULL DEFAULT 0,
+    updated_at    TIMESTAMPTZ,
+    updated_by    TEXT
+);
+
+INSERT INTO margin_settings (id, margin_pct)
+VALUES (1, 0)
+ON CONFLICT DO NOTHING;
+
+-- Booking-time margin snapshot (REQ-profit-margin R7/R8): the margin %
+-- live when the customer started checkout, frozen on the voucher row.
+ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS margin_pct_at_booking NUMERIC(5,2);

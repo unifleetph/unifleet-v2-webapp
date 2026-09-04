@@ -29,6 +29,7 @@ except Exception as _e:
 
 # NEW: discounts storage
 from discount_store import DiscountStore, DiscountValueError
+from margin_store import MarginStore, MarginValueError
 
 # Customer lookup: fuzzy name search (T3, ARCH-customer-details-page)
 from rapidfuzz import process, fuzz
@@ -228,6 +229,12 @@ def home():
 def serve_qr_asset(filename):
     return send_from_directory(str(data_paths.QR_DIR), filename)
 
+def _exclude_deleted(vouchers):
+    """Filter out soft-deleted orders (deleted_at set) from a list of voucher
+    rows. Shared across every customer/supplier/admin-facing read path so the
+    exclusion rule lives in one place (REQ-delete-order-button, R8)."""
+    return [v for v in vouchers if not v.get("deleted_at")]
+
 @app.route('/admin')
 def admin():
     # Admin dashboard — gated by session login or legacy ?key= fallback.
@@ -235,7 +242,12 @@ def admin():
         return redirect(url_for('admin_login', next=request.path))
     # existing voucher table data
     try:
-        vouchers = repo.list_recent_vouchers(limit=50)
+        # Over-fetch before filtering so soft-deleted rows don't shrink the
+        # displayed count below 50 (code review finding: filtering after an
+        # already-LIMIT-ed query can't backfill from the next-most-recent
+        # undeleted rows). 200 is a generous cushion against a heavy-deletion
+        # day without querying the whole table.
+        vouchers = _exclude_deleted(repo.list_recent_vouchers(limit=200))[:50]
         for row in vouchers:
             vid = str(row.get("voucher_id", "")).strip()
             png_1 = data_paths.qr_png_path(vid).exists()
@@ -347,7 +359,7 @@ def admin_customers():
             )
 
     bookings = [
-        v for v in repo.list_all_vouchers()
+        v for v in _exclude_deleted(repo.list_all_vouchers())
         if _normalize_account_code(v) == _normalize_account_code(customer)
     ]
     return render_template(
@@ -416,7 +428,7 @@ def admin_customer_export():
         abort(404)
 
     bookings = [
-        v for v in repo.list_all_vouchers()
+        v for v in _exclude_deleted(repo.list_all_vouchers())
         if _normalize_account_code(v) == _normalize_account_code(customer)
     ]
     bookings = _with_customer_contact_columns(bookings)
@@ -429,7 +441,7 @@ def admin_bookings_export():
     if not require_admin(request):
         return redirect(url_for('admin_login', next=request.path))
 
-    bookings = _with_customer_contact_columns(repo.list_all_vouchers())
+    bookings = _with_customer_contact_columns(_exclude_deleted(repo.list_all_vouchers()))
     export_path = str(data_paths.EXPORTS_DIR / "all_customers_bookings.csv")
     pd.DataFrame(bookings, columns=_EXPORT_COLUMNS).to_csv(export_path, index=False, encoding='utf-8-sig')
     return send_file(export_path, as_attachment=True)
@@ -446,28 +458,56 @@ def upload_csv():
         print(result.stderr)
     return redirect(url_for('admin'))
 
+def _delete_voucher_pngs(voucher_id):
+    """Remove both QR PNGs for a voucher, if present. Shared by delete_png()
+    and admin_orders_delete() so the cleanup logic can't diverge."""
+    for path in [str(data_paths.qr_png_path(voucher_id)), str(data_paths.official_qr_png_path(voucher_id))]:
+        if os.path.exists(path):
+            os.remove(path)
+
 @app.route('/delete_png/<voucher_id>', methods=['POST'])
 def delete_png(voucher_id):
     try:
-        for path in [str(data_paths.qr_png_path(voucher_id)), str(data_paths.official_qr_png_path(voucher_id))]:
-            if os.path.exists(path):
-                os.remove(path)
+        _delete_voucher_pngs(voucher_id)
         return redirect(url_for('admin'))
     except Exception as e:
         print(f"❌ Error deleting PNGs for {voucher_id}: {e}")
         return f"<h2>Error deleting PNGs for {voucher_id}: {str(e)}</h2>", 500
 
+@app.route('/admin/orders/<voucher_id>/delete', methods=['POST'])
+def admin_orders_delete(voucher_id):
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    row = repo.get_voucher(voucher_id)
+    if row is None:
+        flash(f"Order “{voucher_id}” was not found (already deleted?).", "error")
+        return redirect(url_for('admin'))
+
+    status = (row.get("status") or "").strip()
+    if status == "Redeemed":
+        flash(f"Cannot delete order “{voucher_id}”: it has already been redeemed.", "error")
+        return redirect(url_for('admin'))
+
+    now = datetime.utcnow().isoformat(timespec='seconds')
+    repo.update_voucher_fields(voucher_id, {"deleted_at": now})
+    _delete_voucher_pngs(voucher_id)
+    append_audit("delete_order", voucher_id, from_status=status, to_status="Deleted")
+    flash(f"Deleted order “{voucher_id}”.", "success")
+
+    return redirect(url_for('admin'))
+
 @app.route('/redeem/<voucher_id>', methods=['GET'])
 def redeem_page(voucher_id):
     row = repo.get_voucher(voucher_id)
-    if not row:
+    if not row or row.get('deleted_at'):
         return f"<h2>Voucher ID '{voucher_id}' not found.</h2>", 404
     return render_template('redeem.html', voucher=row)
 
 @app.route('/redeem/<voucher_id>', methods=['POST'])
 def mark_redeemed(voucher_id):
     row = repo.get_voucher(voucher_id)
-    if not row:
+    if not row or row.get('deleted_at'):
         return f"<h2>Voucher ID '{voucher_id}' not found.</h2>", 404
     current_status = str(row.get('status', '')).strip()
     allowed = (current_status in ('', 'Unverified', 'Unredeemed'))
@@ -489,7 +529,7 @@ def ops_set_status(voucher_id, new_status):
     if new_status not in allowed_targets:
         return f"<h2>Invalid status '{new_status}'.</h2>", 400
     row = repo.get_voucher(voucher_id)
-    if not row:
+    if not row or row.get('deleted_at'):
         return f"<h2>Voucher ID '{voucher_id}' not found.</h2>", 404
     prev = str(row.get('status','')).strip()
 
@@ -546,10 +586,16 @@ def ops_set_status(voucher_id, new_status):
         if dpl < 0:
             dpl = 0.0
         if dpl == 0.0:
+            # Live fallback for a missing/never-captured snapshot — margin
+            # must still apply here (REQ-profit-margin), the same as the
+            # booking-time snapshot capture, or a booking approved via
+            # this path would leak the raw supplier discount.
             try:
-                dpl_live = discount_store.get(station_name, "Biodiesel")  # TEMP (T2 bridge, F3.1)
-                if dpl_live is not None:
-                    dpl = float(dpl_live)
+                dpl_live_entry = discount_store.get_with_exempt(station_name, "Biodiesel")  # TEMP (T2 bridge, F3.1)
+                if dpl_live_entry is not None:
+                    dpl = MarginStore.apply(
+                        float(dpl_live_entry["value"]), margin_store.get(), dpl_live_entry["margin_exempt"]
+                    )
             except Exception:
                 pass
             if not disc_captured_at:
@@ -797,6 +843,20 @@ def _validate_mobile_digits(raw_value):
     return digits, None
 
 
+def _margin_adjusted_discounts(fuel_type):
+    """Customer-facing discounts for `fuel_type`: raw discount_store
+    values run through the global margin, except for margin_exempt
+    (grandfathered) rows, which pass through unchanged (REQ-profit-margin
+    R4/R5/R6). Same {name: value} shape as discount_store.get_all(), so
+    callers built for that shape don't need to change."""
+    margin_pct = margin_store.get()
+    raw = discount_store.get_all_with_exempt(fuel_type) or {}
+    return {
+        name: MarginStore.apply(info["value"], margin_pct, info["margin_exempt"])
+        for name, info in raw.items()
+    }
+
+
 @app.route('/book', methods=['GET', 'POST'])
 def book():
     customers_path = str(data_paths.CUSTOMERS_CSV)
@@ -816,7 +876,7 @@ def book():
         )
 
         # Build read-only station table with discounts
-        discounts = discount_store.get_all("Biodiesel") or {}  # TEMP (T2 bridge, F3.1)
+        discounts = _margin_adjusted_discounts("Biodiesel")  # TEMP (T2 bridge, F3.1)
 
         import re as _re
         def _norm_dashes(s: str) -> str:
@@ -896,7 +956,7 @@ def book():
     for _ft in FUEL_TYPES:
         try:
             ft_stations = price_store.list_stations(_ft)
-            ft_discounts = discount_store.get_all(_ft) or {}
+            ft_discounts = _margin_adjusted_discounts(_ft)
             station_table_by_fuel[_ft] = [
                 {
                     "id": s.get("id"),
@@ -1131,19 +1191,27 @@ def book():
             )
 
         # 2) live discount snapshot (from discount_store) — absence here
-        # just means ₱0 discount, never blocks the booking (R10).
+        # just means ₱0 discount, never blocks the booking (R10). The
+        # margin % live right now is captured too (REQ-profit-margin
+        # R7/R8): this single POST is both "checkout-start" and "confirm"
+        # (no separate cart step), so this is the one moment margin is
+        # ever read for this booking — never re-derived afterward.
         dpl_snapshot = 0.0
         dpl_captured_at = int(datetime.utcnow().timestamp())
+        margin_pct_at_booking = 0.0
         try:
-            val = discount_store.get(station_name, fuel_type)
-            if val is None:
-                all_discounts = discount_store.get_all(fuel_type) or {}
+            margin_pct_at_booking = margin_store.get()
+            entry = discount_store.get_with_exempt(station_name, fuel_type)
+            if entry is None:
+                all_discounts = discount_store.get_all_with_exempt(fuel_type) or {}
                 for k, v in all_discounts.items():
                     if _norm_dashes(k) == target_norm or _slug(k) == target_slug:
-                        val = v
+                        entry = v
                         break
-            if val is not None:
-                dpl_snapshot = float(val)
+            if entry is not None:
+                dpl_snapshot = MarginStore.apply(
+                    float(entry["value"]), margin_pct_at_booking, entry["margin_exempt"]
+                )
         except Exception as _e:
             print("⚠️ discount snapshot error:", _e)
 
@@ -1193,6 +1261,7 @@ def book():
             'price_snapshot_updated_at': price_snapshot_updated_at,
             'discount_snapshot_php_per_liter': dpl_snapshot,
             'discount_snapshot_captured_at': dpl_captured_at,
+            'margin_pct_at_booking': margin_pct_at_booking,
 
             'status': 'Unverified',
             'created_at': datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1342,7 +1411,7 @@ def export_supplier_csv():
       Driver, Plate, Status, Refuel Date
     """
     try:
-        rows = repo.list_all_vouchers()
+        rows = _exclude_deleted(repo.list_all_vouchers())
         if not rows:
             return "<h2>No vouchers to export.</h2>", 200
 
@@ -1419,6 +1488,7 @@ def export_supplier_csv():
 # Admin: Live Prices (pre-DB)
 # =========================
 discount_store = DiscountStore()
+margin_store = MarginStore()
 
 @app.route("/admin/prices")
 def admin_prices():
@@ -1469,7 +1539,10 @@ def admin_prices():
             ft_info["price_updated_readable"] = _readable(ft_info["price_updated_at"])
             ft_info["discount_updated_readable"] = _readable(ft_info["discount_updated_at"])
 
-    return render_template("admin_prices.html", stations=stations, fuel_types=FUEL_TYPES)
+    return render_template(
+        "admin_prices.html", stations=stations, fuel_types=FUEL_TYPES,
+        margin_pct=margin_store.get()
+    )
 
 def _admin_stations_back():
     key = request.args.get("key", "").strip()
@@ -1592,6 +1665,20 @@ def admin_stations_delete(station_id):
 
     flash(f"Deleted station “{station_id}”.", "success")
     return _admin_stations_back()
+
+@app.route("/admin/margin/update", methods=["POST"])
+def admin_margin_update():
+    if not require_admin(request):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    try:
+        payload = request.get_json(force=True) or {}
+        new_margin = payload.get("margin_pct")
+        margin_store.set(new_margin, actor="admin", reason="manual update")
+        return jsonify({"ok": True, "margin_pct": float(new_margin)})
+    except MarginValueError as e:
+        return jsonify({"ok": False, "error": str(e), "field": "margin_pct"}), 400
+    except Exception:
+        return jsonify({"ok": False, "error": "server_error"}), 500
 
 @app.route("/admin/prices/update", methods=["POST"])
 def admin_prices_update():
@@ -1768,8 +1855,10 @@ def admin_discounts_update():
 
 @app.route("/api/v1/discounts", methods=["GET"])
 def api_discounts_list():
+    # REQ-profit-margin (R6): this is a public, unauthenticated endpoint —
+    # same margin-adjusted view as /book, never the raw supplier discount.
     try:
-        return jsonify({"discounts": discount_store.get_all(_resolve_fuel_type_param())})
+        return jsonify({"discounts": _margin_adjusted_discounts(_resolve_fuel_type_param())})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1930,7 +2019,7 @@ def supplier_sheet_pdf():
     selected_ids = query_station_ids or cookie_station_ids or all_ids
 
     # Build PDF in-memory (Unredeemed only)
-    rows = repo.list_all_vouchers()
+    rows = _exclude_deleted(repo.list_all_vouchers())
     vouchers = [r for r in rows if (r.get("status") or "").strip() == "Unredeemed"]
     pdf_bytes = build_supplier_pdf(
         vouchers=vouchers,

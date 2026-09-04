@@ -50,6 +50,11 @@ class RepoStub:
 def env(tmp_path, monkeypatch):
     monkeypatch.setattr(data_paths, "CUSTOMERS_CSV", tmp_path / "customers.csv")
     monkeypatch.setattr(data_paths, "PRESETS_DIR", tmp_path)
+    # REQ-profit-margin: /book now reads the global margin on every
+    # request. Default to 0% here so this file's pre-existing tests keep
+    # asserting raw discount values unchanged; margin-specific tests
+    # override this per-test.
+    monkeypatch.setattr(main.margin_store, "get", lambda: 0.0)
     main.app.config.update(TESTING=True)
     return tmp_path
 
@@ -129,8 +134,8 @@ def test_booking_save_resolves_account_code(client, monkeypatch):
         lambda fuel_type: [{"id": "teststation", "name": "Test Station",
                              "price_php_per_liter": 60.0, "updated_at": 0}]
     )
-    monkeypatch.setattr(main.discount_store, "get_all", lambda fuel_type: {})
-    monkeypatch.setattr(main.discount_store, "get", lambda station, fuel_type: None)
+    monkeypatch.setattr(main.discount_store, "get_all_with_exempt", lambda fuel_type: {})
+    monkeypatch.setattr(main.discount_store, "get_with_exempt", lambda station, fuel_type: None)
 
     manila = ZoneInfo("Asia/Manila")
     refuel = (datetime.now(manila) + timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M")
@@ -168,8 +173,8 @@ def _stub_priced_station(monkeypatch, fuel_types=("Biodiesel",), name="Test Stat
             if fuel_type in fuel_types else []
         )
     )
-    monkeypatch.setattr(main.discount_store, "get_all", lambda fuel_type: {})
-    monkeypatch.setattr(main.discount_store, "get", lambda station, fuel_type: None)
+    monkeypatch.setattr(main.discount_store, "get_all_with_exempt", lambda fuel_type: {})
+    monkeypatch.setattr(main.discount_store, "get_with_exempt", lambda station, fuel_type: None)
 
 
 def _valid_refuel():
@@ -295,8 +300,8 @@ def test_no_price_row_at_all_is_not_confused_with_zero_price(client, monkeypatch
     stub = RepoStub(customer=dict(CUST))
     monkeypatch.setattr(main, "repo", stub)
     monkeypatch.setattr(main.price_store, "list_stations", lambda fuel_type: [])
-    monkeypatch.setattr(main.discount_store, "get_all", lambda fuel_type: {})
-    monkeypatch.setattr(main.discount_store, "get", lambda station, fuel_type: None)
+    monkeypatch.setattr(main.discount_store, "get_all_with_exempt", lambda fuel_type: {})
+    monkeypatch.setattr(main.discount_store, "get_with_exempt", lambda station, fuel_type: None)
 
     resp = client.post("/book", data={
         "account_code": "HARR", "station": "Test Station",
