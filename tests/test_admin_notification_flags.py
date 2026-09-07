@@ -214,3 +214,15 @@ def test_resend_rejects_a_malformed_recipient_override(client, monkeypatch):
 
     assert resp.status_code == 302
     assert requeued == []
+
+
+def test_the_dashboard_links_to_recipient_management(client, monkeypatch):
+    """The recipients page is only reachable from here. Without this link it
+    exists but nobody can find it — which is exactly what happened when T10
+    and T11 shipped the routes and the page but no navigation to them."""
+    _stub_flags(monkeypatch, {})
+    _login(client)
+
+    html = client.get("/admin").get_data(as_text=True)
+
+    assert "/admin/recipients" in html
