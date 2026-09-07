@@ -1051,3 +1051,65 @@ This matters because `notifications.enqueue` runs inside `/register`, `/book`, a
 **Must NOT modify:**
 - `audit_log.py`, `margin_store.py`, `discount_store.py`, `db/postgres_repo.py`, `notifications.py` (all consume the pool; their behavior must be unchanged)
 - `tests/conftest.py`
+
+---
+
+## Task T15: Stop the worker racing the test suite, and stop it flooding the logs
+
+> **Status:** done
+> **Verification:** tdd
+> **Effort:** xs
+> **Priority:** high
+> **Depends on:** None
+> **Satisfies REQs:** N5 (failures must stay diagnosable — they cannot be, buried under 17k lines a day)
+> **Footprint slice:** Modified: `notifications.py` (log latch), `tests/conftest.py` (disable the worker in tests) — both discovered after T11
+> **High-risk areas touched:** None
+
+### Description
+
+Two defects found after T11, both from T5's decision to call `start_worker()` at
+`main.py` import time.
+
+**The flake.** In a test process that worker is a second, uninvited drainer.
+Several outbox tests monkeypatch `notifications.mailer` module-wide and point the
+process-wide pool at the ephemeral test database, so the worker claims the very
+rows a test is about to drain. `test_the_ladder_terminates_after_five_attempts`
+failed intermittently — roughly 29 polls across a 145-second suite, each one a
+chance to collide.
+
+**The log flood.** `drain_once` printed "mailer is not configured" on every poll.
+In a production environment whose API key was never set that is about 17,000
+lines a day, which buries the failures N5 exists to keep diagnosable.
+
+### Test Plan
+
+#### Test File(s)
+- `tests/test_notifications.py`
+
+#### Test Scenarios
+
+- **the warning is logged once, not per poll** — GIVEN an unconfigured mailer WHEN the worker polls five times THEN exactly one warning is emitted _(verifies N5)_
+- **the transition back to configured is logged** — GIVEN the key is set after a period without one WHEN the next poll runs THEN "resuming sending" is logged, so suppression never hides the recovery
+- **the warning returns after a recovery** — GIVEN configuration is lost again THEN it is news again, not suppressed forever
+- **the worker does not start during the suite** — GIVEN conftest's setting WHEN `main` is imported THEN `start_worker()` returns False _(guards the flake from returning)_
+
+### Implementation Notes
+
+- **Key decisions:** A12 (`NOTIFICATIONS_ENABLED` is the existing kill switch, so tests reuse it rather than inventing a test-only code path in production).
+- `conftest.py` sets it unconditionally, not via `setdefault`: docker-compose exports `NOTIFICATIONS_ENABLED=true` into the container the suite runs in, so a default would never apply.
+- The tests that exercise `start_worker` set the variable themselves via monkeypatch, so their coverage is unaffected.
+
+### Scope Boundaries
+
+- Do NOT add test-awareness to production code (no `"pytest" in sys.modules` checks) — the existing feature flag already expresses this.
+- Do NOT change the polling interval or the retry ladder.
+
+### Files Expected
+
+**Modified files:**
+- `notifications.py` (log-once latch with an explicit recovery message)
+- `tests/conftest.py` (disable the worker suite-wide)
+- `tests/test_notifications.py` (four scenarios above)
+
+**Must NOT modify:**
+- `main.py` (the import-time call stays; the flag is the control)

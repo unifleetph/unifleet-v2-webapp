@@ -20,10 +20,27 @@ to a database that already exists (typically `postgres` or `unifleet`),
 not the test database itself, because we use it to issue CREATE/DROP DATABASE.
 """
 
+import os
 import subprocess
 import sys
 import uuid
 from pathlib import Path
+
+# main.py starts the notifications outbox worker at import time. In a test
+# process that thread is a second, uninvited drainer: several tests
+# monkeypatch notifications.mailer module-wide and point the process-wide
+# pool at the ephemeral test database, at which point the worker happily
+# claims the very rows a test is about to drain. That produced an
+# intermittent failure in the retry-ladder tests.
+#
+# Disabling it here means no worker starts unless a test asks for one.
+# The tests that exercise start_worker set this themselves via monkeypatch,
+# so their coverage is unaffected.
+#
+# Set unconditionally rather than with setdefault: docker-compose exports
+# NOTIFICATIONS_ENABLED=true into the container the suite runs in, so a
+# default would never apply.
+os.environ["NOTIFICATIONS_ENABLED"] = "false"
 
 import psycopg
 import pytest

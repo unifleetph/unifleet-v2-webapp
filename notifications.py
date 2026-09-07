@@ -398,13 +398,23 @@ def requeue(row_id: int, recipient: Optional[str] = None,
 def drain_once(limit: int = 20, dsn: Optional[str] = None) -> int:
     """Claim every due row, send it, and record the outcome. Returns the
     number of rows processed."""
+    global _unconfigured_logged
+
     if not mailer.is_configured():
         # Leave everything queued: no number of retries fixes a missing API
         # key, and burning the ladder would turn a config error into a pile of
         # permanently failed rows.
-        print("notifications: mailer is not configured; leaving rows queued",
-              file=sys.stderr)
+        if not _unconfigured_logged:
+            print("notifications: mailer is not configured; leaving rows queued "
+                  "(further occurrences suppressed until it is configured)",
+                  file=sys.stderr)
+            _unconfigured_logged = True
         return 0
+
+    if _unconfigured_logged:
+        print("notifications: mailer is configured; resuming sending",
+              file=sys.stderr)
+        _unconfigured_logged = False
 
     try:
         pool = get_pool(dsn=dsn)
@@ -443,6 +453,13 @@ POLL_INTERVAL_SECONDS = 5
 
 _worker_thread = None
 _worker_lock = threading.Lock()
+
+# The worker polls every few seconds forever. Without this latch, an
+# unconfigured mailer would print the same line on every poll — roughly
+# 17,000 lines a day in a production environment whose API key was never
+# set, burying anything worth reading. Logged on the way into the state and
+# again on the way out, so the transition is still visible.
+_unconfigured_logged = False
 
 
 def is_enabled() -> bool:
@@ -496,9 +513,10 @@ def start_worker() -> bool:
 
 def _reset_worker_for_tests() -> None:
     """Clear the worker handle. Tests only — the thread itself is a daemon."""
-    global _worker_thread
+    global _worker_thread, _unconfigured_logged
     with _worker_lock:
         _worker_thread = None
+    _unconfigured_logged = False
 
 
 # ============================================================

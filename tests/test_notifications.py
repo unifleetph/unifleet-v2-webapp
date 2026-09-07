@@ -873,3 +873,80 @@ def test_a_missing_daily_report_pdf_still_sends_and_flags(schema_db, sent_ok, tm
     assert row["status"] == "sent"
     assert sent_ok[0]["attachment"] is None
     assert "attachment_missing" in row["last_error"]
+
+
+# ------------------------------------------------------------
+# Log volume (T15)
+# ------------------------------------------------------------
+
+def test_the_unconfigured_warning_is_logged_once_not_per_poll(schema_db, monkeypatch, capsys):
+    """GIVEN an unconfigured mailer WHEN the worker polls repeatedly THEN the
+    warning appears once, not on every poll. The worker runs every few
+    seconds forever, so a per-poll line is ~17,000 a day in an environment
+    whose API key was never set — enough to bury anything worth reading."""
+    monkeypatch.setattr(notifications.mailer, "is_configured", lambda: False)
+    notifications._reset_worker_for_tests()
+    capsys.readouterr()
+
+    for _ in range(5):
+        notifications.drain_once(dsn=schema_db)
+
+    warnings = [
+        line for line in capsys.readouterr().err.splitlines()
+        if "not configured" in line
+    ]
+    assert len(warnings) == 1, f"expected one warning, got {len(warnings)}"
+
+
+def test_the_transition_back_to_configured_is_logged(schema_db, monkeypatch, capsys):
+    """The suppression must not hide the recovery — an operator who sets the
+    key wants confirmation that sending resumed."""
+    configured = {"value": False}
+    monkeypatch.setattr(
+        notifications.mailer, "is_configured", lambda: configured["value"]
+    )
+    monkeypatch.setattr(
+        notifications.mailer, "send",
+        lambda **kw: mailer.SendResult(ok=True, status_code=200, provider_message_id="m"),
+    )
+    notifications._reset_worker_for_tests()
+    capsys.readouterr()
+
+    notifications.drain_once(dsn=schema_db)
+    configured["value"] = True
+    notifications.drain_once(dsn=schema_db)
+
+    err = capsys.readouterr().err
+    assert "not configured" in err
+    assert "resuming sending" in err
+
+
+def test_the_warning_returns_after_a_recovery(schema_db, monkeypatch, capsys):
+    """Losing the configuration again is news again."""
+    configured = {"value": True}
+    monkeypatch.setattr(
+        notifications.mailer, "is_configured", lambda: configured["value"]
+    )
+    monkeypatch.setattr(
+        notifications.mailer, "send",
+        lambda **kw: mailer.SendResult(ok=True, status_code=200, provider_message_id="m"),
+    )
+    notifications._reset_worker_for_tests()
+
+    notifications.drain_once(dsn=schema_db)
+    configured["value"] = False
+    capsys.readouterr()
+    notifications.drain_once(dsn=schema_db)
+
+    assert "not configured" in capsys.readouterr().err
+
+
+def test_the_worker_does_not_start_during_the_test_suite():
+    """conftest.py disables the worker for the whole suite. If that ever
+    stops working, the outbox tests become intermittently flaky again: the
+    worker claims rows out from under them while their fixtures have
+    mailer.is_configured patched true (T15)."""
+    import main  # noqa: F401  — importing it is the point; it calls start_worker
+
+    assert notifications.start_worker() is False
+    notifications._reset_worker_for_tests()
