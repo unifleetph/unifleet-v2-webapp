@@ -3,6 +3,7 @@ from flask import (
     url_for, flash, jsonify, make_response, send_from_directory, session
 )
 import os
+import hashlib
 import io
 import fcntl
 import hmac
@@ -538,6 +539,78 @@ def mark_redeemed(voucher_id):
     append_audit("redeem_success", voucher_id, current_status, "Redeemed", f"enforce_phases={int(ENFORCE_PHASES)}")
     return redirect(f"/redeem/{voucher_id}")
 
+def _voucher_fingerprint(row) -> str:
+    """A digest of everything the customer's copy of the voucher depends on.
+
+    Amount, total and station cover the numbers; the PNG's bytes cover the
+    image itself, so a voucher regenerated with identical figures still counts
+    as changed and still reaches the customer (ARCH A8).
+
+    The digest goes into the confirmed email's dedupe key, which means R10
+    needs no separate comparison logic: an unchanged re-approval produces the
+    same key and collides, a changed one produces a new key and sends.
+    """
+    voucher_id = str((row or {}).get("voucher_id") or "").strip()
+    parts = [
+        voucher_id,
+        str((row or {}).get("requested_amount_php") or ""),
+        str((row or {}).get("requested_total_php") or ""),
+        str((row or {}).get("station") or ""),
+    ]
+
+    digest = hashlib.sha256("|".join(parts).encode("utf-8"))
+    try:
+        digest.update(data_paths.official_qr_png_path(voucher_id).read_bytes())
+    except OSError:
+        # No PNG to fingerprint. The email still goes out — the worker
+        # records attachment_missing and the admin follows up manually (A6).
+        digest.update(b"<no-png>")
+
+    return digest.hexdigest()[:32]
+
+
+def _queue_booking_confirmed(row):
+    """Queue the approval email with the voucher attached.
+
+    Runs only after set_status('Unredeemed') has committed, and never raises:
+    an approved voucher is valid whether or not the email left (A6, R7).
+    """
+    if notifications is None:
+        return
+
+    voucher_id = str((row or {}).get("voucher_id") or "").strip()
+    account_code = str((row or {}).get("account_code") or "").strip()
+    try:
+        customer = repo.get_customer(account_code) or {} if account_code else {}
+        recipient = str(customer.get("email") or "").strip()
+
+        if not recipient:
+            notifications.enqueue_skipped(
+                "booking_confirmed",
+                account_code=account_code or None,
+                voucher_id=voucher_id or None,
+                reason="customer has no email on file",
+            )
+            return
+
+        subject, body = notifications.render_booking_confirmed()
+        notifications.enqueue(
+            "booking_confirmed",
+            recipient=recipient,
+            subject=subject,
+            body=body,
+            dedupe_key=notifications.dedupe_booking_confirmed(
+                voucher_id, _voucher_fingerprint(row)
+            ),
+            account_code=account_code or None,
+            voucher_id=voucher_id or None,
+            attachment_ref=f"voucher_png:{voucher_id}",
+            fingerprint=_voucher_fingerprint(row),
+        )
+    except Exception as e:
+        print(f"⚠️ booking-confirmed email not queued for {voucher_id}: {e}")
+
+
 @app.route('/ops/voucher/<voucher_id>/status/<new_status>', methods=['GET'])
 def ops_set_status(voucher_id, new_status):
     if OPS_TOKEN and request.args.get("token", "") != OPS_TOKEN:
@@ -667,6 +740,12 @@ def ops_set_status(voucher_id, new_status):
 
         # finally flip status to Unredeemed
         repo.set_status(voucher_id, 'Unredeemed', "")
+
+        # R4: the confirmation email with the voucher attached. Strictly
+        # after the status flip — the existing 500-on-asset-failure abort
+        # above means an approved voucher always has its assets, and a mail
+        # failure must never undo an approval (ARCH A6).
+        _queue_booking_confirmed(repo.get_voucher(voucher_id) or fresh)
 
     else:
         repo.set_status(voucher_id, new_status, "")

@@ -477,7 +477,7 @@ A customer who submits a booking gets an acknowledgement telling them the reques
 
 ## Task T7: Approve — fingerprint and send the confirmed email with the voucher
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** m
 > **Priority:** high
@@ -553,7 +553,7 @@ Fingerprint computation first as a pure function, then the happy-path enqueue, t
 
 ## Task T8: Admin can edit a customer's email
 
-> **Status:** not started
+> **Status:** in progress
 > **Verification:** tdd
 > **Effort:** m
 > **Priority:** medium
