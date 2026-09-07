@@ -704,7 +704,7 @@ Failed and skipped notifications become visible where admins already work. The `
 
 ## Task T10: `report_recipients.py` and the recipient admin routes
 
-> **Status:** in progress
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** medium
@@ -893,7 +893,7 @@ The last task: wire the cron schedule into Railway's config, document and pass t
 
 ## Task T13: `scripts/send_daily_report.py` — nightly supplier PDF
 
-> **Status:** not started
+> **Status:** in progress
 > **Verification:** test-after
 > **Effort:** m
 > **Priority:** high

@@ -33,9 +33,11 @@ except Exception as _e:
 # boot and serve even if it cannot be imported.
 try:
     import notifications
+    import report_recipients
     _NOTIFICATIONS_IMPORT_ERROR = None
 except Exception as _e:
     notifications = None
+    report_recipients = None
     _NOTIFICATIONS_IMPORT_ERROR = str(_e)
 
 # Start the outbox drainer. start_worker() swallows its own failures and is
@@ -405,6 +407,53 @@ def admin_customers():
         bookings=bookings,
         all_customers=all_customers,
     )
+
+@app.route('/admin/recipients', methods=['GET', 'POST'])
+def admin_recipients():
+    """Manage who receives the nightly supplier PDF (R14)."""
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    if report_recipients is None:
+        flash("Recipient management is unavailable.", "error")
+        return redirect(url_for('admin'))
+
+    if request.method == 'POST':
+        email = (request.form.get('email') or '').strip()
+        label = (request.form.get('label') or '').strip()
+
+        if not _is_valid_email(email):
+            flash("Please enter a valid Email Address.", "error")
+            return redirect(url_for('admin_recipients'))
+
+        if report_recipients.add(email, label=label) is None:
+            flash(f"{email} is already on the list.", "error")
+            return redirect(url_for('admin_recipients'))
+
+        append_audit("recipient_add", None, note=email)
+        flash(f"Added {email}.", "success")
+        return redirect(url_for('admin_recipients'))
+
+    return render_template(
+        'admin_recipients.html',
+        recipients=report_recipients.list_all(include_inactive=True),
+    )
+
+
+@app.route('/admin/recipients/<int:recipient_id>/delete', methods=['POST'])
+def admin_recipient_delete(recipient_id):
+    """Remove one internal recipient (R14)."""
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    if report_recipients is None or not report_recipients.delete(recipient_id):
+        flash("Recipient not found.", "error")
+        return redirect(url_for('admin_recipients'))
+
+    append_audit("recipient_delete", None, note=f"recipient_id={recipient_id}")
+    flash("Recipient removed.", "success")
+    return redirect(url_for('admin_recipients'))
+
 
 @app.route('/admin/notifications/<int:notification_id>/resend', methods=['POST'])
 def admin_notification_resend(notification_id):
