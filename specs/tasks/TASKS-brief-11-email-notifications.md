@@ -7,6 +7,8 @@
 
 **Dependency spine:** T1 → T2 → T3 → T4 → {T5, T6, T7, T9} · T1 → T10 → {T11, T13} · T8 independent of the mail path · T12 last (verifies everything, including T13's script).
 
+**T14** was added during T3, not by generate-tasks: implementing the outbox surfaced a ~30s stall in `db/pool.py` that contradicts N1. It is independent of the spine and can be done at any point, but before this feature ships.
+
 ---
 
 ## Task T1: Add `notifications` and `report_recipients` tables to the schema
@@ -964,3 +966,73 @@ The internal half of the feature: at 00:00 Manila the cron service builds the su
 - `report_pdf.py` (`build_supplier_pdf` keeps its signature)
 - `main.py` `/supplier-sheet.pdf` (the on-demand route is unchanged)
 - `tests/test_supplier_exports_exclude_deleted.py` (its assertions must pass unchanged)
+
+---
+
+## Task T14: Bound pool construction so a dead database fails fast
+
+> **Status:** not started
+> **Verification:** tdd
+> **Effort:** s
+> **Priority:** high
+> **Depends on:** None
+> **Satisfies REQs:** R7, N1
+> **Footprint slice:** Modified: `db/pool.py` (bound `pool.wait()`) — an addition to ARCH's Change Footprint, discovered during T3
+> **High-risk areas touched:** `db/pool.py` (H — every Postgres-touching module in the codebase goes through this singleton)
+
+### Description
+
+Discovered while implementing T3. `db/pool.py:63` calls `pool.wait()` with no argument at pool construction. That method's own `timeout` parameter defaults to 30 seconds and is independent of the `timeout=` passed to `ConnectionPool`, so the first caller to open the pool against an unreachable database blocks for ~30 seconds before anything raises.
+
+This matters because `notifications.enqueue` runs inside `/register`, `/book`, and the approve handler. With `gunicorn --workers 1`, a Postgres outage means the first such request stalls the entire app for 30 seconds before the failure is swallowed — the exact stall N1 exists to prevent, and it contradicts ARCH's "Postgres unavailable when a customer registers" stress scenario, which assumed the enqueue returns promptly.
+
+`db/pool.py` is shared by `audit_log.py`, `margin_store.py`, `discount_store.py`, `db/postgres_repo.py` and `notifications.py`, so this is a small change to a high-blast-radius file and gets its own task rather than riding along inside a feature task.
+
+### Test Plan
+
+#### Test File(s)
+- `tests/test_pool.py` (new — no test file currently covers `db/pool.py` directly)
+- `tests/test_notifications.py` (restore the timing test dropped from T3)
+
+#### Test Scenarios
+
+##### Fast Failure
+
+- **construction against a dead database fails within the bound** — GIVEN a DSN pointing at an unreachable host WHEN `get_pool()` is called THEN it raises or returns within the configured bound (a few seconds), not ~30s _(verifies N1)_
+- **the bound is configurable** — GIVEN an explicit wait timeout WHEN `get_pool` is called with it THEN that value is honored
+- **enqueue gives up quickly** — GIVEN an unreachable database WHEN `notifications.enqueue` is called THEN it returns None in under 10 seconds _(this is the test T3 could not make pass; verifies R7, N1)_
+
+##### Regression Guard
+
+- **a healthy pool still opens and serves connections** — GIVEN a reachable database WHEN `get_pool()` is called THEN it returns a usable pool and a query succeeds _(guards every module depending on `db/pool.py`)_
+- **the singleton still holds** — GIVEN the pool is already constructed WHEN `get_pool` is called again with a different DSN THEN the first pool is returned unchanged, as documented in its docstring
+- **`reset_pool` still closes and clears** — GIVEN a constructed pool WHEN `reset_pool()` is called THEN a subsequent `get_pool` builds a new one _(the whole test suite depends on this)_
+- **existing Postgres-backed suites still pass** — GIVEN the change WHEN `test_margin_store.py`, `test_discount_store.py`, `test_postgres_repo_integration.py` and `test_notifications.py` run THEN all pass unchanged _(guards the shared-singleton behavior)_
+
+### Implementation Notes
+
+- **Module(s):** `db/pool.py`.
+- **Pattern reference:** the existing `get_pool` signature already threads `min_size`, `max_size` and `timeout` — add the wait bound the same way, with a module-level default.
+- **Key decisions:** ARCH N1 (mail must never stall the request path) and A1 (the outbox exists so the request path stays fast — a 30s block at enqueue defeats it).
+- **Libraries:** `psycopg_pool` — already a dependency.
+- **High-risk callouts:** H-risk. Every Postgres-touching module shares this singleton, and the test suite's `reset_pool()` discipline depends on current behavior. Decide deliberately whether a failed `wait()` should raise or return a pool that retries in the background — the callers that swallow (`audit_log`, `notifications`) tolerate a raise, but `db/postgres_repo.py` may not. Check its call sites before choosing.
+
+### Scope Boundaries
+
+- Do NOT change the singleton semantics (first DSN wins) — the docstring documents it and the tests rely on it.
+- Do NOT change `min_size`, `max_size`, or the default connection timeout.
+- Do NOT introduce retry or reconnection logic beyond what `psycopg_pool` already does.
+- Only bound the construction-time wait.
+
+### Files Expected
+
+**New files:**
+- `tests/test_pool.py`
+
+**Modified files:**
+- `db/pool.py` (bound the `pool.wait()` call)
+- `tests/test_notifications.py` (restore the timing test)
+
+**Must NOT modify:**
+- `audit_log.py`, `margin_store.py`, `discount_store.py`, `db/postgres_repo.py`, `notifications.py` (all consume the pool; their behavior must be unchanged)
+- `tests/conftest.py`
