@@ -632,7 +632,7 @@ Legacy customers registered before this feature have no email on file, so their 
 
 ## Task T9: Admin notification flags and Resend
 
-> **Status:** in progress
+> **Status:** done
 > **Verification:** test-after
 > **Effort:** m
 > **Priority:** high
@@ -704,7 +704,7 @@ Failed and skipped notifications become visible where admins already work. The `
 
 ## Task T10: `report_recipients.py` and the recipient admin routes
 
-> **Status:** not started
+> **Status:** in progress
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** medium

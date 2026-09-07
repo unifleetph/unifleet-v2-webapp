@@ -275,7 +275,11 @@
             opacity: 0;
             transition: opacity .25s;
         }
-    </style>
+      .mail-flag { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; font-weight: 600; }
+    .mail-flag-failed { background: #fee2e2; color: #b91c1c; }
+    .mail-flag-skipped { background: #fef3c7; color: #92400e; }
+    .resend-button { margin-top: 4px; padding: 2px 8px; font-size: 0.8em; border: 1px solid #d1d5db; border-radius: 4px; background: #fff; cursor: pointer; }
+  </style>
 </head>
 <body>
 
@@ -350,6 +354,7 @@
             <th>Discount (₱/L)</th>
             <th>Requested (₱)</th>
             <th>Total</th>
+            <th>Email</th>
             <th>PNG</th>
             <th>Delete PNGs</th>
             <th>Delete Order</th>
@@ -417,6 +422,22 @@
                   {% endif %}
                 </td>
 
+                <td>
+                    {% if row.notification_flag %}
+                        {% if row.notification_flag.status == 'skipped' %}
+                            <span class="mail-flag mail-flag-skipped"
+                                  title="No email on file for this customer — add one on the customer page, then resend.">No email</span>
+                        {% else %}
+                            <span class="mail-flag mail-flag-failed"
+                                  title="{{ row.notification_flag.last_error }}">Failed</span>
+                        {% endif %}
+                        <form method="POST" action="/admin/notifications/{{ row.notification_flag.notification_id }}/resend">
+                            <button type="submit" class="resend-button">Resend</button>
+                        </form>
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
                 <td>
                     <a class="download-icon" href="/assets/qr/{{ row['voucher_id'] }}_Official.png" download>📥</a>
                 </td>

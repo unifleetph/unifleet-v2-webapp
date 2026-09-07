@@ -271,6 +271,23 @@ def admin():
             png_1 = data_paths.qr_png_path(vid).exists()
             png_2 = data_paths.official_qr_png_path(vid).exists()
             row['png_exists'] = png_1 and png_2
+
+        # R7: surface failed and skipped notifications where admins already
+        # work. One bulk query for the whole page — this loop already does
+        # two filesystem checks per row, and a query per row on top of that
+        # would be the wrong direction. Wrapped separately from the voucher
+        # load so an unavailable outbox costs the flags, not the dashboard.
+        try:
+            if notifications is not None:
+                flags = notifications.flags_by_voucher(
+                    [str(r.get("voucher_id", "")).strip() for r in vouchers]
+                )
+                for row in vouchers:
+                    row['notification_flag'] = flags.get(
+                        str(row.get("voucher_id", "")).strip()
+                    )
+        except Exception as e:
+            print(f"⚠️ Error loading notification flags: {e}")
     except Exception as e:
         print(f"⚠️ Error loading vouchers: {e}")
         vouchers = []
@@ -388,6 +405,33 @@ def admin_customers():
         bookings=bookings,
         all_customers=all_customers,
     )
+
+@app.route('/admin/notifications/<int:notification_id>/resend', methods=['POST'])
+def admin_notification_resend(notification_id):
+    """Requeue one flagged notification (R8).
+
+    Requeues rather than sends: delivery stays on the worker thread, so the
+    admin gets an immediate redirect instead of waiting on the provider.
+    """
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    if notifications is None:
+        flash("Notifications are unavailable.", "error")
+        return redirect(request.referrer or url_for('admin'))
+
+    recipient = (request.form.get('recipient') or '').strip()
+    if recipient and not _is_valid_email(recipient):
+        flash("Please enter a valid Email Address.", "error")
+        return redirect(request.referrer or url_for('admin'))
+
+    if not notifications.requeue(notification_id, recipient=recipient or None):
+        return "<h2>Notification not found.</h2>", 404
+
+    append_audit("notification_resend", None, note=f"notification_id={notification_id}")
+    flash("Notification queued for resending.", "success")
+    return redirect(request.referrer or url_for('admin'))
+
 
 @app.route('/admin/customers/<account_code>/email', methods=['POST'])
 def admin_customer_email(account_code):
