@@ -512,6 +512,24 @@ class PostgresRepo:
             conn.commit()
         return row
 
+    def update_customer_email(self, account_code: str, email: str) -> bool:
+        """Set one customer's email. Returns False if the code is unknown.
+
+        Exists so an admin can fill in the address for a customer who
+        registered before email was required, then resend the notifications
+        that were skipped for want of one (R9).
+        """
+        code = str(account_code or "").strip().upper()
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE customers SET email = %s WHERE UPPER(account_code) = %s",
+                    (_clean_str(email), code),
+                )
+                updated = cur.rowcount
+            conn.commit()
+        return updated > 0
+
     def get_customer(self, account_code: str) -> Optional[Dict]:
         """Fetch a customer by account_code (case-insensitive). None if absent."""
         code = str(account_code or "").strip().upper()

@@ -389,6 +389,40 @@ def admin_customers():
         all_customers=all_customers,
     )
 
+@app.route('/admin/customers/<account_code>/email', methods=['POST'])
+def admin_customer_email(account_code):
+    """Set or correct a customer's email (R9).
+
+    The recovery path for customers who registered before email was
+    required: fill the address in here, then hit Resend on their flagged
+    bookings. Validation matches /register's — format only.
+    """
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    email = (request.form.get('email') or '').strip()
+    back = request.referrer or url_for('admin_customers', q=account_code)
+
+    if not _is_valid_email(email):
+        flash("Please enter a valid Email Address.", "error")
+        return redirect(back)
+
+    try:
+        updated = repo.update_customer_email(account_code, email)
+    except Exception as e:
+        print(f"⚠️ update_customer_email failed for {account_code}: {e}")
+        flash("Could not update the email address. Please try again.", "error")
+        return redirect(back)
+
+    if not updated:
+        flash(f"No customer found with account code {account_code}.", "error")
+        return redirect(back)
+
+    append_audit("customer_email_update", None, note=f"{account_code} -> {email}")
+    flash(f"Email updated for {account_code}.", "success")
+    return redirect(back)
+
+
 @app.route('/admin/customers/export_all')
 def admin_customers_export_all():
     if not require_admin(request):

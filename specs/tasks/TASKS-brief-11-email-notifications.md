@@ -553,7 +553,7 @@ Fingerprint computation first as a pure function, then the happy-path enqueue, t
 
 ## Task T8: Admin can edit a customer's email
 
-> **Status:** in progress
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** m
 > **Priority:** medium
@@ -632,7 +632,7 @@ Legacy customers registered before this feature have no email on file, so their 
 
 ## Task T9: Admin notification flags and Resend
 
-> **Status:** not started
+> **Status:** in progress
 > **Verification:** test-after
 > **Effort:** m
 > **Priority:** high

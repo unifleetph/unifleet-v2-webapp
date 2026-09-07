@@ -477,3 +477,112 @@ def test_export_writes_audit_log_entry(client, monkeypatch):
     assert r.status_code == 200
     assert len(calls) == 1
     assert calls[0][0][0] == "admin_customers_export_all"
+
+
+# ============================================================
+# T8 — admin edits a customer's email
+# (ARCH-brief-11-email-notifications)
+# ============================================================
+
+class _EditableRepo(RepoStub):
+    """RepoStub that records update_customer_email calls."""
+
+    def __init__(self, customers=None, vouchers=None, updates_ok=True, raises=None):
+        super().__init__(customers=customers, vouchers=vouchers)
+        self.updates = []
+        self._updates_ok = updates_ok
+        self._raises = raises
+
+    def update_customer_email(self, account_code, email):
+        if self._raises:
+            raise self._raises
+        self.updates.append((account_code, email))
+        return self._updates_ok
+
+
+def test_admin_can_set_a_customer_email(client, monkeypatch):
+    """GIVEN an admin session WHEN a valid address is posted THEN the repo is
+    asked to store it (verifies R9)."""
+    repo = _EditableRepo(customers=[dict(HARR, email="")])
+    monkeypatch.setattr(main, "repo", repo)
+    _login(client)
+
+    resp = client.post("/admin/customers/HARR/email",
+                       data={"email": "new@example.com"})
+
+    assert resp.status_code == 302
+    assert repo.updates == [("HARR", "new@example.com")]
+
+
+def test_a_malformed_email_is_rejected(client, monkeypatch):
+    """GIVEN a posted value of 'nope' WHEN submitted THEN nothing is stored
+    (verifies R9)."""
+    repo = _EditableRepo(customers=[dict(HARR)])
+    monkeypatch.setattr(main, "repo", repo)
+    _login(client)
+
+    resp = client.post("/admin/customers/HARR/email", data={"email": "nope"})
+
+    assert resp.status_code == 302
+    assert repo.updates == []
+
+
+def test_an_unknown_account_code_reports_and_stores_nothing(client, monkeypatch):
+    """An unknown code must not silently look successful."""
+    repo = _EditableRepo(customers=[dict(HARR)], updates_ok=False)
+    monkeypatch.setattr(main, "repo", repo)
+    _login(client)
+
+    resp = client.post("/admin/customers/ZZZZ/email",
+                       data={"email": "nobody@example.com"},
+                       follow_redirects=True)
+
+    assert b"No customer found" in resp.data
+
+
+def test_a_repo_failure_does_not_500(client, monkeypatch):
+    """A database problem shows an error, it does not break the admin page."""
+    repo = _EditableRepo(customers=[dict(HARR)], raises=RuntimeError("pg down"))
+    monkeypatch.setattr(main, "repo", repo)
+    _login(client)
+
+    resp = client.post("/admin/customers/HARR/email",
+                       data={"email": "new@example.com"})
+
+    assert resp.status_code == 302
+
+
+def test_the_email_route_requires_admin(client, monkeypatch):
+    """Customer data is admin-only (verifies ARCH's auth posture)."""
+    repo = _EditableRepo(customers=[dict(HARR)])
+    monkeypatch.setattr(main, "repo", repo)
+
+    resp = client.post("/admin/customers/HARR/email",
+                       data={"email": "new@example.com"})
+
+    assert resp.status_code == 302
+    assert "/admin/login" in resp.headers["Location"]
+    assert repo.updates == []
+
+
+def test_the_detail_page_offers_an_email_edit_form(client, monkeypatch):
+    """The form is what makes the address fixable in-app (verifies R9)."""
+    monkeypatch.setattr(main, "repo", _EditableRepo(customers=[dict(HARR)]))
+    _login(client)
+
+    resp = client.get("/admin/customers?q=HARR")
+    html = resp.get_data(as_text=True)
+
+    assert "/admin/customers/HARR/email" in html
+    assert 'name="email"' in html
+
+
+def test_a_customer_without_an_email_is_called_out(client, monkeypatch):
+    """The detail page says why notifications are being skipped, so an admin
+    who lands here knows what to do (verifies R6 with R9)."""
+    monkeypatch.setattr(main, "repo", _EditableRepo(customers=[dict(HARR, email="")]))
+    _login(client)
+
+    resp = client.get("/admin/customers?q=HARR")
+
+    assert b"No email on file" in resp.data
