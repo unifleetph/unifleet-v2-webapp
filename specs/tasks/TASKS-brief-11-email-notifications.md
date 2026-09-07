@@ -237,7 +237,7 @@ Copy tests first — they are pure functions and pin down the highest-value cont
 
 ## Task T4: `notifications.py` part 2 — worker, retry ladder, requeue
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** l
 > **Priority:** critical

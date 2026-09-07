@@ -29,9 +29,14 @@ trailing spaces are dropped as the typing artifacts they are; the en dash
 and curly apostrophe are the client's and are preserved.
 """
 
+import os
 import sys
+import threading
+import time
 from typing import Optional
 
+import data_paths
+import mailer
 from db.pool import get_pool
 
 # ============================================================
@@ -224,3 +229,332 @@ def enqueue_skipped(
                 )
     except Exception as e:
         print(f"⚠️ notifications.enqueue_skipped({kind}) failed: {e}", file=sys.stderr)
+
+
+# ============================================================
+# Delivery (T4)
+# ============================================================
+
+def _claim_due(cur, limit: int):
+    """Claim up to `limit` due rows, flipping them to 'sending'.
+
+    FOR UPDATE SKIP LOCKED means two drainers never grab the same row. There
+    is only one worker today (gunicorn --workers 1), but the cost of getting
+    this right now is one clause, and the cost of getting it wrong later is
+    duplicate emails.
+
+    next_attempt_at doubles as the claim timestamp for 'sending' rows — the
+    table has no claimed_at column, and this is what the stale sweep reads.
+    """
+    cur.execute(
+        "UPDATE notifications SET status = 'sending', next_attempt_at = NOW() "
+        "WHERE id IN ("
+        "    SELECT id FROM notifications "
+        "    WHERE status = 'queued' AND next_attempt_at <= NOW() "
+        "    ORDER BY id "
+        "    FOR UPDATE SKIP LOCKED "
+        "    LIMIT %s"
+        ") "
+        "RETURNING id, recipient, subject, body, attachment_ref, attempts",
+        (limit,),
+    )
+    cols = ["id", "recipient", "subject", "body", "attachment_ref", "attempts"]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+# ARCH's retry ladder: the delay before attempt N+1, in seconds. A provider
+# blip self-heals inside the first few steps; a real outage surfaces as an
+# admin flag within roughly fifteen minutes.
+RETRY_BACKOFF_SECONDS = [1, 5, 30, 120, 600]
+MAX_ATTEMPTS = len(RETRY_BACKOFF_SECONDS)
+
+# A row that has sat in 'sending' this long was almost certainly abandoned by
+# a process that died mid-send (a redeploy). Reclaiming it risks one duplicate
+# email; leaving it stuck loses the email entirely, and the REQ prefers the
+# duplicate.
+STALE_SENDING_MINUTES = 5
+
+
+def _resolve_attachment(attachment_ref):
+    """Turn an attachment reference into (filename, bytes, mimetype).
+
+    Resolution happens here, at send time, rather than at enqueue time, so the
+    customer always receives the voucher as it stands now — a voucher
+    regenerated after enqueue would otherwise go out stale (A11).
+
+    Returns (attachment, note). A missing file yields (None, "attachment_missing")
+    rather than an exception: the customer still learns they are confirmed, and
+    the note becomes the admin's manual-follow-up flag (A6).
+    """
+    if not attachment_ref:
+        return None, None
+
+    kind, _, ident = attachment_ref.partition(":")
+
+    if kind == "voucher_png":
+        path = data_paths.official_qr_png_path(ident)
+        try:
+            return (path.name, path.read_bytes(), "image/png"), None
+        except OSError:
+            return None, "attachment_missing"
+
+    # daily_pdf is enqueued by T13, which owns building the report.
+    return None, f"unknown attachment_ref: {attachment_ref}"
+
+
+def _mark_sent(cur, row_id: int, provider_message_id, note=None) -> None:
+    cur.execute(
+        "UPDATE notifications SET status = 'sent', sent_at = NOW(), "
+        "       provider_message_id = %s, last_status_code = 200, last_error = %s "
+        "WHERE id = %s",
+        (provider_message_id, note, row_id),
+    )
+
+
+def _record_failure(cur, row_id: int, attempts: int, result) -> None:
+    """Advance the retry ladder, or go terminal.
+
+    A 4xx is the provider telling us this will never work — a malformed or
+    blocked address. Retrying it burns fifteen minutes before showing the
+    admin a flag they could have had immediately. 5xx and status_code 0 (no
+    response at all) are the retryable cases.
+    """
+    permanent = 400 <= result.status_code < 500
+    exhausted = attempts >= MAX_ATTEMPTS
+
+    if permanent or exhausted:
+        cur.execute(
+            "UPDATE notifications SET status = 'failed', attempts = %s, "
+            "       last_error = %s, last_status_code = %s "
+            "WHERE id = %s",
+            (attempts, result.error, result.status_code, row_id),
+        )
+        return
+
+    delay = RETRY_BACKOFF_SECONDS[attempts - 1]
+    cur.execute(
+        "UPDATE notifications SET status = 'queued', attempts = %s, "
+        "       next_attempt_at = NOW() + (%s * interval '1 second'), "
+        "       last_error = %s, last_status_code = %s "
+        "WHERE id = %s",
+        (attempts, delay, result.error, result.status_code, row_id),
+    )
+
+
+def _reclaim_stale(cur) -> int:
+    """Return rows abandoned mid-send to the queue."""
+    cur.execute(
+        "UPDATE notifications SET status = 'queued' "
+        "WHERE status = 'sending' "
+        "  AND next_attempt_at < NOW() - (%s * interval '1 minute')",
+        (STALE_SENDING_MINUTES,),
+    )
+    return cur.rowcount
+
+
+def requeue(row_id: int, recipient: Optional[str] = None,
+            dsn: Optional[str] = None) -> bool:
+    """Admin Resend: put a failed or skipped row back on the queue.
+
+    `recipient` repoints the row, which is how a skipped notification for a
+    legacy emailless customer is recovered once an admin fills the address in.
+    Idempotent — requeueing an already-queued row is a no-op, so a double
+    click cannot produce two emails.
+    """
+    try:
+        pool = get_pool(dsn=dsn)
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                if recipient:
+                    cur.execute(
+                        "UPDATE notifications SET status = 'queued', attempts = 0, "
+                        "       next_attempt_at = NOW(), recipient = %s "
+                        "WHERE id = %s AND status <> 'sending'",
+                        (recipient, row_id),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE notifications SET status = 'queued', attempts = 0, "
+                        "       next_attempt_at = NOW() "
+                        "WHERE id = %s AND status <> 'sending'",
+                        (row_id,),
+                    )
+                updated = cur.rowcount
+            conn.commit()
+        return updated > 0
+    except Exception as e:
+        print(f"⚠️ notifications.requeue({row_id}) failed: {e}", file=sys.stderr)
+        return False
+
+
+def drain_once(limit: int = 20, dsn: Optional[str] = None) -> int:
+    """Claim every due row, send it, and record the outcome. Returns the
+    number of rows processed."""
+    if not mailer.is_configured():
+        # Leave everything queued: no number of retries fixes a missing API
+        # key, and burning the ladder would turn a config error into a pile of
+        # permanently failed rows.
+        print("notifications: mailer is not configured; leaving rows queued",
+              file=sys.stderr)
+        return 0
+
+    try:
+        pool = get_pool(dsn=dsn)
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                _reclaim_stale(cur)
+                claimed = _claim_due(cur, limit)
+            conn.commit()
+
+            for row in claimed:
+                attachment, note = _resolve_attachment(row["attachment_ref"])
+                result = mailer.send(
+                    to=row["recipient"],
+                    subject=row["subject"],
+                    body=row["body"],
+                    attachment=attachment,
+                )
+                with conn.cursor() as cur:
+                    if result.ok:
+                        _mark_sent(cur, row["id"], result.provider_message_id, note)
+                    else:
+                        _record_failure(cur, row["id"], row["attempts"] + 1, result)
+                conn.commit()
+
+            return len(claimed)
+    except Exception as e:
+        print(f"⚠️ notifications.drain_once failed: {e}", file=sys.stderr)
+        return 0
+
+
+# ============================================================
+# Worker thread (ARCH A2, A12)
+# ============================================================
+
+POLL_INTERVAL_SECONDS = 5
+
+_worker_thread = None
+_worker_lock = threading.Lock()
+
+
+def is_enabled() -> bool:
+    """The operator's kill switch. Defaults to on; set NOTIFICATIONS_ENABLED
+    to a falsey value to stop all sending without redeploying code."""
+    raw = (os.environ.get("NOTIFICATIONS_ENABLED") or "true").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _drain_forever() -> None:
+    """The worker loop. Each iteration is wrapped so a transient database or
+    provider problem cannot kill the thread — if it died, emails would queue
+    silently forever."""
+    while True:
+        try:
+            drain_once()
+        except Exception as e:
+            print(f"⚠️ notifications worker iteration failed: {e}", file=sys.stderr)
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+
+def start_worker() -> bool:
+    """Start the background drainer. Returns True if this call started it.
+
+    Called at main.py import time, so it must never raise: a mail problem
+    taking down the whole app would be a far worse outcome than mail not
+    being sent. Idempotent — a second call is a no-op.
+    """
+    global _worker_thread
+    try:
+        if not is_enabled():
+            print("notifications: NOTIFICATIONS_ENABLED is off; worker not started",
+                  file=sys.stderr)
+            return False
+
+        with _worker_lock:
+            if _worker_thread is not None:
+                return False
+            thread = threading.Thread(
+                target=_drain_forever,
+                name="notifications-worker",
+                daemon=True,
+            )
+            thread.start()
+            _worker_thread = thread
+            return True
+    except Exception as e:
+        print(f"⚠️ notifications.start_worker failed: {e}", file=sys.stderr)
+        return False
+
+
+def _reset_worker_for_tests() -> None:
+    """Clear the worker handle. Tests only — the thread itself is a daemon."""
+    global _worker_thread
+    with _worker_lock:
+        _worker_thread = None
+
+
+# ============================================================
+# Admin read paths
+# ============================================================
+
+def flags_by_voucher(voucher_ids, dsn: Optional[str] = None) -> dict:
+    """Map voucher_id -> flag info for every failed or skipped notification.
+
+    One query for the whole page. The /admin dashboard renders up to 50 rows
+    and already does per-row filesystem checks for PNG existence; adding a
+    query per row on top of that would be the wrong direction.
+    """
+    ids = [v for v in (voucher_ids or []) if v]
+    if not ids:
+        return {}
+
+    try:
+        pool = get_pool(dsn=dsn)
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT ON (voucher_id) "
+                    "       voucher_id, id, kind, status, attempts, last_error "
+                    "FROM notifications "
+                    "WHERE voucher_id = ANY(%s) AND status IN ('failed', 'skipped') "
+                    "ORDER BY voucher_id, id DESC",
+                    (ids,),
+                )
+                rows = cur.fetchall()
+    except Exception as e:
+        # The dashboard must still render if the outbox is unavailable.
+        print(f"⚠️ notifications.flags_by_voucher failed: {e}", file=sys.stderr)
+        return {}
+
+    return {
+        row[0]: {
+            "notification_id": row[1],
+            "kind": row[2],
+            "status": row[3],
+            "attempts": row[4],
+            "last_error": row[5],
+        }
+        for row in rows
+    }
+
+
+def list_flagged(limit: int = 200, dsn: Optional[str] = None) -> list:
+    """Every failed or skipped notification, newest first."""
+    try:
+        pool = get_pool(dsn=dsn)
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, kind, recipient, account_code, voucher_id, status, "
+                    "       attempts, last_error, created_at "
+                    "FROM notifications "
+                    "WHERE status IN ('failed', 'skipped') "
+                    "ORDER BY id DESC LIMIT %s",
+                    (limit,),
+                )
+                cols = ["id", "kind", "recipient", "account_code", "voucher_id",
+                        "status", "attempts", "last_error", "created_at"]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+    except Exception as e:
+        print(f"⚠️ notifications.list_flagged failed: {e}", file=sys.stderr)
+        return []
