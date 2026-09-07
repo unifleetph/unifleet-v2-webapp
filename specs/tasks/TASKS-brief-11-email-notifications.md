@@ -158,7 +158,7 @@ Write the request-shaping tests against a mocked HTTP layer first — they defin
 
 ## Task T3: `notifications.py` part 1 — copy, enqueue, dedupe
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** m
 > **Priority:** critical
