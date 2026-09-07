@@ -833,7 +833,7 @@ The admin-facing surface for T10's routes: a list of internal recipients with an
 
 ## Task T12: Deployment configuration and full-stack verification
 
-> **Status:** in progress
+> **Status:** done — except the cold-start check, see below
 > **Verification:** checklist
 > **Effort:** s
 > **Priority:** high
@@ -855,7 +855,7 @@ The last task: wire the cron schedule into Railway's config, document and pass t
 - **Kill switch works** — set `NOTIFICATIONS_ENABLED=false` and restart; expected: no worker thread starts and no rows drain _(verifies A12)_
 - **Docs updated** — inspect `AGENTS.md`; expected: the environment-variables section documents all four, matching how `SECRET_KEY` and `ADMIN_PASSWORD` are described
 - **Cron script runs in-container** — run `python scripts/send_daily_report.py --dry-run` via `make shell`; expected: exits 0 and reports what it would enqueue, without writing rows
-- **Schema applies on a cold start** — run `make clean && make up-d`; expected: `db/apply.py` creates both new tables and the app boots
+- **Schema applies on a cold start** — run `make clean && make up-d`; expected: `db/apply.py` creates both new tables and the app boots. **NOT RUN:** `make clean` drops the local Postgres volume and the developer's dev data with it. Idempotent re-apply is covered by tests/test_schema.py against an ephemeral database; run this by hand when a throwaway volume is acceptable.
 - **Full suite green** — run `make test-db`; expected: every test passes, including the pre-existing suite
 
 ### Implementation Notes

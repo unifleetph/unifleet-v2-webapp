@@ -64,6 +64,8 @@ python db/apply.py db/schema.sql db/seed_stations.sql db/seed_prices.sql
 
 **Railway deploy:** Dockerfile CMD chains `db/apply.py` → gunicorn
 
+**Email notifications:** `mailer.py` (Resend HTTP client) → `notifications.py` (Postgres outbox + worker thread) → `report_recipients.py` (internal report list). `scripts/send_daily_report.py` runs on a Railway cron at 16:00 UTC (= 00:00 Asia/Manila) and enqueues the nightly supplier sheet. Nothing sends inline: handlers enqueue, a daemon thread drains.
+
 ## Environment variables
 
 Required for Railway:
@@ -73,6 +75,10 @@ Required for Railway:
 - `ADMIN_PASSWORD` — password for the `/admin/login` session. Login is disabled unless set.
 - `ADMIN_KEY` — legacy `?key=` / `X-Admin-Key` admin fallback. No default; key auth disabled unless set.
 - `SUPPLIER_API_TOKEN` — Supplier auth token
+- `RESEND_API_KEY` — Resend API key for outbound email. Sending is disabled unless set; the app still boots and queues notifications, which then sit in `notifications` until a key appears.
+- `MAIL_FROM` — From address on every customer email. Must be a monitored mailbox (customers reply to these), and its domain must be SPF/DKIM verified with Resend or mail lands in spam.
+- `MAIL_REPLY_TO` — optional Reply-To override. Defaults to replying to `MAIL_FROM`.
+- `NOTIFICATIONS_ENABLED` — operator kill switch for all outbound email. Anything falsey (`0`/`false`/`no`/`off`) stops the outbox worker without a code deploy. Defaults to on.
 
 ## Gotchas
 

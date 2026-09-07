@@ -5,5 +5,14 @@ command = "poetry install --no-dev --no-interaction"
 preDeployCommand = "python db/apply.py db/schema.sql db/seed_stations.sql db/seed_prices.sql"
 startCommand = 'sh -c "gunicorn --bind 0.0.0.0:$PORT --workers 1 main:app"'
 
+# Nightly supplier sheet (ARCH-brief-11-email-notifications, T13).
+# 16:00 UTC is 00:00 Asia/Manila year-round — PHT has no DST. The script
+# only enqueues; the web service's outbox worker does the sending, so this
+# service needs the same DATABASE_URL but no mail credentials of its own.
+[[cron]]
+name = "daily-supplier-report"
+schedule = "0 16 * * *"
+command = "python scripts/send_daily_report.py"
+
 [nix]
 packages = ["freetype", "glibcLocales"]
