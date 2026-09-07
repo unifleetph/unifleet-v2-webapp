@@ -80,7 +80,7 @@ Every other task in this plan reads or writes one of two new Postgres tables, so
 
 ## Task T2: `mailer.py` — Resend HTTP client
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** critical
