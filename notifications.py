@@ -298,7 +298,15 @@ def _resolve_attachment(attachment_ref):
         except OSError:
             return None, "attachment_missing"
 
-    # daily_pdf is enqueued by T13, which owns building the report.
+    if kind == "daily_pdf":
+        # scripts/send_daily_report.py writes the file, then enqueues this
+        # reference; ident is the Manila date the report covers.
+        path = data_paths.daily_report_pdf_path(ident)
+        try:
+            return (path.name, path.read_bytes(), "application/pdf"), None
+        except OSError:
+            return None, "attachment_missing"
+
     return None, f"unknown attachment_ref: {attachment_ref}"
 
 

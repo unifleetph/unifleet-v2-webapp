@@ -127,6 +127,21 @@ def official_qr_png_path(voucher_id: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Nightly supplier report (ARCH-brief-11-email-notifications, T13)
+# ---------------------------------------------------------------------------
+
+def daily_report_pdf_path(manila_date: str) -> Path:
+    """Path to the nightly supplier sheet for a given Manila date.
+
+    scripts/send_daily_report.py writes the PDF here and enqueues a
+    reference to it; the outbox worker reads the file at send time. Keeping
+    the bytes on disk rather than in the outbox row keeps report building out
+    of notifications.py and leaves an artifact that can be re-read later.
+    """
+    return EXPORTS_DIR / f"UniFleet_Supplier_Sheet_{manila_date}.pdf"
+
+
+# ---------------------------------------------------------------------------
 # Static assets (image-baked, read-only)
 # ---------------------------------------------------------------------------
 

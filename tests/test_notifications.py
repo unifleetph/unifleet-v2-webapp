@@ -837,3 +837,39 @@ def test_list_flagged_returns_only_failed_and_skipped(schema_db):
     assert statuses == {"failed", "skipped"}
     assert len(flagged) == 2
     assert queued not in [row["id"] for row in flagged]
+
+
+def test_the_daily_report_pdf_is_attached_from_disk(schema_db, sent_ok, tmp_path, monkeypatch):
+    """GIVEN a daily_report row referencing a date WHEN it is drained THEN the
+    PDF written by scripts/send_daily_report.py is attached (verifies R11)."""
+    pdf = tmp_path / "UniFleet_Supplier_Sheet_2026-09-07.pdf"
+    pdf.write_bytes(b"%PDF-nightly report")
+    monkeypatch.setattr(
+        notifications.data_paths, "daily_report_pdf_path", lambda date: pdf
+    )
+    _queue_one(schema_db, key="daily", attachment_ref="daily_pdf:2026-09-07")
+
+    notifications.drain_once(dsn=schema_db)
+
+    filename, content, mimetype = sent_ok[0]["attachment"]
+    assert content == b"%PDF-nightly report"
+    assert mimetype == "application/pdf"
+    assert "2026-09-07" in filename
+
+
+def test_a_missing_daily_report_pdf_still_sends_and_flags(schema_db, sent_ok, tmp_path, monkeypatch):
+    """The report email is still worth sending without its attachment, and the
+    flag tells an admin to follow up."""
+    monkeypatch.setattr(
+        notifications.data_paths,
+        "daily_report_pdf_path",
+        lambda date: tmp_path / "missing.pdf",
+    )
+    row_id = _queue_one(schema_db, key="dailymissing", attachment_ref="daily_pdf:2026-09-07")
+
+    notifications.drain_once(dsn=schema_db)
+
+    row = _row(schema_db, row_id)
+    assert row["status"] == "sent"
+    assert sent_ok[0]["attachment"] is None
+    assert "attachment_missing" in row["last_error"]

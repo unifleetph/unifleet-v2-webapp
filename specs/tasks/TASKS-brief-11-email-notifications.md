@@ -833,7 +833,7 @@ The admin-facing surface for T10's routes: a list of internal recipients with an
 
 ## Task T12: Deployment configuration and full-stack verification
 
-> **Status:** not started
+> **Status:** in progress
 > **Verification:** checklist
 > **Effort:** s
 > **Priority:** high
@@ -893,7 +893,7 @@ The last task: wire the cron schedule into Railway's config, document and pass t
 
 ## Task T13: `scripts/send_daily_report.py` — nightly supplier PDF
 
-> **Status:** in progress
+> **Status:** done
 > **Verification:** test-after
 > **Effort:** m
 > **Priority:** high
@@ -960,7 +960,16 @@ The internal half of the feature: at 00:00 Manila the cron service builds the su
 - `tests/test_daily_report.py`
 
 **Modified files:**
-- none
+
+_Scope amendment, agreed during implementation._ T4's attachment resolver only
+understands `voucher_png:`, so as originally scoped the nightly email would have
+gone out with no PDF attached. Option A was chosen: the cron writes the PDF to
+disk and the worker reads it at send time, which keeps report building out of
+`notifications.py` and leaves an artifact that can be re-read after the fact.
+
+- `data_paths.py` (add the nightly report's path to the central registry)
+- `notifications.py` (resolver branch for `daily_pdf:<date>`)
+- `tests/test_data_paths.py`, `tests/test_notifications.py` (cover both)
 
 **Must NOT modify:**
 - `report_pdf.py` (`build_supplier_pdf` keeps its signature)
