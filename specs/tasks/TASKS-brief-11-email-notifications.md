@@ -324,7 +324,7 @@ Claiming first (it defines the row lifecycle), then the success path, then the r
 
 ## Task T5: `/register` — require email and send the account code
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** m
 > **Priority:** high

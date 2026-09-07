@@ -27,6 +27,23 @@ except Exception as _e:
     build_supplier_pdf = None
     _PDF_IMPORT_ERROR = str(_e)
 
+# Email notifications (ARCH-brief-11-email-notifications). Guarded like the
+# PDF builder above: notifications is a side-effect module, and the app must
+# boot and serve even if it cannot be imported.
+try:
+    import notifications
+    _NOTIFICATIONS_IMPORT_ERROR = None
+except Exception as _e:
+    notifications = None
+    _NOTIFICATIONS_IMPORT_ERROR = str(_e)
+
+# Start the outbox drainer. start_worker() swallows its own failures and is
+# idempotent, and it no-ops when NOTIFICATIONS_ENABLED is off or the mailer
+# is unconfigured — so this line cannot stop the app from booting, which is
+# the only thing that matters at import time.
+if notifications is not None:
+    notifications.start_worker()
+
 # NEW: discounts storage
 from discount_store import DiscountStore, DiscountValueError
 from margin_store import MarginStore, MarginValueError
@@ -694,6 +711,16 @@ def _append_customer_csv_if_absent(new_row):
         finally:
             fcntl.flock(lockfile.fileno(), fcntl.LOCK_UN)
 
+# Deliberately permissive: one @, no spaces, a dot in the domain. Catching
+# typos is the goal; RFC-complete validation rejects addresses that actually
+# work and would cost us real registrations.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _is_valid_email(value: str) -> bool:
+    return bool(_EMAIL_RE.match((value or "").strip()))
+
+
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
@@ -704,6 +731,16 @@ def register():
         contact_number_digits = re.sub(r'\D', '', request.form.get('contact_number') or '')
         if len(contact_number_digits) < 10:
             flash("Please enter a valid Contact Number (at least 10 digits).", "error")
+            return render_template('register.html', form_values=request.form)
+
+        # R2 (ARCH-brief-11-email-notifications): every customer created from
+        # here on must be reachable — the account code, the booking
+        # acknowledgement and the voucher all arrive by email. Format only;
+        # deliverability is not our business at submit time. The column stays
+        # nullable so pre-existing blank rows remain valid (ARCH A14).
+        email = (request.form.get('email') or '').strip()
+        if not _is_valid_email(email):
+            flash("Please enter a valid Email Address.", "error")
             return render_template('register.html', form_values=request.form)
 
         company_name = request.form.get('company_name', '').strip()
@@ -755,6 +792,24 @@ def register():
 
         new_row['account_code'] = account_code
         _append_customer_csv_if_absent(new_row)
+
+        # R1: the account-code email. Queued only now, after both the repo
+        # write and the CSV append — a customer must never receive a code for
+        # an account that failed to save. Wrapped because no mail problem may
+        # cost a completed registration (R7).
+        try:
+            subject, body = notifications.render_account_code(account_code)
+            notifications.enqueue(
+                "account_code",
+                recipient=new_row['email'],
+                subject=subject,
+                body=body,
+                dedupe_key=notifications.dedupe_account_code(account_code),
+                account_code=account_code,
+            )
+        except Exception as e:
+            print(f"⚠️ account-code email not queued for {account_code}: {e}")
+
         return redirect(f"/register/success?account_code={account_code}")
 
     return render_template('register.html')
