@@ -1,5 +1,6 @@
 """
-Tests for db/schema.sql — the 9-table F2.1 Postgres schema.
+Tests for db/schema.sql — the F2.1 Postgres schema, plus the tables
+later migrations have added on top of it.
 
 These tests assume the `schema_db` fixture has been activated for the
 session, which applies db/schema.sql to a fresh test database.
@@ -631,3 +632,312 @@ def test_schema_apply_is_idempotent(schema_db):
     assert EXPECTED_TABLES.issubset(tables), (
         f"Tables lost after re-apply: {EXPECTED_TABLES - tables}"
     )
+
+
+# ============================================================
+# Notifications outbox (ARCH-brief-11-email-notifications, T1)
+# ============================================================
+
+NOTIFICATION_COLUMNS = {
+    "id",
+    "kind",
+    "recipient",
+    "account_code",
+    "voucher_id",
+    "status",
+    "attempts",
+    "next_attempt_at",
+    "last_error",
+    "last_status_code",
+    "provider_message_id",
+    "dedupe_key",
+    "voucher_fingerprint",
+    "attachment_ref",
+    "subject",
+    "body",
+    "created_at",
+    "sent_at",
+}
+
+
+@pytest.fixture
+def clean_notifications(schema_db):
+    """schema_db is session-scoped, so rows inserted by one test would leak
+    into the next. Truncate before and after each notifications test."""
+    def _truncate():
+        with psycopg.connect(schema_db) as conn:
+            with conn.cursor() as cur:
+                cur.execute("TRUNCATE notifications")
+            conn.commit()
+
+    _truncate()
+    yield schema_db
+    _truncate()
+
+
+def _insert_notification(cur, **overrides):
+    """Insert one notifications row with sane defaults; return its id."""
+    row = {
+        "kind": "account_code",
+        "recipient": "someone@example.com",
+        "dedupe_key": "acct:TEST",
+        "subject": "UniFleet Account Code",
+        "body": "Your Account Code is: TEST",
+    }
+    row.update(overrides)
+    cols = ", ".join(row.keys())
+    placeholders = ", ".join(["%s"] * len(row))
+    cur.execute(
+        f"INSERT INTO notifications ({cols}) VALUES ({placeholders}) RETURNING id",
+        tuple(row.values()),
+    )
+    return cur.fetchone()[0]
+
+
+def test_notifications_table_exists_with_expected_columns(schema_db):
+    """T1: the outbox table exists with the columns ARCH's data model names."""
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cols = _columns(cur, "notifications")
+    assert cols, "notifications table is missing"
+    assert NOTIFICATION_COLUMNS.issubset(set(cols)), (
+        f"Missing columns: {NOTIFICATION_COLUMNS - set(cols)}"
+    )
+
+
+def test_notifications_id_is_identity_primary_key(schema_db):
+    """Follows the audit_log identity-PK convention."""
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            assert _primary_key(cur, "notifications") == "id"
+            assert _columns(cur, "notifications")["id"]["is_identity"] == "YES"
+
+
+def test_notifications_dedupe_key_is_unique(clean_notifications):
+    """A7: the idempotency guarantee is a real UNIQUE constraint, not
+    application logic — it is what makes concurrent approvals and repeated
+    cron firings safe."""
+    with psycopg.connect(clean_notifications) as conn:
+        with conn.cursor() as cur:
+            _insert_notification(cur, dedupe_key="acct:HARR")
+        conn.commit()
+
+    with psycopg.connect(clean_notifications) as conn:
+        with conn.cursor() as cur:
+            with pytest.raises(psycopg.errors.UniqueViolation):
+                _insert_notification(cur, dedupe_key="acct:HARR")
+
+
+def test_notifications_status_and_attempts_have_queue_defaults(clean_notifications):
+    """An enqueue that omits queue bookkeeping lands ready to send."""
+    with psycopg.connect(clean_notifications) as conn:
+        with conn.cursor() as cur:
+            new_id = _insert_notification(cur, dedupe_key="acct:DEFAULTS")
+            cur.execute(
+                "SELECT status, attempts, next_attempt_at <= NOW(), created_at IS NOT NULL "
+                "FROM notifications WHERE id = %s",
+                (new_id,),
+            )
+            status, attempts, due_now, has_created_at = cur.fetchone()
+
+    assert status == "queued"
+    assert attempts == 0
+    assert due_now is True
+    assert has_created_at is True
+
+
+def test_notifications_foreign_keys_are_nullable(clean_notifications):
+    """daily_report rows carry neither an account_code nor a voucher_id."""
+    with psycopg.connect(clean_notifications) as conn:
+        with conn.cursor() as cur:
+            new_id = _insert_notification(
+                cur,
+                kind="daily_report",
+                dedupe_key="daily:2026-09-07:ops@example.com",
+                account_code=None,
+                voucher_id=None,
+            )
+            assert new_id is not None
+
+
+def test_notifications_foreign_keys_target_customers_and_vouchers(schema_db):
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            fks = set(_fk_targets(cur, "notifications"))
+
+    assert ("account_code", "customers", "account_code") in fks
+    assert ("voucher_id", "vouchers", "voucher_id") in fks
+
+
+def test_notifications_has_worker_poll_index(schema_db):
+    """The drain loop claims on (status, next_attempt_at); without this index
+    the worker's poll degrades to a sequential scan as the table grows."""
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT indexdef FROM pg_indexes "
+                "WHERE schemaname = 'public' AND tablename = 'notifications'"
+            )
+            defs = [row[0] for row in cur.fetchall()]
+
+    assert any(
+        "status" in d and "next_attempt_at" in d for d in defs
+    ), f"No (status, next_attempt_at) index found. Indexes: {defs}"
+
+
+def test_notifications_has_voucher_id_index(schema_db):
+    """flags_by_voucher does a bulk lookup by voucher_id on every /admin render."""
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            assert "voucher_id" in _indexes(cur, "notifications")
+
+
+def test_notifications_subject_and_body_are_required(clean_notifications):
+    """Copy is rendered at enqueue time, so a row without it is never valid."""
+    with psycopg.connect(clean_notifications) as conn:
+        with conn.cursor() as cur:
+            with pytest.raises(psycopg.errors.NotNullViolation):
+                cur.execute(
+                    "INSERT INTO notifications (kind, dedupe_key, body) "
+                    "VALUES ('account_code', 'acct:NOSUBJ', 'body only')"
+                )
+
+
+# ============================================================
+# Report recipients (ARCH-brief-11-email-notifications, T1)
+# ============================================================
+
+@pytest.fixture
+def clean_recipients(schema_db):
+    """schema_db is session-scoped; keep recipient rows from leaking between
+    tests (the UNIQUE constraint on email would poison later inserts)."""
+    def _truncate():
+        with psycopg.connect(schema_db) as conn:
+            with conn.cursor() as cur:
+                cur.execute("TRUNCATE report_recipients")
+            conn.commit()
+
+    _truncate()
+    yield schema_db
+    _truncate()
+
+
+def test_report_recipients_table_exists_with_expected_columns(schema_db):
+    """T1: the admin-managed internal distribution list (R14)."""
+    expected = {"id", "email", "label", "is_active", "created_at", "updated_at"}
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cols = _columns(cur, "report_recipients")
+    assert cols, "report_recipients table is missing"
+    assert expected.issubset(set(cols)), f"Missing columns: {expected - set(cols)}"
+
+
+def test_report_recipients_id_is_identity_primary_key(schema_db):
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            assert _primary_key(cur, "report_recipients") == "id"
+            assert _columns(cur, "report_recipients")["id"]["is_identity"] == "YES"
+
+
+def test_report_recipients_email_is_unique(clean_recipients):
+    """The same address must not be addable twice (R14)."""
+    with psycopg.connect(clean_recipients) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO report_recipients (email, label) VALUES (%s, %s)",
+                ("ops@example.com", "ops team"),
+            )
+        conn.commit()
+
+    with psycopg.connect(clean_recipients) as conn:
+        with conn.cursor() as cur:
+            with pytest.raises(psycopg.errors.UniqueViolation):
+                cur.execute(
+                    "INSERT INTO report_recipients (email) VALUES (%s)",
+                    ("ops@example.com",),
+                )
+
+
+def test_report_recipients_email_is_required(clean_recipients):
+    with psycopg.connect(clean_recipients) as conn:
+        with conn.cursor() as cur:
+            with pytest.raises(psycopg.errors.NotNullViolation):
+                cur.execute("INSERT INTO report_recipients (label) VALUES ('no address')")
+
+
+def test_report_recipients_is_active_defaults_true(clean_recipients):
+    """A newly added recipient receives the next report without further action.
+    Mirrors the stations.is_active convention."""
+    with psycopg.connect(clean_recipients) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO report_recipients (email) VALUES (%s) RETURNING is_active, created_at IS NOT NULL",
+                ("newbie@example.com",),
+            )
+            is_active, has_created_at = cur.fetchone()
+
+    assert is_active is True
+    assert has_created_at is True
+
+
+def test_schema_apply_is_idempotent_for_notification_tables(schema_db):
+    """T1: db/apply.py runs on every Railway container start and on every
+    `make test-db`, so re-applying must be a no-op — the two new tables must
+    survive with their rows intact, not be recreated empty."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO report_recipients (email) VALUES (%s) "
+                "ON CONFLICT (email) DO NOTHING",
+                ("survivor@example.com",),
+            )
+            _insert_notification(cur, dedupe_key="acct:SURVIVOR")
+        conn.commit()
+
+    schema_path = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
+    result = subprocess.run(
+        [sys.executable, "db/apply.py", str(schema_path), "--dsn", schema_db],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (
+        f"Re-apply failed: stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public'"
+            )
+            tables = {row[0] for row in cur.fetchall()}
+
+            cur.execute(
+                "SELECT COUNT(*) FROM report_recipients WHERE email = %s",
+                ("survivor@example.com",),
+            )
+            recipients_kept = cur.fetchone()[0]
+
+            cur.execute(
+                "SELECT COUNT(*) FROM notifications WHERE dedupe_key = %s",
+                ("acct:SURVIVOR",),
+            )
+            notifications_kept = cur.fetchone()[0]
+
+    assert {"notifications", "report_recipients"}.issubset(tables), (
+        "Notification tables lost after re-apply"
+    )
+    assert recipients_kept == 1, "report_recipients rows did not survive re-apply"
+    assert notifications_kept == 1, "notifications rows did not survive re-apply"
+
+    # Leave the session-scoped database as we found it.
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM report_recipients WHERE email = %s", ("survivor@example.com",))
+            cur.execute("DELETE FROM notifications WHERE dedupe_key = %s", ("acct:SURVIVOR",))
+        conn.commit()

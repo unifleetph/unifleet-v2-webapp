@@ -298,3 +298,80 @@ ON CONFLICT DO NOTHING;
 -- Booking-time margin snapshot (REQ-profit-margin R7/R8): the margin %
 -- live when the customer started checkout, frozen on the voucher row.
 ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS margin_pct_at_booking NUMERIC(5,2);
+
+-- ============================================================
+-- Notifications outbox (ARCH-brief-11-email-notifications, T1).
+-- One row per email UniFleet intends to send. Simultaneously the
+-- send queue, the delivery-attempt history, and the source of the
+-- admin flag list — see notifications.py.
+--
+-- Written directly via db.pool (A3), NOT through the persistence
+-- repo abstraction, matching audit_log.py / margin_settings.
+--
+-- status:  queued -> sending -> sent
+--                 \-> queued (retry, attempts+1, next_attempt_at backed off)
+--                 \-> failed (5xx ladder exhausted, or any permanent 4xx)
+--          skipped is terminal, written at enqueue time when the
+--          customer has no email on file (REQ R6).
+--
+-- dedupe_key is the idempotency mechanism (A7). It is a real UNIQUE
+-- constraint rather than an application-level check because that is
+-- the only version that holds under concurrent approvals and repeated
+-- cron firings. Key shapes, by kind:
+--     acct:<account_code>
+--     booked:<voucher_id>
+--     confirmed:<voucher_id>:<fingerprint>
+--     daily:<YYYY-MM-DD Manila>:<recipient>
+-- ============================================================
+CREATE TABLE IF NOT EXISTS notifications (
+    id                   BIGINT       GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    kind                 VARCHAR(40)  NOT NULL,
+    recipient            VARCHAR(320),
+    account_code         VARCHAR(16)  REFERENCES customers(account_code),
+    voucher_id           VARCHAR(32)  REFERENCES vouchers(voucher_id),
+
+    status               VARCHAR(20)  NOT NULL DEFAULT 'queued',
+    attempts             SMALLINT     NOT NULL DEFAULT 0,
+    next_attempt_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    last_error           TEXT,
+    last_status_code     SMALLINT,
+    provider_message_id  VARCHAR(120),
+
+    dedupe_key           VARCHAR(200) UNIQUE,
+    voucher_fingerprint  VARCHAR(64),
+    attachment_ref       VARCHAR(200),
+
+    subject              TEXT         NOT NULL,
+    body                 TEXT         NOT NULL,
+
+    created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    sent_at              TIMESTAMPTZ
+);
+
+-- The worker's claim predicate: WHERE status='queued' AND next_attempt_at <= NOW().
+CREATE INDEX IF NOT EXISTS idx_notifications_status_next_attempt
+    ON notifications(status, next_attempt_at);
+
+-- The /admin dashboard's bulk flag lookup (flags_by_voucher).
+CREATE INDEX IF NOT EXISTS idx_notifications_voucher_id
+    ON notifications(voucher_id);
+
+-- ============================================================
+-- Report recipients (ARCH-brief-11-email-notifications, T1).
+-- The admin-managed internal distribution list for the nightly
+-- supplier PDF (REQ R14) — staff churn must not require a redeploy,
+-- which is why this is a table and not an env var.
+--
+-- Read by scripts/send_daily_report.py via report_recipients.py,
+-- which sends to is_active = TRUE rows only. Ships empty: an empty
+-- list is a legitimate state, not an error.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS report_recipients (
+    id          BIGINT       GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    email       VARCHAR(320) NOT NULL UNIQUE,
+    label       VARCHAR(200),
+    is_active   BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
