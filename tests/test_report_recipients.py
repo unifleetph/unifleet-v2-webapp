@@ -208,3 +208,101 @@ def test_recipient_changes_are_audited(client, monkeypatch):
     client.post("/admin/recipients", data={"email": "ops@example.com"})
 
     assert "recipient_add" in audits
+
+
+# ============================================================
+# T11 — page seams
+# ============================================================
+# Aesthetics are verified by eye (see the T11 checklist); these cover what
+# automation can judge: the page renders in both states, conditional content
+# appears, flashes surface, and the delete form targets the right route.
+
+def test_the_page_renders_the_empty_state(client, monkeypatch):
+    """The list ships empty, so this is the first thing an admin ever sees —
+    it must explain the state rather than showing a bare heading."""
+    monkeypatch.setattr(main.report_recipients, "list_all", lambda **kw: [])
+    _login(client)
+
+    html = client.get("/admin/recipients").get_data(as_text=True)
+
+    assert "No recipients yet" in html
+    assert "<table" not in html
+
+
+def test_the_page_renders_each_recipient(client, monkeypatch):
+    import datetime as dt
+
+    monkeypatch.setattr(main.report_recipients, "list_all", lambda **kw: [
+        {"id": 1, "email": "ops@example.com", "label": "Ops team",
+         "is_active": True, "created_at": dt.datetime(2026, 9, 7),
+         "updated_at": dt.datetime(2026, 9, 7)},
+        {"id": 2, "email": "onleave@example.com", "label": None,
+         "is_active": False, "created_at": dt.datetime(2026, 9, 7),
+         "updated_at": dt.datetime(2026, 9, 7)},
+    ])
+    _login(client)
+
+    html = client.get("/admin/recipients").get_data(as_text=True)
+
+    assert "ops@example.com" in html
+    assert "onleave@example.com" in html
+    assert "No recipients yet" not in html
+
+
+def test_an_inactive_recipient_is_shown_as_inactive(client, monkeypatch):
+    """Muted rather than hidden — 'still on the list, not currently
+    receiving' is the useful state, matching the station page's convention."""
+    import datetime as dt
+
+    monkeypatch.setattr(main.report_recipients, "list_all", lambda **kw: [
+        {"id": 2, "email": "onleave@example.com", "label": None,
+         "is_active": False, "created_at": dt.datetime(2026, 9, 7),
+         "updated_at": dt.datetime(2026, 9, 7)},
+    ])
+    _login(client)
+
+    html = client.get("/admin/recipients").get_data(as_text=True)
+
+    assert "inactive-row" in html
+    assert "Inactive" in html
+
+
+def test_the_duplicate_flash_reaches_the_page(client, monkeypatch):
+    """A silent no-op would read as success; the admin must see why nothing
+    changed."""
+    monkeypatch.setattr(main.report_recipients, "add", lambda email, label="": None)
+    monkeypatch.setattr(main.report_recipients, "list_all", lambda **kw: [])
+    _login(client)
+
+    resp = client.post("/admin/recipients",
+                       data={"email": "ops@example.com"}, follow_redirects=True)
+
+    assert b"already on the list" in resp.data
+
+
+def test_the_delete_control_targets_the_delete_route_and_confirms(client, monkeypatch):
+    """Removing someone from the nightly report is easy to do by accident."""
+    import datetime as dt
+
+    monkeypatch.setattr(main.report_recipients, "list_all", lambda **kw: [
+        {"id": 7, "email": "ops@example.com", "label": "Ops",
+         "is_active": True, "created_at": dt.datetime(2026, 9, 7),
+         "updated_at": dt.datetime(2026, 9, 7)},
+    ])
+    _login(client)
+
+    html = client.get("/admin/recipients").get_data(as_text=True)
+
+    assert "/admin/recipients/7/delete" in html
+    assert "confirm(" in html
+
+
+def test_the_email_input_is_labelled(client, monkeypatch):
+    """Accessibility basic: the field has a real label, not just a placeholder."""
+    monkeypatch.setattr(main.report_recipients, "list_all", lambda **kw: [])
+    _login(client)
+
+    html = client.get("/admin/recipients").get_data(as_text=True)
+
+    assert 'for="new-email"' in html
+    assert 'id="new-email"' in html

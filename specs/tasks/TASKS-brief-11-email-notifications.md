@@ -771,7 +771,7 @@ The internal distribution list for the nightly supplier PDF, managed by admins r
 
 ## Task T11: Recipient management page
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** ui
 > **Effort:** xs
 > **Priority:** medium
@@ -823,7 +823,13 @@ The admin-facing surface for T10's routes: a list of internal recipients with an
 - `templates/admin_recipients.html` (mirrors `templates/admin_stations.html`)
 
 **Modified files:**
-- none
+
+_Scope amendment, agreed during implementation._ This task lists Testable Seams
+but named no file to put them in. They go alongside T10's route tests, which
+already cover this page's endpoints.
+
+- `tests/test_report_recipients.py` (seam tests: empty render, populated render,
+  flash surfacing, delete form target)
 
 **Must NOT modify:**
 - `templates/admin.html`, `templates/admin_stations.html`
