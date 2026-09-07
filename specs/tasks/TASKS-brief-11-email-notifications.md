@@ -408,7 +408,7 @@ Update the three existing test files to post an email first, so the suite is gre
 
 ## Task T6: `/book` POST — send the booking-received email
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** test-after
 > **Effort:** s
 > **Priority:** high

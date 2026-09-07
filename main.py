@@ -912,6 +912,46 @@ def _margin_adjusted_discounts(fuel_type):
     }
 
 
+def _queue_booking_received(created, account_code):
+    """Queue the booking acknowledgement, or record why we could not.
+
+    Never raises: this runs immediately after a successful booking, and no
+    mail problem may turn a saved booking into an error page (R7).
+    """
+    if notifications is None:
+        return
+
+    voucher_id = str(created.get("voucher_id") or "").strip()
+    try:
+        customer = repo.get_customer(account_code) or {}
+        recipient = str(customer.get("email") or "").strip()
+
+        if not recipient:
+            # Either the account code matches no customer, or it matches a
+            # legacy row with no address. Both are the same outcome for the
+            # customer and the same flag for the admin (R6).
+            notifications.enqueue_skipped(
+                "booking_received",
+                account_code=account_code,
+                voucher_id=voucher_id or None,
+                reason="customer has no email on file",
+            )
+            return
+
+        subject, body = notifications.render_booking_received()
+        notifications.enqueue(
+            "booking_received",
+            recipient=recipient,
+            subject=subject,
+            body=body,
+            dedupe_key=notifications.dedupe_booking_received(voucher_id),
+            account_code=account_code,
+            voucher_id=voucher_id or None,
+        )
+    except Exception as e:
+        print(f"⚠️ booking-received email not queued for {voucher_id}: {e}")
+
+
 @app.route('/book', methods=['GET', 'POST'])
 def book():
     customers_path = str(data_paths.CUSTOMERS_CSV)
@@ -1324,11 +1364,26 @@ def book():
         }
 
         # save booking
+        # `created` is initialised here so a failed write leaves it None
+        # rather than unbound: the swallow below is deliberate existing
+        # behaviour (a Postgres blip must not cost a booking), and the
+        # notification decision downstream needs to distinguish "saved" from
+        # "swallowed" without widening that try block.
+        created = None
         try:
             created = repo.create_unverified_booking(row)
             print("[BOOK] created voucher:", created.get("voucher_id"))
         except Exception as e:
             print("⚠️ Failed to create Unverified booking:", e)
+
+        # R3/R5/R6 (ARCH-brief-11-email-notifications): acknowledge the
+        # request by email. The booking form collects an account code, not an
+        # address, so the recipient comes from the customer record — the
+        # single source of truth. No email on file (a legacy customer) or no
+        # matching customer means no send and a flag for the admin, never a
+        # failed booking.
+        if created is not None:
+            _queue_booking_received(created, account_code)
 
         preset_path = str(data_paths.preset_csv_path(account_code))
         existing = pd.read_csv(preset_path, encoding='utf-8-sig', dtype={'mobile_number': str}) if os.path.isfile(preset_path) else pd.DataFrame()

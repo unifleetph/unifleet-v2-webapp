@@ -712,3 +712,174 @@ def test_driver_select_retains_selection_after_rejected_resubmit(client, monkeyp
     assert resp.status_code == 200
     assert len(stub.booked) == 0
     assert 'value="Dave|XYZ-123|Isuzu|NQR|6|Unleaded|" selected' in body
+
+
+# ============================================================
+# T6 — booking-received email (ARCH-brief-11-email-notifications)
+# ============================================================
+
+def _valid_refuel():
+    manila = ZoneInfo("Asia/Manila")
+    return (datetime.now(manila) + timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M")
+
+
+def _stub_station(monkeypatch, name="EcoOil - Cainta", price=76.03, raw_discount=10.0):
+    monkeypatch.setattr(
+        main.price_store, "list_stations",
+        lambda fuel_type: [{"id": "ecooil-cainta", "name": name,
+                            "price_php_per_liter": price, "updated_at": 0}]
+        if fuel_type == "Biodiesel" else []
+    )
+    monkeypatch.setattr(main.margin_store, "get", lambda: 0.0)
+    monkeypatch.setattr(
+        main.discount_store, "get_all_with_exempt",
+        lambda fuel_type: {name: {"value": raw_discount, "margin_exempt": False}}
+        if fuel_type == "Biodiesel" else {}
+    )
+    monkeypatch.setattr(
+        main.discount_store, "get_with_exempt",
+        lambda station, fuel_type: {"value": raw_discount, "margin_exempt": False}
+        if fuel_type == "Biodiesel" else None
+    )
+
+
+def _submit_booking(client):
+    return client.post("/book", data={
+        "account_code": "HARR",
+        "station": "EcoOil - Cainta",
+        "requested_amount_php": "1000",
+        "refuel_datetime": _valid_refuel(),
+        "driver_mode": "new",
+        "driver_name": "Dave",
+        "vehicle_plate": "XYZ-123",
+        "truck_make": "Isuzu",
+        "truck_model": "NQR",
+        "number_of_wheels": "6",
+        "fuel_type": "Biodiesel",
+        "contact_number": "Harry – 0900-000-0000",
+        "mobile_number": "09123456789",
+    })
+
+
+@pytest.fixture
+def mail(monkeypatch):
+    """Capture enqueue and enqueue_skipped instead of writing to Postgres."""
+    sent, skipped = [], []
+    monkeypatch.setattr(
+        main.notifications, "enqueue",
+        lambda kind, **kw: sent.append({"kind": kind, **kw}) or len(sent),
+    )
+    monkeypatch.setattr(
+        main.notifications, "enqueue_skipped",
+        lambda kind, **kw: skipped.append({"kind": kind, **kw}),
+    )
+    return sent, skipped
+
+
+def test_booking_queues_the_received_email(client, monkeypatch, mail):
+    """GIVEN a customer with an email WHEN a booking is submitted THEN one
+    booking_received notification is queued to that address (verifies R3, R5)."""
+    sent, skipped = mail
+    monkeypatch.setattr(
+        main, "repo", RepoStub(customer=dict(CUST, email="driver@example.com"))
+    )
+    _stub_station(monkeypatch)
+
+    resp = _submit_booking(client)
+
+    assert resp.status_code == 200
+    assert skipped == []
+    assert len(sent) == 1
+    assert sent[0]["kind"] == "booking_received"
+    assert sent[0]["recipient"] == "driver@example.com"
+    assert sent[0]["subject"] == "Booking Request Received - UniFleet"
+    assert sent[0]["dedupe_key"] == "booked:UF-TEST-00001"
+    assert sent[0]["voucher_id"] == "UF-TEST-00001"
+
+
+def test_the_address_comes_from_the_customer_record_not_the_form(client, monkeypatch, mail):
+    """The booking form carries no email field; the recipient is resolved from
+    the customer record, the single source of truth (verifies R5)."""
+    sent, _ = mail
+    monkeypatch.setattr(
+        main, "repo", RepoStub(customer=dict(CUST, email="onfile@example.com"))
+    )
+    _stub_station(monkeypatch)
+
+    _submit_booking(client)
+
+    assert sent[0]["recipient"] == "onfile@example.com"
+
+
+def test_emailless_customer_still_books_and_is_flagged(client, monkeypatch, mail):
+    """GIVEN a legacy customer with a blank email WHEN a booking is submitted
+    THEN the booking succeeds, nothing is sent, and a skipped row records it
+    for the admin (verifies R6)."""
+    sent, skipped = mail
+    stub = RepoStub(customer=dict(CUST, email=""))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_station(monkeypatch)
+
+    resp = _submit_booking(client)
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 1
+    assert sent == []
+    assert len(skipped) == 1
+    assert skipped[0]["kind"] == "booking_received"
+    assert "no email" in skipped[0]["reason"]
+
+
+def test_a_failed_repo_write_queues_nothing(client, monkeypatch, mail):
+    """GIVEN create_unverified_booking raises WHEN a booking is submitted THEN
+    no notification is queued and the request does not 500 — the existing
+    swallow stays a swallow (guards main.py's booking exception handling)."""
+    sent, skipped = mail
+
+    class FailingRepo(RepoStub):
+        def create_unverified_booking(self, row):
+            raise RuntimeError("Postgres is down")
+
+    monkeypatch.setattr(
+        main, "repo", FailingRepo(customer=dict(CUST, email="driver@example.com"))
+    )
+    _stub_station(monkeypatch)
+
+    resp = _submit_booking(client)
+
+    assert resp.status_code == 200
+    assert sent == []
+    assert skipped == []
+
+
+def test_an_enqueue_failure_does_not_fail_the_booking(client, monkeypatch):
+    """GIVEN the outbox raises WHEN a booking is submitted THEN the booking is
+    still created and the success page still renders (verifies R7)."""
+    stub = RepoStub(customer=dict(CUST, email="driver@example.com"))
+    monkeypatch.setattr(main, "repo", stub)
+    _stub_station(monkeypatch)
+
+    def boom(kind, **kw):
+        raise RuntimeError("outbox exploded")
+
+    monkeypatch.setattr(main.notifications, "enqueue", boom)
+
+    resp = _submit_booking(client)
+
+    assert resp.status_code == 200
+    assert len(stub.booked) == 1
+
+
+def test_booking_success_page_is_unchanged(client, monkeypatch, mail):
+    """The success page still renders its payment info and amounts
+    (guards ARCH backward-regression risk for the booking success copy)."""
+    monkeypatch.setattr(
+        main, "repo", RepoStub(customer=dict(CUST, email="driver@example.com"))
+    )
+    _stub_station(monkeypatch)
+
+    resp = _submit_booking(client)
+    html = resp.get_data(as_text=True)
+
+    assert resp.status_code == 200
+    assert "1000" in html or "1,000" in html
