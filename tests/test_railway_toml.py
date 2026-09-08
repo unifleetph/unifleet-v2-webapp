@@ -97,6 +97,53 @@ def test_the_dockerfile_installs_production_dependencies_from_the_lock():
     )
 
 
+def test_the_dockerfile_keeps_poetry_out_of_the_runtime_image():
+    """Poetry has its own dependency tree and it overlaps ours. Installed into
+    the same site-packages as the app, `poetry install` downgraded
+    charset-normalizer 3.5.1 (Poetry's) to the locked 3.4.3 in place; 3.5.1's
+    compiled `cd` extension had no 3.4.3 counterpart to overwrite, survived,
+    and won the import over 3.4.3's `cd.py`:
+
+        AttributeError: module 'charset_normalizer.md' has no attribute 'CharInfo'
+
+    `import requests` died, main.py's guarded import disabled email, and
+    /admin/recipients reported itself unavailable. Whether the stale file
+    survived depended on install ordering, so this reproduced on Railway and
+    not locally. Two stages remove the overlap entirely.
+    """
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    stages = [
+        line for line in dockerfile.splitlines()
+        if line.strip().upper().startswith("FROM ")
+    ]
+
+    assert len(stages) >= 2, (
+        "the Dockerfile must build in stages so Poetry never shares an "
+        f"environment with the app (found stages: {stages!r})"
+    )
+    assert "COPY --from=builder /opt/venv /opt/venv" in dockerfile, (
+        "the runtime stage must take the locked dependencies as a prebuilt "
+        "venv, not install them alongside Poetry"
+    )
+
+    runtime_stage = dockerfile.split(stages[-1])[-1]
+    assert "poetry" not in runtime_stage.lower(), (
+        "the runtime stage must not install or invoke Poetry; nothing in the "
+        "final image may be able to downgrade a dependency in place"
+    )
+
+
+def test_the_dockerfile_verifies_the_install_at_build_time():
+    """A dependency install that produces an unimportable package must fail
+    the build, not boot an app with email silently switched off."""
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "import requests, charset_normalizer" in dockerfile, (
+        "the build must import the dependency chain that went down in "
+        "production, so a broken install never reaches a deploy"
+    )
+
+
 def test_the_dockerfile_carries_the_system_libraries_nix_used_to_provide():
     """freetype was a [nix] package; Pillow needs it to render voucher text."""
     dockerfile = DOCKERFILE.read_text(encoding="utf-8")

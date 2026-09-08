@@ -84,6 +84,7 @@ Required for Railway:
 ## Gotchas
 
 - `rw.txt` is the Railway config file (not `railway.toml` — renamed in commit `ecdf9ae`)
+- The Dockerfile is two stages on purpose. Poetry installs the locked deps into `/opt/venv` in the builder; the runtime stage copies that venv and has no Poetry. Installing both into one site-packages let `poetry install` downgrade charset-normalizer in place (Poetry pulls 3.5.1, the lock pins 3.4.3), leaving 3.5.1's compiled `cd` extension to win the import over 3.4.3's `cd.py` — `module 'charset_normalizer.md' has no attribute 'CharInfo'`, `import requests` dead, email off, "Recipient management is unavailable". Whether the stale file survived depended on install ordering, so it broke on Railway and not locally.
 - Never put dependency installation back in `rw.txt` (`build.command` / `[nix]`). Nixpacks carries site-packages across builds and only *overlays* the lock, which twice shipped a broken image: a failed `--no-dev` install that kept old deps, then a charset-normalizer downgrade that left the 4.x compiled `cd` extension beside 3.4.3's Python modules (`module 'charset_normalizer.md' has no attribute 'CharInfo'`). Both killed `import requests`, which main.py's guarded import turns into "Recipient management is unavailable".
 - Template `admin_prices.html` must guard against `None` price values (use `is not none` check)
 - `main.py` is the single-file app — no blueprints, no package structure
