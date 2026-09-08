@@ -93,3 +93,35 @@ def test_railway_toml_declares_no_cron_table():
     assert "docs/runbook.md" in raw, (
         "leave a pointer to where the schedule actually lives"
     )
+
+
+def test_railway_build_command_uses_a_flag_poetry_still_supports():
+    """`--no-dev` was removed in Poetry 2.x — it errors outright.
+
+    rw.txt carried it, so on Railway the build step failed and the image kept
+    whatever dependencies an earlier successful build had left behind. That
+    was invisible until a new dependency was added (requests, for the mailer),
+    at which point importing it failed at runtime, main.py's guarded import
+    disabled all email, and the only visible symptom was "Recipient management
+    is unavailable" on one admin page.
+    """
+    cmd = _load()["build"]["command"]
+
+    assert "--no-dev" not in cmd, (
+        "Poetry 2.x removed --no-dev; this build step fails and leaves stale "
+        "dependencies in the image"
+    )
+    assert "--only main" in cmd, (
+        "install production dependencies explicitly, matching the Dockerfile"
+    )
+
+
+def test_the_build_command_matches_the_dockerfile():
+    """Both paths must install the same dependency set. They diverged: the
+    Dockerfile used --only main while rw.txt used the removed --no-dev, so a
+    local build had requests and the deployed image did not."""
+    dockerfile = (RAILWAY_TOML.parent / "Dockerfile").read_text(encoding="utf-8")
+    cmd = _load()["build"]["command"]
+
+    assert "poetry install --only main" in dockerfile
+    assert "poetry install --only main" in cmd

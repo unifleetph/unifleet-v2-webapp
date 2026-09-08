@@ -8,6 +8,7 @@ import io
 import fcntl
 import hmac
 import subprocess
+import sys
 import threading
 import time
 from urllib.parse import urlparse
@@ -42,6 +43,18 @@ except Exception as _e:
     notifications = None
     report_recipients = None
     _NOTIFICATIONS_IMPORT_ERROR = str(_e)
+    # Loud, at startup, with a traceback. The guarded import is right — a mail
+    # problem must not stop the app booting — but staying silent about it was
+    # not: this surfaced only as "Recipient management is unavailable" on one
+    # admin page, with the actual cause (a missing dependency in the deployed
+    # image) recorded in a variable nothing ever printed.
+    import traceback as _traceback
+    print("=" * 72, file=sys.stderr)
+    print(f"⚠️  EMAIL NOTIFICATIONS DISABLED: {_e}", file=sys.stderr)
+    print("   All outbound email is off. Admin recipient management will "
+          "report itself unavailable.", file=sys.stderr)
+    _traceback.print_exc()
+    print("=" * 72, file=sys.stderr)
 
 # Start the outbox drainer. start_worker() swallows its own failures and is
 # idempotent, and it no-ops when NOTIFICATIONS_ENABLED is off or the mailer
@@ -476,7 +489,14 @@ def admin_recipients():
         return redirect(url_for('admin_login', next=request.path))
 
     if report_recipients is None:
-        flash("Recipient management is unavailable.", "error")
+        # Say what is actually wrong. "Unavailable" alone sent someone
+        # hunting through a deployment for a missing dependency.
+        flash(
+            "Recipient management is unavailable: the notifications module "
+            f"failed to load ({_NOTIFICATIONS_IMPORT_ERROR}). Outbound email "
+            "is disabled until this is fixed — check the deploy logs.",
+            "error",
+        )
         return redirect(url_for('admin'))
 
     if request.method == 'POST':
@@ -515,7 +535,14 @@ def admin_recipient_set_active(recipient_id):
         return redirect(url_for('admin_login', next=request.path))
 
     if report_recipients is None:
-        flash("Recipient management is unavailable.", "error")
+        # Say what is actually wrong. "Unavailable" alone sent someone
+        # hunting through a deployment for a missing dependency.
+        flash(
+            "Recipient management is unavailable: the notifications module "
+            f"failed to load ({_NOTIFICATIONS_IMPORT_ERROR}). Outbound email "
+            "is disabled until this is fixed — check the deploy logs.",
+            "error",
+        )
         return redirect(url_for('admin'))
 
     active = (request.form.get('active') or '').strip().lower() in ('1', 'true', 'yes', 'on')

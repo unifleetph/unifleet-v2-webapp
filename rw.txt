@@ -1,5 +1,10 @@
 [build]
-command = "poetry install --no-dev --no-interaction"
+# --only main, not the removed --no-dev: Poetry 2.x rejects that flag outright
+# ("The option --no-dev does not exist"), so this build step failed silently
+# and the image kept whatever dependencies an earlier successful build had
+# left behind. That was invisible until a NEW dependency was added, at which
+# point importing it failed at runtime. Matches the Dockerfile's install.
+command = "poetry install --only main --no-interaction"
 
 [deploy]
 preDeployCommand = "python db/apply.py db/schema.sql db/seed_stations.sql db/seed_prices.sql"
