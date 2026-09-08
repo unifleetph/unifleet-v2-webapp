@@ -1,14 +1,16 @@
-"""Tests for railway.toml — the F1.1 Railway build/start/nix config.
+"""Tests for rw.txt — the Railway build/start config.
 
-Railway reads this file to know how to build and start the service
-and which nix packages to install. The four tests below lock the
-config down to the contracts called out in PLAN-railway-provisioning.md.
+Railway reads this file to know how to build and start the service. The
+tests below lock down the contracts called out in
+PLAN-railway-provisioning.md, plus the two build-reproducibility rules
+learned from production outages.
 """
 import tomllib
 from pathlib import Path
 
 
 RAILWAY_TOML = Path(__file__).resolve().parent.parent / "rw.txt"
+DOCKERFILE = RAILWAY_TOML.parent / "Dockerfile"
 
 
 def _load():
@@ -17,15 +19,9 @@ def _load():
 
 
 def test_railway_toml_exists_and_parses():
-    assert RAILWAY_TOML.is_file(), f"railway.toml must exist at {RAILWAY_TOML}"
+    assert RAILWAY_TOML.is_file(), f"rw.txt must exist at {RAILWAY_TOML}"
     data = _load()
-    assert data, "railway.toml must not be empty"
-
-
-def _build_command(data):
-    """Railway accepts build.command or buildCommand depending on schema version."""
-    build = data.get("build", {})
-    return build.get("command") or build.get("buildCommand") or ""
+    assert data, "rw.txt must not be empty"
 
 
 def _start_command(data):
@@ -39,38 +35,72 @@ def _start_command(data):
     )
 
 
-def _nix_packages(data):
-    return data.get("nixPackages") or data.get("nix", {}).get("packages") or []
-
-
-def test_railway_toml_declares_poetry_build():
-    cmd = _build_command(_load())
-    assert "poetry install" in cmd, (
-        f"railway.toml build.command must include 'poetry install' (got: {cmd!r})"
-    )
-
-
 def test_railway_toml_declares_gunicorn_start_with_dynamic_port():
     cmd = _start_command(_load())
     assert "gunicorn" in cmd, (
-        f"railway.toml start command must include 'gunicorn' (got: {cmd!r})"
+        f"rw.txt start command must include 'gunicorn' (got: {cmd!r})"
     )
     assert "0.0.0.0:$PORT" in cmd, (
-        f"railway.toml start command must bind to 0.0.0.0:$PORT (got: {cmd!r})"
+        f"rw.txt start command must bind to 0.0.0.0:$PORT (got: {cmd!r})"
     )
     assert "0.0.0.0:5000" not in cmd, (
-        f"railway.toml start command must NOT hardcode port 5000 (got: {cmd!r})"
+        f"rw.txt start command must NOT hardcode port 5000 (got: {cmd!r})"
     )
 
 
-def test_railway_toml_declares_required_nix_packages():
-    packages = _nix_packages(_load())
-    assert "freetype" in packages, (
-        f"railway.toml must declare 'freetype' nix package (got: {packages!r})"
+def test_railway_builds_from_the_dockerfile():
+    """Nixpacks reuses the environment an earlier build left behind, so a
+    `poetry install` there overlays the lock onto stale packages instead of
+    replacing them. That shipped two outages: a failed install that kept the
+    old dependency set (no `requests`), then a charset-normalizer downgrade
+    that left 4.x's compiled `cd` extension next to 3.4.3's pure-Python
+    modules ("module 'charset_normalizer.md' has no attribute 'CharInfo'").
+    Both took email and /admin/recipients down through main.py's guarded
+    import. A Dockerfile build starts from a clean image every time.
+    """
+    build = _load().get("build", {})
+
+    assert build.get("builder", "").upper() == "DOCKERFILE", (
+        "rw.txt must pin the Dockerfile builder; Nixpacks carries stale "
+        f"site-packages between builds (got: {build.get('builder')!r})"
     )
-    assert "glibcLocales" in packages, (
-        f"railway.toml must declare 'glibcLocales' nix package (got: {packages!r})"
+    assert build.get("dockerfilePath") == "Dockerfile"
+    assert DOCKERFILE.is_file(), f"the referenced Dockerfile must exist at {DOCKERFILE}"
+
+
+def test_railway_toml_leaves_dependency_installation_to_the_dockerfile():
+    """A build.command or [nix] block here is a leftover from the Nixpacks
+    era. Railway ignores both under the Dockerfile builder, so keeping them
+    only invites someone to edit the dead copy and expect a deploy to change.
+    """
+    data = _load()
+    build = data.get("build", {})
+
+    assert not (build.get("command") or build.get("buildCommand")), (
+        "the Dockerfile installs dependencies; a build command here is dead config"
     )
+    assert "nix" not in data and "nixPackages" not in data, (
+        "system packages come from the Dockerfile's apt-get, not a [nix] block"
+    )
+
+
+def test_the_dockerfile_installs_production_dependencies_from_the_lock():
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "poetry.lock" in dockerfile, "install from the lock, not a resolve at build time"
+    assert "poetry install --only main" in dockerfile, (
+        "install production dependencies explicitly"
+    )
+    assert "--no-dev" not in dockerfile, (
+        "Poetry 2.x removed --no-dev; the install fails outright and the "
+        "build silently keeps whatever dependencies were there before"
+    )
+
+
+def test_the_dockerfile_carries_the_system_libraries_nix_used_to_provide():
+    """freetype was a [nix] package; Pillow needs it to render voucher text."""
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    assert "freetype" in dockerfile
 
 
 def test_railway_toml_declares_no_cron_table():
@@ -93,35 +123,3 @@ def test_railway_toml_declares_no_cron_table():
     assert "docs/runbook.md" in raw, (
         "leave a pointer to where the schedule actually lives"
     )
-
-
-def test_railway_build_command_uses_a_flag_poetry_still_supports():
-    """`--no-dev` was removed in Poetry 2.x — it errors outright.
-
-    rw.txt carried it, so on Railway the build step failed and the image kept
-    whatever dependencies an earlier successful build had left behind. That
-    was invisible until a new dependency was added (requests, for the mailer),
-    at which point importing it failed at runtime, main.py's guarded import
-    disabled all email, and the only visible symptom was "Recipient management
-    is unavailable" on one admin page.
-    """
-    cmd = _load()["build"]["command"]
-
-    assert "--no-dev" not in cmd, (
-        "Poetry 2.x removed --no-dev; this build step fails and leaves stale "
-        "dependencies in the image"
-    )
-    assert "--only main" in cmd, (
-        "install production dependencies explicitly, matching the Dockerfile"
-    )
-
-
-def test_the_build_command_matches_the_dockerfile():
-    """Both paths must install the same dependency set. They diverged: the
-    Dockerfile used --only main while rw.txt used the removed --no-dev, so a
-    local build had requests and the deployed image did not."""
-    dockerfile = (RAILWAY_TOML.parent / "Dockerfile").read_text(encoding="utf-8")
-    cmd = _load()["build"]["command"]
-
-    assert "poetry install --only main" in dockerfile
-    assert "poetry install --only main" in cmd

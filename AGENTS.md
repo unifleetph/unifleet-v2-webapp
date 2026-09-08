@@ -2,7 +2,7 @@
 
 ## Project overview
 
-Flask webapp for fleet fuel management. Deployed on Railway (Dockerfile auto-detected). PostgreSQL database, Poetry for dependencies, Python 3.11.
+Flask webapp for fleet fuel management. Deployed on Railway (Dockerfile builder, pinned in `rw.txt`). PostgreSQL database, Poetry for dependencies, Python 3.11.
 
 ## Local dev
 
@@ -62,7 +62,7 @@ python db/apply.py db/schema.sql db/seed_stations.sql db/seed_prices.sql
 - `db/postgres_repo.py` — PostgreSQL repository layer
 - `db/pool.py` — connection pooling
 
-**Railway deploy:** Dockerfile CMD chains `db/apply.py` → gunicorn
+**Railway deploy:** `rw.txt` pins `builder = "DOCKERFILE"`, so every deploy builds a fresh image from `poetry.lock`. `preDeployCommand` runs `db/apply.py`, `startCommand` runs gunicorn (both override the Dockerfile CMD, which chains the same two for local use).
 
 **Email notifications:** `mailer.py` (Resend HTTP client) → `notifications.py` (Postgres outbox + worker thread) → `report_recipients.py` (internal report list). `scripts/send_daily_report.py` runs on a Railway cron at 16:00 UTC (= 00:00 Asia/Manila) and enqueues the nightly supplier sheet. Nothing sends inline: handlers enqueue, a daemon thread drains.
 
@@ -84,6 +84,7 @@ Required for Railway:
 ## Gotchas
 
 - `rw.txt` is the Railway config file (not `railway.toml` — renamed in commit `ecdf9ae`)
+- Never put dependency installation back in `rw.txt` (`build.command` / `[nix]`). Nixpacks carries site-packages across builds and only *overlays* the lock, which twice shipped a broken image: a failed `--no-dev` install that kept old deps, then a charset-normalizer downgrade that left the 4.x compiled `cd` extension beside 3.4.3's Python modules (`module 'charset_normalizer.md' has no attribute 'CharInfo'`). Both killed `import requests`, which main.py's guarded import turns into "Recipient management is unavailable".
 - Template `admin_prices.html` must guard against `None` price values (use `is not none` check)
 - `main.py` is the single-file app — no blueprints, no package structure
 - `data/` directory is bind-mounted in dev, Railway Volume at `/data` in prod

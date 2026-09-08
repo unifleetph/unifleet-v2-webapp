@@ -30,7 +30,7 @@ env/
 # Local env file (secrets)
 .env
 
-# Tests (not needed in the prod image; dev deps are excluded by `poetry install --no-dev`)
+# Tests (not needed in the prod image; dev deps are excluded by `poetry install --only main`)
 tests/
 
 # Replit-specific (irrelevant outside Replit)

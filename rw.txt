@@ -1,10 +1,27 @@
+# Build from the Dockerfile, not Nixpacks.
+#
+# Nixpacks installs into an environment it carries across builds, so a
+# `poetry install` there only *overlays* the locked versions on whatever the
+# previous build left behind. It overwrites files that exist in both versions
+# and leaves the rest. That produced two production outages in a row:
+#
+#   1. `poetry install --no-dev` (a flag Poetry 2.x removed) exited non-zero,
+#      the build step failed, and the image silently kept its old dependency
+#      set — so `requests` was never installed and all email went dark.
+#   2. With that fixed, the install downgraded charset-normalizer 4.x to the
+#      locked 3.4.3 but left 4.x's compiled `cd` extension behind. Python
+#      prefers the stale .so over the 3.4.3 `cd.py`, so `import requests`
+#      died with "module 'charset_normalizer.md' has no attribute 'CharInfo'"
+#      — and main.py's guarded import disabled notifications and recipient
+#      management together, again.
+#
+# The Dockerfile builds a fresh image every time from pyproject + poetry.lock,
+# so the installed set is exactly the lock and nothing survives between builds.
+# It also carries the freetype system library Pillow needs for the voucher
+# renderer, which is what the old [nix] packages block was for.
 [build]
-# --only main, not the removed --no-dev: Poetry 2.x rejects that flag outright
-# ("The option --no-dev does not exist"), so this build step failed silently
-# and the image kept whatever dependencies an earlier successful build had
-# left behind. That was invisible until a NEW dependency was added, at which
-# point importing it failed at runtime. Matches the Dockerfile's install.
-command = "poetry install --only main --no-interaction"
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
 
 [deploy]
 preDeployCommand = "python db/apply.py db/schema.sql db/seed_stations.sql db/seed_prices.sql"
@@ -15,6 +32,3 @@ startCommand = 'sh -c "gunicorn --bind 0.0.0.0:$PORT --workers 1 main:app"'
 # service. It runs as its own Cron Schedule service configured in the
 # Railway dashboard, exactly like the `backup` service — see docs/runbook.md
 # for the schedule, command and required variables.
-
-[nix]
-packages = ["freetype", "glibcLocales"]
