@@ -2,7 +2,7 @@
 
 ## Project overview
 
-Flask webapp for fleet fuel management. Deployed on Railway (Dockerfile auto-detected). PostgreSQL database, Poetry for dependencies, Python 3.11.
+Flask webapp for fleet fuel management. Deployed on Railway (Dockerfile builder, pinned in `rw.txt`). PostgreSQL database, Poetry for dependencies, Python 3.11.
 
 ## Local dev
 
@@ -62,7 +62,9 @@ python db/apply.py db/schema.sql db/seed_stations.sql db/seed_prices.sql
 - `db/postgres_repo.py` — PostgreSQL repository layer
 - `db/pool.py` — connection pooling
 
-**Railway deploy:** Dockerfile CMD chains `db/apply.py` → gunicorn
+**Railway deploy:** `rw.txt` pins `builder = "DOCKERFILE"`, so every deploy builds a fresh image from `poetry.lock`. `preDeployCommand` runs `db/apply.py`, `startCommand` runs gunicorn (both override the Dockerfile CMD, which chains the same two for local use).
+
+**Email notifications:** `mailer.py` (Resend HTTP client) → `notifications.py` (Postgres outbox + worker thread) → `report_recipients.py` (internal report list). `scripts/send_daily_report.py` runs on a Railway cron at 16:00 UTC (= 00:00 Asia/Manila) and enqueues the nightly supplier sheet. Nothing sends inline: handlers enqueue, a daemon thread drains.
 
 ## Environment variables
 
@@ -73,10 +75,17 @@ Required for Railway:
 - `ADMIN_PASSWORD` — password for the `/admin/login` session. Login is disabled unless set.
 - `ADMIN_KEY` — legacy `?key=` / `X-Admin-Key` admin fallback. No default; key auth disabled unless set.
 - `SUPPLIER_API_TOKEN` — Supplier auth token
+- `RESEND_API_KEY` — Resend API key for outbound email. Sending is disabled unless set; the app still boots and queues notifications, which then sit in `notifications` until a key appears.
+- `MAIL_FROM` — From address on every customer email. Must be a monitored mailbox (customers reply to these), and its domain must be SPF/DKIM verified with Resend or mail lands in spam.
+- `MAIL_REPLY_TO` — optional Reply-To override. Defaults to replying to `MAIL_FROM`.
+- `NOTIFICATIONS_ENABLED` — operator kill switch for all outbound email. Anything falsey (`0`/`false`/`no`/`off`) stops the outbox worker *and* prevents new notifications being queued, so nothing accumulates to replay later. Defaults to on. **Rollout order:** deploy with it off → verify the sending domain (SPF/DKIM) → add internal recipients on `/admin/recipients` → turn it on → provision the `daily-report` cron service (see `docs/runbook.md`).
+- `UNIFLEET_POOL_WAIT_SECONDS` — optional. Bounds how long opening the shared Postgres pool waits for its first connection. Default 5. This is what stops a dead database stalling a request for 30 seconds; raise it only if a slow environment needs it.
 
 ## Gotchas
 
 - `rw.txt` is the Railway config file (not `railway.toml` — renamed in commit `ecdf9ae`)
+- The Dockerfile is two stages on purpose. Poetry installs the locked deps into `/opt/venv` in the builder; the runtime stage copies that venv and has no Poetry. Installing both into one site-packages let `poetry install` downgrade charset-normalizer in place (Poetry pulls 3.5.1, the lock pins 3.4.3), leaving 3.5.1's compiled `cd` extension to win the import over 3.4.3's `cd.py` — `module 'charset_normalizer.md' has no attribute 'CharInfo'`, `import requests` dead, email off, "Recipient management is unavailable". Whether the stale file survived depended on install ordering, so it broke on Railway and not locally.
+- Never put dependency installation back in `rw.txt` (`build.command` / `[nix]`). Nixpacks carries site-packages across builds and only *overlays* the lock, which twice shipped a broken image: a failed `--no-dev` install that kept old deps, then a charset-normalizer downgrade that left the 4.x compiled `cd` extension beside 3.4.3's Python modules (`module 'charset_normalizer.md' has no attribute 'CharInfo'`). Both killed `import requests`, which main.py's guarded import turns into "Recipient management is unavailable".
 - Template `admin_prices.html` must guard against `None` price values (use `is not none` check)
 - `main.py` is the single-file app — no blueprints, no package structure
 - `data/` directory is bind-mounted in dev, Railway Volume at `/data` in prod

@@ -174,3 +174,109 @@ def test_dashboard_fuel_type_shows_real_value_when_present(client, monkeypatch):
     r = client.get("/admin")
     body = r.data.decode("utf-8")
     assert "<td>Premium</td>" in body
+
+
+# ============================================================
+# Deleted-order exclusion (T3, ARCH-delete-order-button)
+# ============================================================
+
+def test_admin_dashboard_excludes_deleted_orders(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub([
+        {"voucher_id": "UF-VISIBLE", "driver_name": "Dave", "station": "Cleanfuel",
+         "status": "Unverified", "fuel_type": "Premium"},
+        {"voucher_id": "UF-DELETED", "driver_name": "Dave", "station": "Cleanfuel",
+         "status": "Unverified", "fuel_type": "Premium", "deleted_at": "2026-09-02T00:00:00"},
+    ]))
+    _login(client)
+    r = client.get("/admin")
+    body = r.data.decode("utf-8")
+    assert "UF-VISIBLE" in body
+    assert "UF-DELETED" not in body
+
+
+# ============================================================
+# Delete Order column (T4, ARCH-delete-order-button)
+# ============================================================
+
+def test_admin_dashboard_backfills_to_50_when_deletions_present(client, monkeypatch):
+    # code-review fix: _exclude_deleted() must not shrink the displayed
+    # count below 50 when deleted rows fall within the fetched window.
+    rows = []
+    for i in range(3):
+        rows.append({"voucher_id": f"UF-DEL-{i}", "driver_name": "Dave",
+                     "station": "Cleanfuel", "status": "Unverified",
+                     "fuel_type": "Premium", "deleted_at": "2026-09-02T00:00:00"})
+    for i in range(52):
+        rows.append({"voucher_id": f"UF-OK-{i}", "driver_name": "Dave",
+                     "station": "Cleanfuel", "status": "Unverified", "fuel_type": "Premium"})
+    monkeypatch.setattr(main, "repo", RepoStub(rows))
+    _login(client)
+
+    r = client.get("/admin")
+    body = r.data.decode("utf-8")
+
+    assert body.count('<a href="/redeem/UF-OK-') == 50
+    assert "UF-DEL-" not in body
+
+
+def test_admin_dashboard_has_delete_order_column(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub([]))
+    _login(client)
+    r = client.get("/admin")
+    assert b"<th>Delete Order</th>" in r.data
+
+
+def test_admin_dashboard_wraps_table_in_scroll_container(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub([]))
+    _login(client)
+    r = client.get("/admin")
+    body = r.data.decode("utf-8")
+    assert '<div class="table-scroll">' in body
+
+
+def test_delete_order_button_active_for_non_redeemed_row(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub([
+        {"voucher_id": "UF-ACTIVE", "driver_name": "Dave", "station": "Cleanfuel",
+         "status": "Unredeemed", "fuel_type": "Premium"},
+    ]))
+    _login(client)
+    r = client.get("/admin")
+    body = r.data.decode("utf-8")
+    assert '/admin/orders/UF-ACTIVE/delete' in body
+    assert 'disabled' not in body.split('/admin/orders/UF-ACTIVE/delete')[1].split('</form>')[0]
+
+
+def test_delete_order_button_disabled_for_redeemed_row(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub([
+        {"voucher_id": "UF-REDEEMED", "driver_name": "Dave", "station": "Cleanfuel",
+         "status": "Redeemed", "fuel_type": "Premium"},
+    ]))
+    _login(client)
+    r = client.get("/admin")
+    body = r.data.decode("utf-8")
+    assert '/admin/orders/UF-REDEEMED/delete' not in body
+    assert 'disabled' in body
+
+
+def test_admin_dashboard_renders_flash_toast_bridge(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub([]))
+    _login(client)
+    r = client.get("/admin")
+    body = r.data.decode("utf-8")
+    assert 'id="flash-data"' in body
+    assert 'id="toast"' in body
+
+
+def test_delete_png_button_unchanged_alongside_delete_order(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub([
+        {"voucher_id": "UF-BOTH", "driver_name": "Dave", "station": "Cleanfuel",
+         "status": "Unredeemed", "fuel_type": "Premium"},
+    ]))
+    _login(client)
+    r = client.get("/admin")
+    body = r.data.decode("utf-8")
+    # PNG files don't exist on disk in this test env, so the row falls back
+    # to the disabled "Deleted" state — confirms delete_png()'s rendering
+    # branch is unaffected by the new Delete Order column alongside it.
+    assert '<th>Delete PNGs</th>' in body
+    assert 'Deleted</button>' in body

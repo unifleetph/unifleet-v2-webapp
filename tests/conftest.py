@@ -20,10 +20,37 @@ to a database that already exists (typically `postgres` or `unifleet`),
 not the test database itself, because we use it to issue CREATE/DROP DATABASE.
 """
 
+import os
 import subprocess
 import sys
 import uuid
 from pathlib import Path
+
+# main.py starts the notifications outbox worker at import time. In a test
+# process that thread is a second, uninvited drainer: several tests
+# monkeypatch notifications.mailer module-wide and point the process-wide
+# pool at the ephemeral test database, at which point the worker happily
+# claims the very rows a test is about to drain. That produced an
+# intermittent failure in the retry-ladder tests.
+#
+# This used to be done by forcing NOTIFICATIONS_ENABLED=false, but that flag
+# now also gates enqueues (ARCH A12), so switching it off would stop the
+# suite writing any notification rows at all. Instead the suite runs at the
+# production default and simply claims the worker slot before main.py can:
+# start_worker() is idempotent, so finding the handle already set makes it a
+# no-op. Tests that exercise start_worker itself reset the handle first.
+os.environ.setdefault("NOTIFICATIONS_ENABLED", "true")
+
+import notifications as _notifications  # noqa: E402
+
+_notifications._worker_thread = "reserved-by-conftest"
+
+# Import main here, while the reservation is guaranteed to be in place. If it
+# were left to whichever test imports main first, a test that had already
+# called _reset_worker_for_tests() would release the slot and main's
+# import-time start_worker() would spawn a real drainer mid-suite — the exact
+# race this file exists to prevent.
+import main as _main  # noqa: E402,F401
 
 import psycopg
 import pytest

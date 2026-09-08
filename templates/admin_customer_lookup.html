@@ -31,6 +31,10 @@
     .customer-detail { background: #f9fafb; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
     .customer-detail dt { font-weight: 600; color: #374151; margin-top: 8px; }
     .customer-detail dd { margin: 0 0 4px; }
+    .email-form { display: inline-flex; gap: 6px; align-items: center; }
+    .email-form input { padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 4px; min-width: 220px; }
+    .email-form button { padding: 4px 10px; border: 1px solid #d1d5db; border-radius: 4px; background: #fff; cursor: pointer; }
+    .email-missing { display: block; margin-top: 4px; color: #b45309; font-size: 0.85em; }
     .muted { color: #6b7280; font-size: 14px; }
     .table-scroll { overflow-x: auto; }
   </style>
@@ -63,7 +67,21 @@
       <dt>Account Code</dt><dd>{{ customer.account_code }}</dd>
       <dt>Contact Name</dt><dd>{{ customer.contact_name }}</dd>
       <dt>Contact Number</dt><dd>{{ customer.contact_number }}</dd>
-      <dt>Email</dt><dd>{{ customer.email }}</dd>
+      <dt>Email</dt>
+      <dd>
+        <form class="email-form" method="POST"
+              action="{{ url_for('admin_customer_email', account_code=customer.account_code) }}">
+          <input type="email" name="email" value="{{ customer.email or '' }}"
+                 placeholder="no email on file" aria-label="Customer email address">
+          <button type="submit">Save</button>
+        </form>
+        {% if not customer.email %}
+          <span class="email-missing">
+            No email on file — booking notifications for this customer are
+            skipped until one is added.
+          </span>
+        {% endif %}
+      </dd>
       <dt>Company Name</dt><dd>{{ customer.company_name }}</dd>
       <dt>Fleet Size</dt><dd>{{ customer.fleet_size }}</dd>
       <dt>Areas</dt><dd>{{ customer.areas }}</dd>

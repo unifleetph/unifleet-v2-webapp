@@ -1,0 +1,138 @@
+<!-- templates/admin_recipients.html -->
+<!-- Internal distribution list for the nightly supplier PDF
+     (T11, ARCH-brief-11-email-notifications). Mirrors
+     admin_stations.html's structure and visual language. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>UniFleet — Admin: Report Recipients</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; background: #f4f4f4; }
+    h1 { margin-bottom: 12px; }
+    h2 { margin-top: 32px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; }
+    th { background: #f9fafb; font-weight: 600; }
+    tr:hover { background: #fcfcfc; }
+    input[type="text"], input[type="email"] { width: 90%; padding: 4px; }
+    .btn { cursor: pointer; padding: 6px 10px; border: 1px solid #e5e7eb; border-radius: 6px; background: #111827; color: white; }
+    .btn-danger { background: #b91c1c; }
+    .row { display: inline-flex; align-items: center; gap: 6px; }
+    .muted { color: #6b7280; font-size: 14px; }
+    .create-form { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; max-width: 480px; }
+    .create-form label { display: block; margin-top: 10px; font-size: 13px; color: #374151; }
+    .back-link { display: inline-block; margin-bottom: 8px; color: #374151; }
+
+    /* Inactive recipients stay visible but grayed, matching the station
+       page's convention — a muted row reads as "still on the list, not
+       currently receiving", which hiding them would not. */
+    tr.inactive-row { opacity: 0.55; background: #f3f4f6; }
+    tr.inactive-row:hover { background: #f3f4f6; }
+    .status-badge { font-size: 12px; padding: 2px 8px; border-radius: 9999px; }
+    .status-active { background: #DCFCE7; color: #166534; }
+    .status-inactive { background: #F3F4F6; color: #6B7280; }
+
+    .flash { padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; max-width: 640px; }
+    .flash-error { background: #FEE2E2; color: #991B1B; }
+    .flash-success { background: #DCFCE7; color: #166534; }
+
+    .empty-state { background: #fff; border: 1px dashed #d1d5db; border-radius: 8px; padding: 20px; color: #6b7280; max-width: 640px; }
+
+    /* The table would otherwise force a horizontal page scroll on a phone. */
+    .table-wrap { overflow-x: auto; }
+    @media (max-width: 600px) {
+      body { margin: 12px; }
+      .create-form { max-width: 100%; }
+      input[type="text"], input[type="email"] { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <a class="back-link" href="{{ url_for('admin') }}">&larr; Back to dashboard</a>
+  <h1>Admin — Report Recipients</h1>
+  <p class="muted">
+    UniFleet staff who receive the supplier sheet by email every night at
+    midnight (Manila time). Changing this list takes effect on the next run —
+    no redeploy needed. Pausing keeps someone on the list without sending to
+    them, which is what you want for a colleague on leave.
+  </p>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="flash flash-{{ 'error' if category == 'error' else 'success' }}">{{ message }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <h2>Add Recipient</h2>
+  <form class="create-form" method="POST" action="{{ url_for('admin_recipients') }}">
+    <label for="new-email">Email address</label>
+    <input id="new-email" type="email" name="email" required placeholder="ops@unifleet.example">
+    <label for="new-label">Label <span class="muted">(optional)</span></label>
+    <input id="new-label" type="text" name="label" placeholder="Ops team">
+    <div class="row" style="margin-top:14px;">
+      <button class="btn" type="submit">Add Recipient</button>
+    </div>
+  </form>
+
+  <h2>Current Recipients</h2>
+  {% if recipients %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th>Label</th>
+            <th>Status</th>
+            <th>Added</th>
+            <th>Nightly report</th>
+            <th>Remove</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in recipients %}
+            <tr class="{{ 'inactive-row' if not r.is_active else '' }}">
+              <td>{{ r.email }}</td>
+              <td>{{ r.label or '—' }}</td>
+              <td>
+                {% if r.is_active %}
+                  <span class="status-badge status-active">Active</span>
+                {% else %}
+                  <span class="status-badge status-inactive">Inactive</span>
+                {% endif %}
+              </td>
+              <td class="muted">{{ r.created_at.strftime('%Y-%m-%d') if r.created_at else '—' }}</td>
+              <td>
+                <form method="POST"
+                      action="{{ url_for('admin_recipient_set_active', recipient_id=r.id) }}">
+                  <input type="hidden" name="active" value="{{ '0' if r.is_active else '1' }}">
+                  <button class="btn" type="submit">{{ 'Pause' if r.is_active else 'Resume' }}</button>
+                </form>
+              </td>
+              <td>
+                <form method="POST"
+                      action="{{ url_for('admin_recipient_delete', recipient_id=r.id) }}"
+                      onsubmit="return confirm('Remove this recipient from the nightly report?');">
+                  <button class="btn btn-danger" type="submit">Remove</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="empty-state">
+      <strong>No recipients yet.</strong>
+      <p style="margin:8px 0 0;">
+        Nobody is receiving the nightly supplier sheet. The job still runs and
+        records that it had no one to send to — add an address above to start
+        delivery from tonight.
+      </p>
+    </div>
+  {% endif %}
+</body>
+</html>

@@ -3,10 +3,15 @@ from flask import (
     url_for, flash, jsonify, make_response, send_from_directory, session
 )
 import os
+import hashlib
 import io
 import fcntl
 import hmac
 import subprocess
+import sys
+import threading
+import time
+from urllib.parse import urlparse
 import pandas as pd
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -27,8 +32,69 @@ except Exception as _e:
     build_supplier_pdf = None
     _PDF_IMPORT_ERROR = str(_e)
 
+# Email notifications (ARCH-brief-11-email-notifications). Guarded like the
+# PDF builder above: notifications is a side-effect module, and the app must
+# boot and serve even if it cannot be imported.
+try:
+    import notifications
+    import report_recipients
+    _NOTIFICATIONS_IMPORT_ERROR = None
+except Exception as _e:
+    notifications = None
+    report_recipients = None
+    _NOTIFICATIONS_IMPORT_ERROR = str(_e)
+    # Loud, at startup, with a traceback. The guarded import is right — a mail
+    # problem must not stop the app booting — but staying silent about it was
+    # not: this surfaced only as "Recipient management is unavailable" on one
+    # admin page, with the actual cause (a missing dependency in the deployed
+    # image) recorded in a variable nothing ever printed.
+    import traceback as _traceback
+    print("=" * 72, file=sys.stderr)
+    print(f"⚠️  EMAIL NOTIFICATIONS DISABLED: {_e}", file=sys.stderr)
+    print("   All outbound email is off. Admin recipient management will "
+          "report itself unavailable.", file=sys.stderr)
+    _traceback.print_exc()
+    print("=" * 72, file=sys.stderr)
+
+# Start the outbox drainer. start_worker() swallows its own failures and is
+# idempotent, and it no-ops when NOTIFICATIONS_ENABLED is off or the mailer
+# is unconfigured — so this line cannot stop the app from booting, which is
+# the only thing that matters at import time.
+def _build_daily_report_pdf(manila_date: str):
+    """Rebuild the nightly supplier sheet at send time.
+
+    The cron enqueues only a reference; the bytes are produced here, in the
+    web process, because the cron runs as its own Railway service and a Volume
+    mounts to exactly one service — a file the cron wrote would not be
+    readable by the worker that sends the mail (review finding B5).
+
+    Registered rather than imported by notifications.py, which may not depend
+    on the repo or the PDF builder (ARCH A15).
+    """
+    if build_supplier_pdf is None:
+        raise RuntimeError(f"PDF builder unavailable: {_PDF_IMPORT_ERROR}")
+
+    stations = price_store.list_stations("Biodiesel")
+    vouchers = [
+        v for v in _exclude_deleted(repo.list_all_vouchers())
+        if str(v.get("status") or "").strip() == "Unredeemed"
+    ]
+    pdf_bytes = build_supplier_pdf(
+        vouchers=vouchers,
+        target_station_ids=set(s.get("id") for s in stations if s.get("id")),
+        stations=stations,
+        logo_path=data_paths.STATIC_LOGO_PATH,
+    )
+    return (f"UniFleet_Supplier_Sheet_{manila_date}.pdf", pdf_bytes, "application/pdf")
+
+
+if notifications is not None:
+    notifications.register_attachment_resolver("daily_pdf", _build_daily_report_pdf)
+    notifications.start_worker()
+
 # NEW: discounts storage
 from discount_store import DiscountStore, DiscountValueError
+from margin_store import MarginStore, MarginValueError
 
 # Customer lookup: fuzzy name search (T3, ARCH-customer-details-page)
 from rapidfuzz import process, fuzz
@@ -108,6 +174,21 @@ def manila_time_filter(value):
 # Session secret: required for signed session cookies (admin login) and
 # flash messages. Set SECRET_KEY in prod; random per-process fallback for dev.
 app.secret_key = os.environ.get("SECRET_KEY") or os.urandom(32)
+
+# F19 (review): the app has no CSRF tokens anywhere, and the new admin routes
+# widen what a cross-site POST can do — repointing a customer's email and then
+# resending their voucher PNG to it. Full CSRF protection is a separate piece
+# of work across every existing form; SameSite=Strict is the cheap half that
+# stops a third-party page's POST carrying the admin session at all.
+# Direct assignment, not setdefault: Flask already defines these keys with a
+# None default, so setdefault would leave them unset.
+app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+
+# F20 (review): /register is unauthenticated and now sends mail on every
+# successful POST, so an unbounded body is both a memory and a validation
+# concern. 256 KB is far more than any form here submits.
+app.config["MAX_CONTENT_LENGTH"] = 256 * 1024
 
 SUPPLIER_API_TOKEN = os.environ.get("SUPPLIER_API_TOKEN", "unifleet2025mvp")  # Default token
 # No weak default: key auth is disabled unless ADMIN_KEY is set in the env.
@@ -228,6 +309,12 @@ def home():
 def serve_qr_asset(filename):
     return send_from_directory(str(data_paths.QR_DIR), filename)
 
+def _exclude_deleted(vouchers):
+    """Filter out soft-deleted orders (deleted_at set) from a list of voucher
+    rows. Shared across every customer/supplier/admin-facing read path so the
+    exclusion rule lives in one place (REQ-delete-order-button, R8)."""
+    return [v for v in vouchers if not v.get("deleted_at")]
+
 @app.route('/admin')
 def admin():
     # Admin dashboard — gated by session login or legacy ?key= fallback.
@@ -235,15 +322,50 @@ def admin():
         return redirect(url_for('admin_login', next=request.path))
     # existing voucher table data
     try:
-        vouchers = repo.list_recent_vouchers(limit=50)
+        # Over-fetch before filtering so soft-deleted rows don't shrink the
+        # displayed count below 50 (code review finding: filtering after an
+        # already-LIMIT-ed query can't backfill from the next-most-recent
+        # undeleted rows). 200 is a generous cushion against a heavy-deletion
+        # day without querying the whole table.
+        vouchers = _exclude_deleted(repo.list_recent_vouchers(limit=200))[:50]
         for row in vouchers:
             vid = str(row.get("voucher_id", "")).strip()
             png_1 = data_paths.qr_png_path(vid).exists()
             png_2 = data_paths.official_qr_png_path(vid).exists()
             row['png_exists'] = png_1 and png_2
+
+        # R7: surface failed and skipped notifications where admins already
+        # work. One bulk query for the whole page — this loop already does
+        # two filesystem checks per row, and a query per row on top of that
+        # would be the wrong direction. Wrapped separately from the voucher
+        # load so an unavailable outbox costs the flags, not the dashboard.
+        try:
+            if notifications is not None:
+                flags = notifications.flags_by_voucher(
+                    [str(r.get("voucher_id", "")).strip() for r in vouchers]
+                )
+                for row in vouchers:
+                    row['notification_flag'] = flags.get(
+                        str(row.get("voucher_id", "")).strip()
+                    )
+        except Exception as e:
+            print(f"⚠️ Error loading notification flags: {e}")
+
     except Exception as e:
         print(f"⚠️ Error loading vouchers: {e}")
         vouchers = []
+
+    # Notifications that are not tied to a voucher — the account-code email
+    # above all — have no row in the table above, so a failed registration
+    # email was invisible in every admin surface (review finding F7). This is
+    # the list ARCH specified for exactly that, and it also carries the
+    # attachment-missing cases the per-row badge cannot show.
+    flagged_notifications = []
+    try:
+        if notifications is not None:
+            flagged_notifications = notifications.list_flagged(limit=50)
+    except Exception as e:
+        print(f"⚠️ Error loading flagged notifications: {e}")
 
     # NEW: supply station options + persisted selections for the PDF filter UI
     # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T3/T4/T6 wire up
@@ -263,6 +385,7 @@ def admin():
         ops_token=OPS_TOKEN,
         station_options=stations,
         selected_station_ids=selected_station_ids,
+        flagged_notifications=flagged_notifications,
     )
 
 # =========================
@@ -347,7 +470,7 @@ def admin_customers():
             )
 
     bookings = [
-        v for v in repo.list_all_vouchers()
+        v for v in _exclude_deleted(repo.list_all_vouchers())
         if _normalize_account_code(v) == _normalize_account_code(customer)
     ]
     return render_template(
@@ -358,6 +481,199 @@ def admin_customers():
         bookings=bookings,
         all_customers=all_customers,
     )
+
+@app.route('/admin/recipients', methods=['GET', 'POST'])
+def admin_recipients():
+    """Manage who receives the nightly supplier PDF (R14)."""
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    if report_recipients is None:
+        # Say what is actually wrong. "Unavailable" alone sent someone
+        # hunting through a deployment for a missing dependency.
+        flash(
+            "Recipient management is unavailable: the notifications module "
+            f"failed to load ({_NOTIFICATIONS_IMPORT_ERROR}). Outbound email "
+            "is disabled until this is fixed — check the deploy logs.",
+            "error",
+        )
+        return redirect(url_for('admin'))
+
+    if request.method == 'POST':
+        email = (request.form.get('email') or '').strip()
+        label = (request.form.get('label') or '').strip()
+
+        if not _is_valid_email(email):
+            flash("Please enter a valid Email Address.", "error")
+            return redirect(url_for('admin_recipients'))
+
+        if report_recipients.add(email, label=label) is None:
+            flash(f"{email} is already on the list.", "error")
+            return redirect(url_for('admin_recipients'))
+
+        append_audit("recipient_add", None, note=email)
+        flash(f"Added {email}.", "success")
+        return redirect(url_for('admin_recipients'))
+
+    return render_template(
+        'admin_recipients.html',
+        recipients=report_recipients.list_all(include_inactive=True),
+    )
+
+
+@app.route('/admin/recipients/<int:recipient_id>/active', methods=['POST'])
+def admin_recipient_set_active(recipient_id):
+    """Pause or resume one internal recipient.
+
+    report_recipients.set_active existed and was tested but had no route, so
+    the page rendered an active/inactive state nothing could produce
+    (review finding F29). Pausing is the useful action for someone on leave:
+    it stops the nightly report without losing the record of who is on the
+    list.
+    """
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    if report_recipients is None:
+        # Say what is actually wrong. "Unavailable" alone sent someone
+        # hunting through a deployment for a missing dependency.
+        flash(
+            "Recipient management is unavailable: the notifications module "
+            f"failed to load ({_NOTIFICATIONS_IMPORT_ERROR}). Outbound email "
+            "is disabled until this is fixed — check the deploy logs.",
+            "error",
+        )
+        return redirect(url_for('admin'))
+
+    active = (request.form.get('active') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+    if not report_recipients.set_active(recipient_id, active):
+        flash("Recipient not found.", "error")
+        return redirect(url_for('admin_recipients'))
+
+    append_audit(
+        "recipient_set_active", None,
+        note=f"recipient_id={recipient_id} active={active}",
+    )
+    flash("Recipient resumed." if active else "Recipient paused.", "success")
+    return redirect(url_for('admin_recipients'))
+
+
+@app.route('/admin/recipients/<int:recipient_id>/delete', methods=['POST'])
+def admin_recipient_delete(recipient_id):
+    """Remove one internal recipient (R14)."""
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    if report_recipients is None or not report_recipients.delete(recipient_id):
+        flash("Recipient not found.", "error")
+        return redirect(url_for('admin_recipients'))
+
+    append_audit("recipient_delete", None, note=f"recipient_id={recipient_id}")
+    flash("Recipient removed.", "success")
+    return redirect(url_for('admin_recipients'))
+
+
+@app.route('/admin/notifications/<int:notification_id>/resend', methods=['POST'])
+def admin_notification_resend(notification_id):
+    """Requeue one flagged notification (R8).
+
+    Requeues rather than sends: delivery stays on the worker thread, so the
+    admin gets an immediate redirect instead of waiting on the provider.
+    """
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    if notifications is None:
+        flash("Notifications are unavailable.", "error")
+        return redirect(_back_to('admin'))
+
+    recipient = (request.form.get('recipient') or '').strip()
+    if recipient and not _is_valid_email(recipient):
+        flash("Please enter a valid Email Address.", "error")
+        return redirect(_back_to('admin'))
+
+    row = notifications.get(notification_id)
+    if row is None:
+        flash("Notification not found.", "error")
+        return redirect(_back_to('admin'))
+
+    # A skipped row has no recipient — it was recorded precisely because the
+    # customer had no address on file. If an admin has since added one, this
+    # is where it gets picked up; without it, Resend requeues a row the worker
+    # can only fail to send (review finding B1). notifications.py cannot do
+    # this lookup itself: it must not import the repo (ARCH A15).
+    if not recipient and not (row.get('recipient') or '').strip():
+        account_code = (row.get('account_code') or '').strip()
+        if account_code:
+            try:
+                customer = repo.get_customer(account_code) or {}
+                recipient = str(customer.get('email') or '').strip()
+            except Exception as e:
+                print(f"⚠️ could not resolve recipient for {account_code}: {e}")
+
+        if not recipient:
+            flash(
+                "That customer still has no email address on file. "
+                "Add one on their customer page, then resend.",
+                "error",
+            )
+            return redirect(_back_to('admin'))
+
+    if not notifications.requeue(notification_id, recipient=recipient or None):
+        flash("Could not requeue that notification.", "error")
+        return redirect(_back_to('admin'))
+
+    append_audit("notification_resend", None, note=f"notification_id={notification_id}")
+    flash("Notification queued for resending.", "success")
+    return redirect(_back_to('admin'))
+
+
+@app.route('/admin/customers/<account_code>/email', methods=['POST'])
+def admin_customer_email(account_code):
+    """Set or correct a customer's email (R9).
+
+    The recovery path for customers who registered before email was
+    required: fill the address in here, then hit Resend on their flagged
+    bookings. Validation matches /register's — format only.
+    """
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    email = (request.form.get('email') or '').strip()
+    back = _back_to('admin_customers', q=account_code)
+
+    if not _is_valid_email(email):
+        flash("Please enter a valid Email Address.", "error")
+        return redirect(back)
+
+    try:
+        updated = repo.update_customer_email(account_code, email)
+    except AttributeError as e:
+        # DBRepo (the legacy SQLite backend) implements no customer methods at
+        # all, so this is a permanent condition, not a transient one. Telling
+        # the admin to "try again" would have them retrying forever
+        # (review finding F31).
+        print(f"⚠️ update_customer_email unsupported on this backend: {e}")
+        flash(
+            "This deployment's storage backend does not support editing "
+            "customer emails.",
+            "error",
+        )
+        return redirect(back)
+    except Exception as e:
+        print(f"⚠️ update_customer_email failed for {account_code}: {e}")
+        flash("Could not update the email address. Please try again.", "error")
+        return redirect(back)
+
+    if not updated:
+        flash(f"No customer found with account code {account_code}.", "error")
+        return redirect(back)
+
+    append_audit("customer_email_update", None, note=f"{account_code} -> {email}")
+    flash(f"Email updated for {account_code}.", "success")
+    return redirect(back)
+
 
 @app.route('/admin/customers/export_all')
 def admin_customers_export_all():
@@ -416,7 +732,7 @@ def admin_customer_export():
         abort(404)
 
     bookings = [
-        v for v in repo.list_all_vouchers()
+        v for v in _exclude_deleted(repo.list_all_vouchers())
         if _normalize_account_code(v) == _normalize_account_code(customer)
     ]
     bookings = _with_customer_contact_columns(bookings)
@@ -429,7 +745,7 @@ def admin_bookings_export():
     if not require_admin(request):
         return redirect(url_for('admin_login', next=request.path))
 
-    bookings = _with_customer_contact_columns(repo.list_all_vouchers())
+    bookings = _with_customer_contact_columns(_exclude_deleted(repo.list_all_vouchers()))
     export_path = str(data_paths.EXPORTS_DIR / "all_customers_bookings.csv")
     pd.DataFrame(bookings, columns=_EXPORT_COLUMNS).to_csv(export_path, index=False, encoding='utf-8-sig')
     return send_file(export_path, as_attachment=True)
@@ -446,28 +762,56 @@ def upload_csv():
         print(result.stderr)
     return redirect(url_for('admin'))
 
+def _delete_voucher_pngs(voucher_id):
+    """Remove both QR PNGs for a voucher, if present. Shared by delete_png()
+    and admin_orders_delete() so the cleanup logic can't diverge."""
+    for path in [str(data_paths.qr_png_path(voucher_id)), str(data_paths.official_qr_png_path(voucher_id))]:
+        if os.path.exists(path):
+            os.remove(path)
+
 @app.route('/delete_png/<voucher_id>', methods=['POST'])
 def delete_png(voucher_id):
     try:
-        for path in [str(data_paths.qr_png_path(voucher_id)), str(data_paths.official_qr_png_path(voucher_id))]:
-            if os.path.exists(path):
-                os.remove(path)
+        _delete_voucher_pngs(voucher_id)
         return redirect(url_for('admin'))
     except Exception as e:
         print(f"❌ Error deleting PNGs for {voucher_id}: {e}")
         return f"<h2>Error deleting PNGs for {voucher_id}: {str(e)}</h2>", 500
 
+@app.route('/admin/orders/<voucher_id>/delete', methods=['POST'])
+def admin_orders_delete(voucher_id):
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    row = repo.get_voucher(voucher_id)
+    if row is None:
+        flash(f"Order “{voucher_id}” was not found (already deleted?).", "error")
+        return redirect(url_for('admin'))
+
+    status = (row.get("status") or "").strip()
+    if status == "Redeemed":
+        flash(f"Cannot delete order “{voucher_id}”: it has already been redeemed.", "error")
+        return redirect(url_for('admin'))
+
+    now = datetime.utcnow().isoformat(timespec='seconds')
+    repo.update_voucher_fields(voucher_id, {"deleted_at": now})
+    _delete_voucher_pngs(voucher_id)
+    append_audit("delete_order", voucher_id, from_status=status, to_status="Deleted")
+    flash(f"Deleted order “{voucher_id}”.", "success")
+
+    return redirect(url_for('admin'))
+
 @app.route('/redeem/<voucher_id>', methods=['GET'])
 def redeem_page(voucher_id):
     row = repo.get_voucher(voucher_id)
-    if not row:
+    if not row or row.get('deleted_at'):
         return f"<h2>Voucher ID '{voucher_id}' not found.</h2>", 404
     return render_template('redeem.html', voucher=row)
 
 @app.route('/redeem/<voucher_id>', methods=['POST'])
 def mark_redeemed(voucher_id):
     row = repo.get_voucher(voucher_id)
-    if not row:
+    if not row or row.get('deleted_at'):
         return f"<h2>Voucher ID '{voucher_id}' not found.</h2>", 404
     current_status = str(row.get('status', '')).strip()
     allowed = (current_status in ('', 'Unverified', 'Unredeemed'))
@@ -481,6 +825,82 @@ def mark_redeemed(voucher_id):
     append_audit("redeem_success", voucher_id, current_status, "Redeemed", f"enforce_phases={int(ENFORCE_PHASES)}")
     return redirect(f"/redeem/{voucher_id}")
 
+def _voucher_fingerprint(row) -> str:
+    """A digest of everything the customer's copy of the voucher depends on.
+
+    Amount, total and station cover the numbers; the PNG's bytes cover the
+    image itself, so a voucher regenerated with identical figures still counts
+    as changed and still reaches the customer (ARCH A8).
+
+    The digest goes into the confirmed email's dedupe key, which means R10
+    needs no separate comparison logic: an unchanged re-approval produces the
+    same key and collides, a changed one produces a new key and sends.
+    """
+    voucher_id = str((row or {}).get("voucher_id") or "").strip()
+    parts = [
+        voucher_id,
+        str((row or {}).get("requested_amount_php") or ""),
+        str((row or {}).get("requested_total_php") or ""),
+        str((row or {}).get("station") or ""),
+    ]
+
+    digest = hashlib.sha256("|".join(parts).encode("utf-8"))
+    try:
+        digest.update(data_paths.official_qr_png_path(voucher_id).read_bytes())
+    except OSError:
+        # No PNG to fingerprint. The email still goes out — the worker
+        # records attachment_missing and the admin follows up manually (A6).
+        digest.update(b"<no-png>")
+
+    return digest.hexdigest()[:32]
+
+
+def _queue_booking_confirmed(row):
+    """Queue the approval email with the voucher attached.
+
+    Runs only after set_status('Unredeemed') has committed, and never raises:
+    an approved voucher is valid whether or not the email left (A6, R7).
+    """
+    if notifications is None:
+        return
+
+    voucher_id = str((row or {}).get("voucher_id") or "").strip()
+    account_code = str((row or {}).get("account_code") or "").strip()
+    try:
+        customer = repo.get_customer(account_code) or {} if account_code else {}
+        recipient = str(customer.get("email") or "").strip()
+
+        if not recipient:
+            notifications.enqueue_skipped(
+                "booking_confirmed",
+                account_code=account_code or None,
+                voucher_id=voucher_id or None,
+                reason="customer has no email on file",
+            )
+            return
+
+        # Computed once: each call re-reads and re-hashes the voucher PNG, and
+        # if the image changed between two calls the dedupe key and the stored
+        # fingerprint would disagree — and that column is what R10's
+        # change-detection reads (review finding F17).
+        fingerprint = _voucher_fingerprint(row)
+
+        subject, body = notifications.render_booking_confirmed()
+        notifications.enqueue(
+            "booking_confirmed",
+            recipient=recipient,
+            subject=subject,
+            body=body,
+            dedupe_key=notifications.dedupe_booking_confirmed(voucher_id, fingerprint),
+            account_code=account_code or None,
+            voucher_id=voucher_id or None,
+            attachment_ref=f"voucher_png:{voucher_id}",
+            fingerprint=fingerprint,
+        )
+    except Exception as e:
+        print(f"⚠️ booking-confirmed email not queued for {voucher_id}: {e}")
+
+
 @app.route('/ops/voucher/<voucher_id>/status/<new_status>', methods=['GET'])
 def ops_set_status(voucher_id, new_status):
     if OPS_TOKEN and request.args.get("token", "") != OPS_TOKEN:
@@ -489,7 +909,7 @@ def ops_set_status(voucher_id, new_status):
     if new_status not in allowed_targets:
         return f"<h2>Invalid status '{new_status}'.</h2>", 400
     row = repo.get_voucher(voucher_id)
-    if not row:
+    if not row or row.get('deleted_at'):
         return f"<h2>Voucher ID '{voucher_id}' not found.</h2>", 404
     prev = str(row.get('status','')).strip()
 
@@ -546,10 +966,16 @@ def ops_set_status(voucher_id, new_status):
         if dpl < 0:
             dpl = 0.0
         if dpl == 0.0:
+            # Live fallback for a missing/never-captured snapshot — margin
+            # must still apply here (REQ-profit-margin), the same as the
+            # booking-time snapshot capture, or a booking approved via
+            # this path would leak the raw supplier discount.
             try:
-                dpl_live = discount_store.get(station_name, "Biodiesel")  # TEMP (T2 bridge, F3.1)
-                if dpl_live is not None:
-                    dpl = float(dpl_live)
+                dpl_live_entry = discount_store.get_with_exempt(station_name, "Biodiesel")  # TEMP (T2 bridge, F3.1)
+                if dpl_live_entry is not None:
+                    dpl = MarginStore.apply(
+                        float(dpl_live_entry["value"]), margin_store.get(), dpl_live_entry["margin_exempt"]
+                    )
             except Exception:
                 pass
             if not disc_captured_at:
@@ -605,6 +1031,12 @@ def ops_set_status(voucher_id, new_status):
         # finally flip status to Unredeemed
         repo.set_status(voucher_id, 'Unredeemed', "")
 
+        # R4: the confirmation email with the voucher attached. Strictly
+        # after the status flip — the existing 500-on-asset-failure abort
+        # above means an approved voucher always has its assets, and a mail
+        # failure must never undo an approval (ARCH A6).
+        _queue_booking_confirmed(repo.get_voucher(voucher_id) or fresh)
+
     else:
         repo.set_status(voucher_id, new_status, "")
 
@@ -648,6 +1080,56 @@ def _append_customer_csv_if_absent(new_row):
         finally:
             fcntl.flock(lockfile.fileno(), fcntl.LOCK_UN)
 
+# F20 (review): /register is unauthenticated, and every successful POST now
+# sends mail. dedupe_account_code keys on the freshly generated account code,
+# so resubmitting the same victim address produces a new code and a new send
+# each time — the outbox's idempotency does not apply. A trivial script turns
+# our Resend account into the delivery mechanism for an email flood, which
+# gets a sending domain suspended rather than merely rate-limited.
+#
+# Deliberately simple: an in-process counter, which is coherent because the
+# app runs a single gunicorn worker. It is a speed bump against scripted
+# abuse, not a defence against a distributed one; a real limiter belongs at
+# the edge.
+REGISTER_MAX_PER_WINDOW = 5
+REGISTER_WINDOW_SECONDS = 600
+
+_register_attempts = {}
+_register_attempts_lock = threading.Lock()
+
+
+def _register_rate_limited(client_ip: str) -> bool:
+    """True if this address has registered too often lately."""
+    if not client_ip:
+        return False
+
+    now = time.monotonic()
+    cutoff = now - REGISTER_WINDOW_SECONDS
+    with _register_attempts_lock:
+        # Prune whole entries so the dict cannot grow without bound.
+        for ip in [ip for ip, hits in _register_attempts.items()
+                   if not hits or hits[-1] < cutoff]:
+            del _register_attempts[ip]
+
+        hits = [t for t in _register_attempts.get(client_ip, []) if t >= cutoff]
+        if len(hits) >= REGISTER_MAX_PER_WINDOW:
+            _register_attempts[client_ip] = hits
+            return True
+
+        hits.append(now)
+        _register_attempts[client_ip] = hits
+        return False
+
+
+def _client_ip() -> str:
+    forwarded = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    return forwarded or (request.remote_addr or "")
+
+
+# Single definition, shared with report_recipients (review finding F28).
+from email_validation import is_valid_email as _is_valid_email  # noqa: E402
+
+
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
@@ -655,9 +1137,27 @@ def register():
         # Validation only — the stripped digit count is checked, but the
         # stored value is NOT rewritten (ARCH A3: this field predates the
         # REQ and has existing consumers).
+        if _register_rate_limited(_client_ip()):
+            flash(
+                "Too many registration attempts from this connection. "
+                "Please try again in a few minutes.",
+                "error",
+            )
+            return render_template('register.html', form_values=request.form)
+
         contact_number_digits = re.sub(r'\D', '', request.form.get('contact_number') or '')
         if len(contact_number_digits) < 10:
             flash("Please enter a valid Contact Number (at least 10 digits).", "error")
+            return render_template('register.html', form_values=request.form)
+
+        # R2 (ARCH-brief-11-email-notifications): every customer created from
+        # here on must be reachable — the account code, the booking
+        # acknowledgement and the voucher all arrive by email. Format only;
+        # deliverability is not our business at submit time. The column stays
+        # nullable so pre-existing blank rows remain valid (ARCH A14).
+        email = (request.form.get('email') or '').strip()
+        if not _is_valid_email(email):
+            flash("Please enter a valid Email Address.", "error")
             return render_template('register.html', form_values=request.form)
 
         company_name = request.form.get('company_name', '').strip()
@@ -709,6 +1209,12 @@ def register():
 
         new_row['account_code'] = account_code
         _append_customer_csv_if_absent(new_row)
+
+        # R1: queued only now, after both the repo write and the CSV append —
+        # a customer must never receive a code for an account that failed to
+        # save.
+        _queue_account_code(account_code, new_row['email'])
+
         return redirect(f"/register/success?account_code={account_code}")
 
     return render_template('register.html')
@@ -728,6 +1234,34 @@ def terms():
 def _safe_next(target):
     """Only allow same-site relative redirects (guards open-redirect)."""
     return bool(target) and target.startswith('/') and not target.startswith('//')
+
+
+def _back_to(default_endpoint, **values):
+    """Where an admin action should return to.
+
+    Referer is attacker-controlled, so a cross-site POST could otherwise bounce
+    an authenticated admin to any external page — a workable phishing step
+    ("your session expired, log in again"). The new admin routes used it raw
+    (review finding F18).
+
+    _safe_next() alone is not enough here: it only accepts relative paths,
+    which is right for a `next` query parameter but wrong for Referer, which
+    browsers always send absolute. Using it unmodified would reject every
+    referrer and silently drop admins back on the dashboard instead of the
+    page they were working on. So same-origin absolute URLs are accepted, and
+    only their path is used.
+    """
+    referrer = request.referrer or ""
+    if _safe_next(referrer):
+        return referrer
+
+    if referrer:
+        parsed = urlparse(referrer)
+        if parsed.netloc and parsed.netloc == request.host:
+            path = parsed.path or "/"
+            return f"{path}?{parsed.query}" if parsed.query else path
+
+    return url_for(default_endpoint, **values)
 
 @app.route('/admin/login', methods=['GET', 'POST'])
 def admin_login():
@@ -797,6 +1331,86 @@ def _validate_mobile_digits(raw_value):
     return digits, None
 
 
+def _margin_adjusted_discounts(fuel_type):
+    """Customer-facing discounts for `fuel_type`: raw discount_store
+    values run through the global margin, except for margin_exempt
+    (grandfathered) rows, which pass through unchanged (REQ-profit-margin
+    R4/R5/R6). Same {name: value} shape as discount_store.get_all(), so
+    callers built for that shape don't need to change."""
+    margin_pct = margin_store.get()
+    raw = discount_store.get_all_with_exempt(fuel_type) or {}
+    return {
+        name: MarginStore.apply(info["value"], margin_pct, info["margin_exempt"])
+        for name, info in raw.items()
+    }
+
+
+def _queue_account_code(account_code, email):
+    """Queue the registration email.
+
+    Extracted to sit beside its two siblings, and guarded the same way: the
+    inline version was the only enqueue call site without an
+    `if notifications is None` check, so a failed import printed a misleading
+    "email not queued" warning on every single registration rather than being
+    a silent no-op (review finding F30).
+    """
+    if notifications is None:
+        return
+
+    try:
+        subject, body = notifications.render_account_code(account_code)
+        notifications.enqueue(
+            "account_code",
+            recipient=email,
+            subject=subject,
+            body=body,
+            dedupe_key=notifications.dedupe_account_code(account_code),
+            account_code=account_code,
+        )
+    except Exception as e:
+        print(f"⚠️ account-code email not queued for {account_code}: {e}")
+
+
+def _queue_booking_received(created, account_code):
+    """Queue the booking acknowledgement, or record why we could not.
+
+    Never raises: this runs immediately after a successful booking, and no
+    mail problem may turn a saved booking into an error page (R7).
+    """
+    if notifications is None:
+        return
+
+    voucher_id = str(created.get("voucher_id") or "").strip()
+    try:
+        customer = repo.get_customer(account_code) or {}
+        recipient = str(customer.get("email") or "").strip()
+
+        if not recipient:
+            # Either the account code matches no customer, or it matches a
+            # legacy row with no address. Both are the same outcome for the
+            # customer and the same flag for the admin (R6).
+            notifications.enqueue_skipped(
+                "booking_received",
+                account_code=account_code,
+                voucher_id=voucher_id or None,
+                reason="customer has no email on file",
+            )
+            return
+
+        subject, body = notifications.render_booking_received()
+        notifications.enqueue(
+            "booking_received",
+            recipient=recipient,
+            subject=subject,
+            body=body,
+            dedupe_key=notifications.dedupe_booking_received(voucher_id),
+            account_code=account_code,
+            voucher_id=voucher_id or None,
+        )
+    except Exception as e:
+        print(f"⚠️ booking-received email not queued for {voucher_id}: {e}")
+
+
 @app.route('/book', methods=['GET', 'POST'])
 def book():
     customers_path = str(data_paths.CUSTOMERS_CSV)
@@ -816,7 +1430,7 @@ def book():
         )
 
         # Build read-only station table with discounts
-        discounts = discount_store.get_all("Biodiesel") or {}  # TEMP (T2 bridge, F3.1)
+        discounts = _margin_adjusted_discounts("Biodiesel")  # TEMP (T2 bridge, F3.1)
 
         import re as _re
         def _norm_dashes(s: str) -> str:
@@ -896,7 +1510,7 @@ def book():
     for _ft in FUEL_TYPES:
         try:
             ft_stations = price_store.list_stations(_ft)
-            ft_discounts = discount_store.get_all(_ft) or {}
+            ft_discounts = _margin_adjusted_discounts(_ft)
             station_table_by_fuel[_ft] = [
                 {
                     "id": s.get("id"),
@@ -1131,19 +1745,27 @@ def book():
             )
 
         # 2) live discount snapshot (from discount_store) — absence here
-        # just means ₱0 discount, never blocks the booking (R10).
+        # just means ₱0 discount, never blocks the booking (R10). The
+        # margin % live right now is captured too (REQ-profit-margin
+        # R7/R8): this single POST is both "checkout-start" and "confirm"
+        # (no separate cart step), so this is the one moment margin is
+        # ever read for this booking — never re-derived afterward.
         dpl_snapshot = 0.0
         dpl_captured_at = int(datetime.utcnow().timestamp())
+        margin_pct_at_booking = 0.0
         try:
-            val = discount_store.get(station_name, fuel_type)
-            if val is None:
-                all_discounts = discount_store.get_all(fuel_type) or {}
+            margin_pct_at_booking = margin_store.get()
+            entry = discount_store.get_with_exempt(station_name, fuel_type)
+            if entry is None:
+                all_discounts = discount_store.get_all_with_exempt(fuel_type) or {}
                 for k, v in all_discounts.items():
                     if _norm_dashes(k) == target_norm or _slug(k) == target_slug:
-                        val = v
+                        entry = v
                         break
-            if val is not None:
-                dpl_snapshot = float(val)
+            if entry is not None:
+                dpl_snapshot = MarginStore.apply(
+                    float(entry["value"]), margin_pct_at_booking, entry["margin_exempt"]
+                )
         except Exception as _e:
             print("⚠️ discount snapshot error:", _e)
 
@@ -1193,6 +1815,7 @@ def book():
             'price_snapshot_updated_at': price_snapshot_updated_at,
             'discount_snapshot_php_per_liter': dpl_snapshot,
             'discount_snapshot_captured_at': dpl_captured_at,
+            'margin_pct_at_booking': margin_pct_at_booking,
 
             'status': 'Unverified',
             'created_at': datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1200,11 +1823,26 @@ def book():
         }
 
         # save booking
+        # `created` is initialised here so a failed write leaves it None
+        # rather than unbound: the swallow below is deliberate existing
+        # behaviour (a Postgres blip must not cost a booking), and the
+        # notification decision downstream needs to distinguish "saved" from
+        # "swallowed" without widening that try block.
+        created = None
         try:
             created = repo.create_unverified_booking(row)
             print("[BOOK] created voucher:", created.get("voucher_id"))
         except Exception as e:
             print("⚠️ Failed to create Unverified booking:", e)
+
+        # R3/R5/R6 (ARCH-brief-11-email-notifications): acknowledge the
+        # request by email. The booking form collects an account code, not an
+        # address, so the recipient comes from the customer record — the
+        # single source of truth. No email on file (a legacy customer) or no
+        # matching customer means no send and a flag for the admin, never a
+        # failed booking.
+        if created is not None:
+            _queue_booking_received(created, account_code)
 
         preset_path = str(data_paths.preset_csv_path(account_code))
         existing = pd.read_csv(preset_path, encoding='utf-8-sig', dtype={'mobile_number': str}) if os.path.isfile(preset_path) else pd.DataFrame()
@@ -1342,7 +1980,7 @@ def export_supplier_csv():
       Driver, Plate, Status, Refuel Date
     """
     try:
-        rows = repo.list_all_vouchers()
+        rows = _exclude_deleted(repo.list_all_vouchers())
         if not rows:
             return "<h2>No vouchers to export.</h2>", 200
 
@@ -1419,6 +2057,7 @@ def export_supplier_csv():
 # Admin: Live Prices (pre-DB)
 # =========================
 discount_store = DiscountStore()
+margin_store = MarginStore()
 
 @app.route("/admin/prices")
 def admin_prices():
@@ -1469,7 +2108,10 @@ def admin_prices():
             ft_info["price_updated_readable"] = _readable(ft_info["price_updated_at"])
             ft_info["discount_updated_readable"] = _readable(ft_info["discount_updated_at"])
 
-    return render_template("admin_prices.html", stations=stations, fuel_types=FUEL_TYPES)
+    return render_template(
+        "admin_prices.html", stations=stations, fuel_types=FUEL_TYPES,
+        margin_pct=margin_store.get()
+    )
 
 def _admin_stations_back():
     key = request.args.get("key", "").strip()
@@ -1592,6 +2234,20 @@ def admin_stations_delete(station_id):
 
     flash(f"Deleted station “{station_id}”.", "success")
     return _admin_stations_back()
+
+@app.route("/admin/margin/update", methods=["POST"])
+def admin_margin_update():
+    if not require_admin(request):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    try:
+        payload = request.get_json(force=True) or {}
+        new_margin = payload.get("margin_pct")
+        margin_store.set(new_margin, actor="admin", reason="manual update")
+        return jsonify({"ok": True, "margin_pct": float(new_margin)})
+    except MarginValueError as e:
+        return jsonify({"ok": False, "error": str(e), "field": "margin_pct"}), 400
+    except Exception:
+        return jsonify({"ok": False, "error": "server_error"}), 500
 
 @app.route("/admin/prices/update", methods=["POST"])
 def admin_prices_update():
@@ -1768,8 +2424,10 @@ def admin_discounts_update():
 
 @app.route("/api/v1/discounts", methods=["GET"])
 def api_discounts_list():
+    # REQ-profit-margin (R6): this is a public, unauthenticated endpoint —
+    # same margin-adjusted view as /book, never the raw supplier discount.
     try:
-        return jsonify({"discounts": discount_store.get_all(_resolve_fuel_type_param())})
+        return jsonify({"discounts": _margin_adjusted_discounts(_resolve_fuel_type_param())})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1930,7 +2588,7 @@ def supplier_sheet_pdf():
     selected_ids = query_station_ids or cookie_station_ids or all_ids
 
     # Build PDF in-memory (Unredeemed only)
-    rows = repo.list_all_vouchers()
+    rows = _exclude_deleted(repo.list_all_vouchers())
     vouchers = [r for r in rows if (r.get("status") or "").strip() == "Unredeemed"]
     pdf_bytes = build_supplier_pdf(
         vouchers=vouchers,

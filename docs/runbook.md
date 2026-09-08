@@ -53,10 +53,40 @@ The UniFleet v2 deployment on Railway consists of:
 | Project | `unifleet` | Railway project | Hobby plan, region `asia-southeast` |
 | Service | `web` | Web service | Main Flask app, gunicorn, Dockerfile |
 | Service | `backup` | Cron Schedule service | `Dockerfile.backup`, runs `0 3 * * *` (3 AM UTC = 11 AM SGT) |
+| Service | `daily-report` | Cron Schedule service | Same image as `web`, runs `0 16 * * *` (16:00 UTC = 00:00 Asia/Manila) — see below |
 | Database | `unifleet` | Managed Postgres 16 | Connection via `DATABASE_URL` env var |
 | Volume | `data` | Railway Volume | Mounted at `/data` on `web` |
 | Volume | `unifleet-pgdata-backups` | Railway Volume | Mounted at `/backups` on `backup` |
 | Domain | `unifleet.asia` | DNS A/CNAME | Points at Railway's edge IP |
+
+### The `daily-report` cron service
+
+The nightly supplier sheet (ARCH-brief-11-email-notifications) is **not**
+scheduled from `rw.txt`. Railway's config-as-code has no cron table and one
+config file describes one service, so this is provisioned in the dashboard the
+same way `backup` is.
+
+| Setting | Value |
+|---|---|
+| Type | Cron Schedule service |
+| Image | same as `web` (the script lives in the repo) |
+| Start command | `python scripts/send_daily_report.py` |
+| Cron Schedule | `0 16 * * *` — 16:00 UTC is 00:00 Asia/Manila year-round; PHT has no DST |
+
+Required variables — this service does **not** inherit `web`'s:
+
+| Variable | Why |
+|---|---|
+| `DATABASE_URL` | reads the recipient list and writes the outbox rows; exits 1 if unset |
+| `PERSISTENCE_BACKEND` | must match `web`. Exits 1 if unset rather than defaulting to `csv`, which would build the sheet from stale or absent CSVs and mail a wrong report |
+
+It needs **no mail credentials**: the script only enqueues. The `web` service's
+outbox worker sends, and rebuilds the PDF itself at send time — deliberately,
+because a Railway Volume mounts to exactly one service, so a file written by
+this service would not be readable by the one that sends the mail.
+
+Check it ran: `python scripts/send_daily_report.py --dry-run` from the service
+shell reports the recipient count without writing anything.
 
 ## 2. Dashboard bookmarks
 
@@ -71,6 +101,7 @@ Bookmark these on day 1. The exact URLs depend on the project ID assigned by Rai
 | `web` → Metrics tab | `<web-service-url> → Metrics` |
 | `backup` service | `https://railway.app/project/<project-id>/service/<backup-service-id>` |
 | `backup` → Last run | `<backup-service-url> → Settings → Cron Schedule` |
+| `daily-report` → Last run | `<daily-report-service-url> → Settings → Cron Schedule` |
 | `unifleet` database | `https://railway.app/project/<project-id>/database/<db-id>` |
 | `unifleet` → Metrics | `<db-url> → Metrics` |
 | Public app (pre-cutover) | `https://<web-service>.up.railway.app` |
