@@ -71,3 +71,25 @@ def test_railway_toml_declares_required_nix_packages():
     assert "glibcLocales" in packages, (
         f"railway.toml must declare 'glibcLocales' nix package (got: {packages!r})"
     )
+
+
+def test_railway_toml_declares_no_cron_table():
+    """Railway's config-as-code has no cron table, and one config file
+    describes one service.
+
+    A `[[cron]]` block was added here for the nightly supplier sheet and
+    Railway would have ignored it silently — the report would never have run
+    and nothing would have reported an error. The schedule lives in the
+    dashboard, like the `backup` service (review finding B4).
+    """
+    raw = RAILWAY_TOML.read_text(encoding="utf-8")
+    data = _load()
+
+    assert "cron" not in data, (
+        "rw.txt declares a cron table; Railway ignores it silently, so the "
+        "schedule must be configured as a Cron Schedule service instead"
+    )
+    assert "[[cron]]" not in raw
+    assert "docs/runbook.md" in raw, (
+        "leave a pointer to where the schedule actually lives"
+    )

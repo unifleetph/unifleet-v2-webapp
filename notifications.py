@@ -313,6 +313,26 @@ MAX_ATTEMPTS = len(RETRY_BACKOFF_SECONDS)
 STALE_SENDING_MINUTES = 5
 
 
+# Attachment kinds whose bytes this module cannot produce on its own.
+# notifications may depend only on db.pool, mailer, data_paths and stdlib
+# (ARCH A15), so anything needing the repo or the PDF builder is registered
+# from main.py at import. The daily report uses this: it is rebuilt at send
+# time rather than handed over on disk, because the cron runs as its own
+# Railway service and a Volume mounts to exactly one service — the file it
+# wrote would not be visible here (review finding B5).
+_ATTACHMENT_RESOLVERS = {}
+
+
+def register_attachment_resolver(kind: str, resolver) -> None:
+    """Teach the worker how to build one attachment kind.
+
+    `resolver(ident) -> (filename, bytes, mimetype)`; raising or returning
+    None is treated as a missing attachment, which sends the email anyway and
+    flags it for follow-up.
+    """
+    _ATTACHMENT_RESOLVERS[kind] = resolver
+
+
 def _resolve_attachment(attachment_ref):
     """Turn an attachment reference into (filename, bytes, mimetype).
 
@@ -336,14 +356,17 @@ def _resolve_attachment(attachment_ref):
         except OSError:
             return None, "attachment_missing"
 
-    if kind == "daily_pdf":
-        # scripts/send_daily_report.py writes the file, then enqueues this
-        # reference; ident is the Manila date the report covers.
-        path = data_paths.daily_report_pdf_path(ident)
+    resolver = _ATTACHMENT_RESOLVERS.get(kind)
+    if resolver is not None:
         try:
-            return (path.name, path.read_bytes(), "application/pdf"), None
-        except OSError:
+            resolved = resolver(ident)
+        except Exception as e:
+            print(f"⚠️ notifications: could not build {attachment_ref}: {e}",
+                  file=sys.stderr)
             return None, "attachment_missing"
+        if resolved is None:
+            return None, "attachment_missing"
+        return resolved, None
 
     return None, f"unknown attachment_ref: {attachment_ref}"
 

@@ -44,7 +44,36 @@ except Exception as _e:
 # idempotent, and it no-ops when NOTIFICATIONS_ENABLED is off or the mailer
 # is unconfigured — so this line cannot stop the app from booting, which is
 # the only thing that matters at import time.
+def _build_daily_report_pdf(manila_date: str):
+    """Rebuild the nightly supplier sheet at send time.
+
+    The cron enqueues only a reference; the bytes are produced here, in the
+    web process, because the cron runs as its own Railway service and a Volume
+    mounts to exactly one service — a file the cron wrote would not be
+    readable by the worker that sends the mail (review finding B5).
+
+    Registered rather than imported by notifications.py, which may not depend
+    on the repo or the PDF builder (ARCH A15).
+    """
+    if build_supplier_pdf is None:
+        raise RuntimeError(f"PDF builder unavailable: {_PDF_IMPORT_ERROR}")
+
+    stations = price_store.list_stations("Biodiesel")
+    vouchers = [
+        v for v in _exclude_deleted(repo.list_all_vouchers())
+        if str(v.get("status") or "").strip() == "Unredeemed"
+    ]
+    pdf_bytes = build_supplier_pdf(
+        vouchers=vouchers,
+        target_station_ids=set(s.get("id") for s in stations if s.get("id")),
+        stations=stations,
+        logo_path=data_paths.STATIC_LOGO_PATH,
+    )
+    return (f"UniFleet_Supplier_Sheet_{manila_date}.pdf", pdf_bytes, "application/pdf")
+
+
 if notifications is not None:
+    notifications.register_attachment_resolver("daily_pdf", _build_daily_report_pdf)
     notifications.start_worker()
 
 # NEW: discounts storage

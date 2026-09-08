@@ -870,33 +870,38 @@ def test_list_flagged_returns_only_failed_and_skipped(schema_db):
     assert queued not in [row["id"] for row in flagged]
 
 
-def test_the_daily_report_pdf_is_attached_from_disk(schema_db, sent_ok, tmp_path, monkeypatch):
-    """GIVEN a daily_report row referencing a date WHEN it is drained THEN the
-    PDF written by scripts/send_daily_report.py is attached (verifies R11)."""
-    pdf = tmp_path / "UniFleet_Supplier_Sheet_2026-09-07.pdf"
-    pdf.write_bytes(b"%PDF-nightly report")
-    monkeypatch.setattr(
-        notifications.data_paths, "daily_report_pdf_path", lambda date: pdf
+def test_a_registered_resolver_supplies_the_attachment(schema_db, sent_ok, monkeypatch):
+    """GIVEN a daily_report row WHEN it is drained THEN the registered
+    resolver builds the PDF at send time.
+
+    The cron used to write the file to disk for the worker to read back, but
+    it runs as its own Railway service and a Volume mounts to exactly one
+    service — the file would not have been visible here (review finding B5).
+    The resolver is registered by main.py because notifications may not import
+    the repo or the PDF builder (ARCH A15).
+    """
+    monkeypatch.setitem(
+        notifications._ATTACHMENT_RESOLVERS, "daily_pdf",
+        lambda ident: (f"report_{ident}.pdf", b"%PDF-rebuilt", "application/pdf"),
     )
-    _queue_one(schema_db, key="daily", attachment_ref="daily_pdf:2026-09-07")
+    _queue_one(schema_db, key="daily", attachment_ref="daily_pdf:2026-09-08")
 
     notifications.drain_once(dsn=schema_db)
 
     filename, content, mimetype = sent_ok[0]["attachment"]
-    assert content == b"%PDF-nightly report"
+    assert content == b"%PDF-rebuilt"
     assert mimetype == "application/pdf"
-    assert "2026-09-07" in filename
+    assert "2026-09-08" in filename
 
 
-def test_a_missing_daily_report_pdf_still_sends_and_flags(schema_db, sent_ok, tmp_path, monkeypatch):
-    """The report email is still worth sending without its attachment, and the
-    flag tells an admin to follow up."""
-    monkeypatch.setattr(
-        notifications.data_paths,
-        "daily_report_pdf_path",
-        lambda date: tmp_path / "missing.pdf",
-    )
-    row_id = _queue_one(schema_db, key="dailymissing", attachment_ref="daily_pdf:2026-09-07")
+def test_a_resolver_that_raises_still_sends_and_flags(schema_db, sent_ok, monkeypatch):
+    """A report the worker cannot rebuild must not swallow the email — the
+    recipients still learn the run happened, and the flag says to follow up."""
+    def boom(ident):
+        raise RuntimeError("reportlab exploded")
+
+    monkeypatch.setitem(notifications._ATTACHMENT_RESOLVERS, "daily_pdf", boom)
+    row_id = _queue_one(schema_db, key="dailybroken", attachment_ref="daily_pdf:2026-09-08")
 
     notifications.drain_once(dsn=schema_db)
 
@@ -906,9 +911,18 @@ def test_a_missing_daily_report_pdf_still_sends_and_flags(schema_db, sent_ok, tm
     assert "attachment_missing" in row["last_error"]
 
 
-# ------------------------------------------------------------
-# Log volume (T15)
-# ------------------------------------------------------------
+def test_an_unregistered_attachment_kind_is_noted(schema_db, sent_ok):
+    """An unknown reference sends without an attachment and says so, rather
+    than silently dropping it."""
+    row_id = _queue_one(schema_db, key="unknownref", attachment_ref="mystery:42")
+
+    notifications.drain_once(dsn=schema_db)
+
+    row = _row(schema_db, row_id)
+    assert row["status"] == "sent"
+    assert sent_ok[0]["attachment"] is None
+    assert "unknown attachment_ref" in row["last_error"]
+
 
 def test_the_unconfigured_warning_is_logged_once_not_per_poll(schema_db, monkeypatch, capsys):
     """GIVEN an unconfigured mailer WHEN the worker polls repeatedly THEN the

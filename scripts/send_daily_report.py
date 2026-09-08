@@ -2,13 +2,20 @@
 """
 Nightly supplier PDF for UniFleet (T13, ARCH-brief-11-email-notifications).
 
-Builds the supplier sheet over ALL stations and every currently live order,
-then enqueues one outbox row per active internal recipient. Sending itself is
-the worker's job — the cron only queues, so a provider blip at midnight
-retries on the normal ladder instead of losing the report (A10).
+Enqueues one outbox row per active internal recipient. Sending is the
+worker's job — the cron only queues, so a provider blip at midnight retries
+on the normal ladder instead of losing the report (A10).
 
-Designed for the Railway Cron Schedule service, scheduled at 16:00 UTC, which
-is 00:00 Asia/Manila year-round (PHT has no DST). Also runnable by hand:
+The PDF itself is rebuilt by the worker at send time, not handed over on
+disk: this runs as its own Railway service, and a Volume mounts to exactly
+one service, so a file written here would not be readable by the web process
+that sends the mail (review finding B5). The build below is a pre-flight
+check — it proves the report is producible and supplies the count for the
+email body — and its bytes are deliberately discarded.
+
+Designed for a Railway Cron Schedule service (configured in the dashboard,
+like the `backup` service — see docs/runbook.md), scheduled at 16:00 UTC,
+which is 00:00 Asia/Manila year-round (PHT has no DST). Also runnable by hand:
 
     python scripts/send_daily_report.py [--dry-run]
 
@@ -25,9 +32,10 @@ per Manila day (N3).
 
 Exit codes:
   0 — report enqueued, or there were no recipients to send to
-  1 — DATABASE_URL not set, or the database was unreachable
+  1 — DATABASE_URL or PERSISTENCE_BACKEND not set, or the database was
+      unreachable
   2 — PDF generation failed (nothing was enqueued; better a visibly missed
-      run than an email carrying a corrupt report)
+      run than an email promising a sheet the worker cannot build either)
 """
 
 from __future__ import annotations
@@ -118,6 +126,16 @@ def main(argv=None) -> int:
         log("ERROR: DATABASE_URL is not set")
         return 1
 
+    # This runs as its own Railway service and does NOT inherit the web
+    # service's variables. Defaulting to csv here would build the nightly
+    # sheet from whatever CSVs this container can see — stale or absent —
+    # and mail a wrong report rather than failing (review finding F21).
+    backend = (os.environ.get("PERSISTENCE_BACKEND") or "").strip()
+    if not backend:
+        log("ERROR: PERSISTENCE_BACKEND is not set — refusing to guess the "
+            "backend for a report that goes to staff")
+        return 1
+
     try:
         # strict: an unreachable database must exit 1, not look like an empty
         # list and exit 0. Without it the documented exit code was
@@ -135,7 +153,7 @@ def main(argv=None) -> int:
         log("No active report recipients; nothing to send.")
         return 0
 
-    repo = get_repo(os.environ.get("PERSISTENCE_BACKEND", "csv"))
+    repo = get_repo(backend)
 
     try:
         vouchers = live_vouchers(repo)
@@ -145,8 +163,7 @@ def main(argv=None) -> int:
         return 2
 
     date_str = manila_date()
-    pdf_path = data_paths.daily_report_pdf_path(date_str)
-    filename = pdf_path.name
+    filename = f"UniFleet_Supplier_Sheet_{date_str}.pdf"
     body = report_body(date_str, len(vouchers))
 
     log(f"Supplier sheet for {date_str}: {len(vouchers)} live orders, "
@@ -156,16 +173,6 @@ def main(argv=None) -> int:
         for recipient in recipients:
             log(f"DRY RUN: would enqueue {filename} to {recipient}")
         return 0
-
-    # Write the PDF where the worker will look for it at send time. Doing
-    # this before enqueuing means a row never references a file that is not
-    # there yet (A11 resolves attachments at send time).
-    try:
-        pdf_path.parent.mkdir(parents=True, exist_ok=True)
-        pdf_path.write_bytes(pdf_bytes)
-    except OSError as e:
-        log(f"ERROR: could not write {pdf_path}: {e}")
-        return 2
 
     queued = 0
     for recipient in recipients:

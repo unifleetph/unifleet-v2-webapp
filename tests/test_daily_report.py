@@ -58,6 +58,7 @@ def env(tmp_path, monkeypatch):
     """A working cron environment: a DSN, two recipients, a stubbed repo and
     a captured outbox."""
     monkeypatch.setenv("DATABASE_URL", "postgresql://stub/stub")
+    monkeypatch.setenv("PERSISTENCE_BACKEND", "postgres")
     monkeypatch.setattr(data_paths, "EXPORTS_DIR", tmp_path / "exports")
     monkeypatch.setattr(sdr, "get_repo", lambda backend: RepoStub())
     monkeypatch.setattr(sdr.price_store, "list_stations", lambda fuel_type: STATIONS)
@@ -126,22 +127,24 @@ def test_the_report_covers_every_station(env, monkeypatch):
     assert captured["ids"] == {"ecooil-cainta", "petron-ortigas"}
 
 
-def test_the_pdf_is_written_where_the_worker_will_look(env, monkeypatch):
-    """A11: the worker resolves the attachment at send time, so the file must
-    exist before the row referencing it does."""
-    monkeypatch.setattr(
-        sdr, "build_supplier_pdf",
-        lambda **kw: b"%PDF-nightly",
-    )
+def test_the_cron_enqueues_a_reference_and_writes_no_file(env, monkeypatch, tmp_path):
+    """The cron hands over a reference, not bytes and not a file.
+
+    It runs as its own Railway service and a Volume mounts to exactly one
+    service, so anything it wrote to disk would be invisible to the web
+    process that sends the mail. The worker rebuilds the PDF from the
+    reference at send time (review finding B5).
+    """
+    monkeypatch.setattr(sdr, "build_supplier_pdf", lambda **kw: b"%PDF-nightly")
     queued = env
 
     sdr.main([])
 
     date_str = sdr.manila_date()
-    written = data_paths.daily_report_pdf_path(date_str)
-    assert written.exists()
-    assert written.read_bytes() == b"%PDF-nightly"
     assert queued[0]["attachment_ref"] == f"daily_pdf:{date_str}"
+    assert list((tmp_path / "exports").glob("*.pdf")) == [], (
+        "the cron must not leave PDFs on a volume the sender cannot read"
+    )
 
 
 # ============================================================
@@ -177,7 +180,6 @@ def test_dry_run_writes_nothing(env, monkeypatch):
 
     assert sdr.main(["--dry-run"]) == 0
     assert queued == []
-    assert not data_paths.daily_report_pdf_path(sdr.manila_date()).exists()
 
 
 # ============================================================
@@ -257,6 +259,17 @@ def test_an_unreadable_recipient_list_exits_1(env, monkeypatch):
         raise RuntimeError("pg down")
 
     monkeypatch.setattr(sdr.report_recipients, "active_emails", boom)
+    queued = env
+
+    assert sdr.main([]) == 1
+    assert queued == []
+
+
+def test_an_unset_persistence_backend_exits_1(env, monkeypatch):
+    """The cron does not inherit the web service's variables, so defaulting to
+    csv would build the nightly sheet from stale or absent CSVs and mail a
+    wrong report rather than failing (review finding F21)."""
+    monkeypatch.delenv("PERSISTENCE_BACKEND", raising=False)
     queued = env
 
     assert sdr.main([]) == 1

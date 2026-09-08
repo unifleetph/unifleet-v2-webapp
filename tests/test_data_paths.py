@@ -129,14 +129,3 @@ def test_static_paths_are_relative_strings(temp_data_dir):
     _, mod = temp_data_dir
     assert mod.STATIC_LOGO_PATH == "static/UniFleet Logo.png"
     assert mod.STATIC_VOUCHER_TEMPLATE_PATH == "static/BRANDED VOUCHER TEMPLATE - UNIFLEET.png"
-
-
-def test_daily_report_pdf_path_resolves_under_exports(temp_data_dir):
-    """T13: the nightly supplier sheet lands in exports/, named by the Manila
-    date it covers. send_daily_report.py writes it; the outbox worker reads it
-    back at send time, so both sides must agree on this path."""
-    tmp, mod = temp_data_dir
-
-    assert mod.daily_report_pdf_path("2026-09-07") == (
-        tmp / "exports" / "UniFleet_Supplier_Sheet_2026-09-07.pdf"
-    )
