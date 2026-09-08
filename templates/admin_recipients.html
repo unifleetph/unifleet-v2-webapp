@@ -55,7 +55,8 @@
   <p class="muted">
     UniFleet staff who receive the supplier sheet by email every night at
     midnight (Manila time). Changing this list takes effect on the next run —
-    no redeploy needed.
+    no redeploy needed. Pausing keeps someone on the list without sending to
+    them, which is what you want for a colleague on leave.
   </p>
 
   {% with messages = get_flashed_messages(with_categories=true) %}
@@ -87,6 +88,7 @@
             <th>Label</th>
             <th>Status</th>
             <th>Added</th>
+            <th>Nightly report</th>
             <th>Remove</th>
           </tr>
         </thead>
@@ -103,6 +105,13 @@
                 {% endif %}
               </td>
               <td class="muted">{{ r.created_at.strftime('%Y-%m-%d') if r.created_at else '—' }}</td>
+              <td>
+                <form method="POST"
+                      action="{{ url_for('admin_recipient_set_active', recipient_id=r.id) }}">
+                  <input type="hidden" name="active" value="{{ '0' if r.is_active else '1' }}">
+                  <button class="btn" type="submit">{{ 'Pause' if r.is_active else 'Resume' }}</button>
+                </form>
+              </td>
               <td>
                 <form method="POST"
                       action="{{ url_for('admin_recipient_delete', recipient_id=r.id) }}"

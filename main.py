@@ -501,6 +501,37 @@ def admin_recipients():
     )
 
 
+@app.route('/admin/recipients/<int:recipient_id>/active', methods=['POST'])
+def admin_recipient_set_active(recipient_id):
+    """Pause or resume one internal recipient.
+
+    report_recipients.set_active existed and was tested but had no route, so
+    the page rendered an active/inactive state nothing could produce
+    (review finding F29). Pausing is the useful action for someone on leave:
+    it stops the nightly report without losing the record of who is on the
+    list.
+    """
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    if report_recipients is None:
+        flash("Recipient management is unavailable.", "error")
+        return redirect(url_for('admin'))
+
+    active = (request.form.get('active') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+    if not report_recipients.set_active(recipient_id, active):
+        flash("Recipient not found.", "error")
+        return redirect(url_for('admin_recipients'))
+
+    append_audit(
+        "recipient_set_active", None,
+        note=f"recipient_id={recipient_id} active={active}",
+    )
+    flash("Recipient resumed." if active else "Recipient paused.", "success")
+    return redirect(url_for('admin_recipients'))
+
+
 @app.route('/admin/recipients/<int:recipient_id>/delete', methods=['POST'])
 def admin_recipient_delete(recipient_id):
     """Remove one internal recipient (R14)."""
@@ -591,6 +622,18 @@ def admin_customer_email(account_code):
 
     try:
         updated = repo.update_customer_email(account_code, email)
+    except AttributeError as e:
+        # DBRepo (the legacy SQLite backend) implements no customer methods at
+        # all, so this is a permanent condition, not a transient one. Telling
+        # the admin to "try again" would have them retrying forever
+        # (review finding F31).
+        print(f"⚠️ update_customer_email unsupported on this backend: {e}")
+        flash(
+            "This deployment's storage backend does not support editing "
+            "customer emails.",
+            "error",
+        )
+        return redirect(back)
     except Exception as e:
         print(f"⚠️ update_customer_email failed for {account_code}: {e}")
         flash("Could not update the email address. Please try again.", "error")
@@ -1056,14 +1099,8 @@ def _client_ip() -> str:
     return forwarded or (request.remote_addr or "")
 
 
-# Deliberately permissive: one @, no spaces, a dot in the domain. Catching
-# typos is the goal; RFC-complete validation rejects addresses that actually
-# work and would cost us real registrations.
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-def _is_valid_email(value: str) -> bool:
-    return bool(_EMAIL_RE.match((value or "").strip()))
+# Single definition, shared with report_recipients (review finding F28).
+from email_validation import is_valid_email as _is_valid_email  # noqa: E402
 
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -1146,22 +1183,10 @@ def register():
         new_row['account_code'] = account_code
         _append_customer_csv_if_absent(new_row)
 
-        # R1: the account-code email. Queued only now, after both the repo
-        # write and the CSV append — a customer must never receive a code for
-        # an account that failed to save. Wrapped because no mail problem may
-        # cost a completed registration (R7).
-        try:
-            subject, body = notifications.render_account_code(account_code)
-            notifications.enqueue(
-                "account_code",
-                recipient=new_row['email'],
-                subject=subject,
-                body=body,
-                dedupe_key=notifications.dedupe_account_code(account_code),
-                account_code=account_code,
-            )
-        except Exception as e:
-            print(f"⚠️ account-code email not queued for {account_code}: {e}")
+        # R1: queued only now, after both the repo write and the CSV append —
+        # a customer must never receive a code for an account that failed to
+        # save.
+        _queue_account_code(account_code, new_row['email'])
 
         return redirect(f"/register/success?account_code={account_code}")
 
@@ -1291,6 +1316,32 @@ def _margin_adjusted_discounts(fuel_type):
         name: MarginStore.apply(info["value"], margin_pct, info["margin_exempt"])
         for name, info in raw.items()
     }
+
+
+def _queue_account_code(account_code, email):
+    """Queue the registration email.
+
+    Extracted to sit beside its two siblings, and guarded the same way: the
+    inline version was the only enqueue call site without an
+    `if notifications is None` check, so a failed import printed a misleading
+    "email not queued" warning on every single registration rather than being
+    a silent no-op (review finding F30).
+    """
+    if notifications is None:
+        return
+
+    try:
+        subject, body = notifications.render_account_code(account_code)
+        notifications.enqueue(
+            "account_code",
+            recipient=email,
+            subject=subject,
+            body=body,
+            dedupe_key=notifications.dedupe_account_code(account_code),
+            account_code=account_code,
+        )
+    except Exception as e:
+        print(f"⚠️ account-code email not queued for {account_code}: {e}")
 
 
 def _queue_booking_received(created, account_code):

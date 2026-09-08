@@ -181,30 +181,51 @@ def enqueue(
         # (review finding F11).
         return None
 
+    def _insert(cur):
+        cur.execute(
+            "INSERT INTO notifications "
+            "  (kind, recipient, account_code, voucher_id, dedupe_key, "
+            "   voucher_fingerprint, attachment_ref, subject, body) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (dedupe_key) DO NOTHING "
+            "RETURNING id",
+            (
+                kind, recipient, account_code, voucher_id, dedupe_key,
+                fingerprint, attachment_ref, subject, body,
+            ),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+    # Swallowing is deliberate, the same posture as audit_log.append_audit:
+    # under PERSISTENCE_BACKEND=csv with no DATABASE_URL this is the normal
+    # path, and the app must run exactly as it did before.
+    return _run(_insert, dsn=dsn, timeout=ENQUEUE_POOL_TIMEOUT_SECONDS,
+                label=f"enqueue({kind})")
+
+
+def _run(operation, *, dsn=None, timeout=None, label="", default=None):
+    """Run `operation(cursor)` with this module's standard policy.
+
+    The same nine-line try/pool/cursor/commit/swallow block was repeated at
+    every call site in this module and in report_recipients, which is exactly
+    where the pool-timeout inconsistency of review finding F10 crept in. Now
+    the policy — which timeout applies, when we commit, what we log, what we
+    return when the database is unreachable — lives in one place.
+
+    `timeout` bounds the checkout only; it is never passed to get_pool, whose
+    own `timeout` argument would become the process-wide default (F10).
+    """
     try:
         pool = get_pool(dsn=dsn)
-        with pool.connection(timeout=ENQUEUE_POOL_TIMEOUT_SECONDS) as conn:
+        with pool.connection(timeout=timeout) as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO notifications "
-                    "  (kind, recipient, account_code, voucher_id, dedupe_key, "
-                    "   voucher_fingerprint, attachment_ref, subject, body) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
-                    "ON CONFLICT (dedupe_key) DO NOTHING "
-                    "RETURNING id",
-                    (
-                        kind, recipient, account_code, voucher_id, dedupe_key,
-                        fingerprint, attachment_ref, subject, body,
-                    ),
-                )
-                row = cur.fetchone()
-                return row[0] if row else None
+                result = operation(cur)
+            conn.commit()
+        return result
     except Exception as e:
-        # Same posture as audit_log.append_audit: log and swallow. Under
-        # PERSISTENCE_BACKEND=csv with no DATABASE_URL this is the normal
-        # path, and the app must run exactly as it did before.
-        print(f"⚠️ notifications.enqueue({kind}) failed: {e}", file=sys.stderr)
-        return None
+        print(f"⚠️ notifications.{label or 'query'} failed: {e}", file=sys.stderr)
+        return default
 
 
 def _is_fk_violation(exc) -> bool:
@@ -233,21 +254,24 @@ def enqueue_skipped(
     if not is_enabled():
         return None
 
-    def _insert(cur, code, vid, note):
-        cur.execute(
-            "INSERT INTO notifications "
-            "  (kind, recipient, account_code, voucher_id, status, "
-            "   last_error, subject, body) "
-            "VALUES (%s, NULL, %s, %s, 'skipped', %s, '', '')",
-            (kind, code, vid, note),
-        )
+    def _insert_with(code, vid, note):
+        def _op(cur):
+            cur.execute(
+                "INSERT INTO notifications "
+                "  (kind, recipient, account_code, voucher_id, status, "
+                "   last_error, subject, body) "
+                "VALUES (%s, NULL, %s, %s, 'skipped', %s, '', '')",
+                (kind, code, vid, note),
+            )
+            return True
+        return _op
 
     try:
         pool = get_pool(dsn=dsn)
         try:
             with pool.connection(timeout=ENQUEUE_POOL_TIMEOUT_SECONDS) as conn:
                 with conn.cursor() as cur:
-                    _insert(cur, account_code, voucher_id, reason)
+                    _insert_with(account_code, voucher_id, reason)(cur)
         except Exception as e:
             if not _is_fk_violation(e):
                 raise
@@ -262,9 +286,9 @@ def enqueue_skipped(
             # in the reason so an admin can still act on it.
             detail = f"{reason} (account_code={account_code or '-'}, " \
                      f"voucher_id={voucher_id or '-'}; not present in Postgres)"
-            with pool.connection(timeout=ENQUEUE_POOL_TIMEOUT_SECONDS) as conn:
-                with conn.cursor() as cur:
-                    _insert(cur, None, None, detail)
+            _run(_insert_with(None, None, detail), dsn=dsn,
+                 timeout=ENQUEUE_POOL_TIMEOUT_SECONDS,
+                 label=f"enqueue_skipped({kind})")
     except Exception as e:
         print(f"⚠️ notifications.enqueue_skipped({kind}) failed: {e}", file=sys.stderr)
 
@@ -657,23 +681,21 @@ def flags_by_voucher(voucher_ids, dsn: Optional[str] = None) -> dict:
     if not ids:
         return {}
 
-    try:
-        pool = get_pool(dsn=dsn)
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT DISTINCT ON (voucher_id) "
-                    "       voucher_id, id, kind, status, attempts, last_error "
-                    "FROM notifications "
-                    f"WHERE voucher_id = ANY(%s) AND {_FLAGGED_PREDICATE} "
-                    "ORDER BY voucher_id, id DESC",
-                    (ids,),
-                )
-                rows = cur.fetchall()
-    except Exception as e:
-        # The dashboard must still render if the outbox is unavailable.
-        print(f"⚠️ notifications.flags_by_voucher failed: {e}", file=sys.stderr)
-        return {}
+    def _select(cur):
+        cur.execute(
+            "SELECT DISTINCT ON (voucher_id) "
+            "       voucher_id, id, kind, status, attempts, last_error "
+            "FROM notifications "
+            f"WHERE voucher_id = ANY(%s) AND {_FLAGGED_PREDICATE} "
+            "ORDER BY voucher_id, id DESC",
+            (ids,),
+        )
+        return cur.fetchall()
+
+    # Bounded like the other request-path reads: this renders on /admin, and
+    # the dashboard must still come up if the outbox is unavailable.
+    rows = _run(_select, dsn=dsn, timeout=ENQUEUE_POOL_TIMEOUT_SECONDS,
+                label="flags_by_voucher", default=[])
 
     return {
         row[0]: {
@@ -696,20 +718,17 @@ def get(notification_id: int, dsn: Optional[str] = None) -> Optional[dict]:
     boundary — so the lookup itself belongs to the caller; this just hands it
     the row.
     """
-    try:
-        pool = get_pool(dsn=dsn)
-        with pool.connection(timeout=ENQUEUE_POOL_TIMEOUT_SECONDS) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id, kind, recipient, account_code, voucher_id, status, "
-                    "       attempts, last_error "
-                    "FROM notifications WHERE id = %s",
-                    (notification_id,),
-                )
-                row = cur.fetchone()
-    except Exception as e:
-        print(f"⚠️ notifications.get({notification_id}) failed: {e}", file=sys.stderr)
-        return None
+    def _select(cur):
+        cur.execute(
+            "SELECT id, kind, recipient, account_code, voucher_id, status, "
+            "       attempts, last_error "
+            "FROM notifications WHERE id = %s",
+            (notification_id,),
+        )
+        return cur.fetchone()
+
+    row = _run(_select, dsn=dsn, timeout=ENQUEUE_POOL_TIMEOUT_SECONDS,
+               label=f"get({notification_id})")
 
     if row is None:
         return None
@@ -720,21 +739,19 @@ def get(notification_id: int, dsn: Optional[str] = None) -> Optional[dict]:
 
 def list_flagged(limit: int = 200, dsn: Optional[str] = None) -> list:
     """Every failed or skipped notification, newest first."""
-    try:
-        pool = get_pool(dsn=dsn)
-        with pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id, kind, recipient, account_code, voucher_id, status, "
-                    "       attempts, last_error, created_at "
-                    "FROM notifications "
-                    f"WHERE {_FLAGGED_PREDICATE} "
-                    "ORDER BY id DESC LIMIT %s",
-                    (limit,),
-                )
-                cols = ["id", "kind", "recipient", "account_code", "voucher_id",
-                        "status", "attempts", "last_error", "created_at"]
-                return [dict(zip(cols, row)) for row in cur.fetchall()]
-    except Exception as e:
-        print(f"⚠️ notifications.list_flagged failed: {e}", file=sys.stderr)
-        return []
+    cols = ["id", "kind", "recipient", "account_code", "voucher_id",
+            "status", "attempts", "last_error", "created_at"]
+
+    def _select(cur):
+        cur.execute(
+            "SELECT id, kind, recipient, account_code, voucher_id, status, "
+            "       attempts, last_error, created_at "
+            "FROM notifications "
+            f"WHERE {_FLAGGED_PREDICATE} "
+            "ORDER BY id DESC LIMIT %s",
+            (limit,),
+        )
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    return _run(_select, dsn=dsn, timeout=ENQUEUE_POOL_TIMEOUT_SECONDS,
+                label="list_flagged", default=[])

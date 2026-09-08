@@ -362,3 +362,76 @@ def test_the_web_app_default_still_swallows():
 
     assert report_recipients.active_emails(dsn=dead) == []
     assert report_recipients.list_all(dsn=dead) == []
+
+
+# ============================================================
+# F29 — the pause control the page was already dressed for
+# ============================================================
+
+def test_an_admin_can_pause_a_recipient(client, monkeypatch):
+    """set_active existed and was tested but had no route, so the page
+    rendered an active/inactive state nothing could produce (finding F29)."""
+    calls = []
+    monkeypatch.setattr(
+        main.report_recipients, "set_active",
+        lambda rid, active: calls.append((rid, active)) or True,
+    )
+    monkeypatch.setattr(main.report_recipients, "list_all", lambda **kw: [])
+    _login(client)
+
+    resp = client.post("/admin/recipients/3/active", data={"active": "0"})
+
+    assert resp.status_code == 302
+    assert calls == [(3, False)]
+
+
+def test_an_admin_can_resume_a_recipient(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        main.report_recipients, "set_active",
+        lambda rid, active: calls.append((rid, active)) or True,
+    )
+    monkeypatch.setattr(main.report_recipients, "list_all", lambda **kw: [])
+    _login(client)
+
+    client.post("/admin/recipients/3/active", data={"active": "1"})
+
+    assert calls == [(3, True)]
+
+
+def test_the_pause_route_requires_admin(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        main.report_recipients, "set_active",
+        lambda rid, active: calls.append((rid, active)) or True,
+    )
+
+    resp = client.post("/admin/recipients/3/active", data={"active": "0"})
+
+    assert resp.status_code == 302
+    assert "/admin/login" in resp.headers["Location"]
+    assert calls == []
+
+
+def test_the_page_offers_pause_and_resume(client, monkeypatch):
+    import datetime as dt
+
+    monkeypatch.setattr(main.report_recipients, "list_all", lambda **kw: [
+        {"id": 1, "email": "ops@example.com", "label": "Ops", "is_active": True,
+         "created_at": dt.datetime(2026, 9, 8), "updated_at": dt.datetime(2026, 9, 8)},
+        {"id": 2, "email": "onleave@example.com", "label": None, "is_active": False,
+         "created_at": dt.datetime(2026, 9, 8), "updated_at": dt.datetime(2026, 9, 8)},
+    ])
+    _login(client)
+
+    html = client.get("/admin/recipients").get_data(as_text=True)
+
+    assert "/admin/recipients/1/active" in html
+    assert "/admin/recipients/2/active" in html
+    assert "Pause" in html
+    assert "Resume" in html
+
+
+def test_set_active_returns_false_for_an_unknown_id(schema_db):
+    """The uncovered branch noted alongside F29."""
+    assert report_recipients.set_active(999999, False, dsn=schema_db) is False

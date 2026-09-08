@@ -391,9 +391,18 @@ Registration starts requiring a valid email address, and on success the new cust
 - none
 
 **Modified files:**
+
+_Scope amendment, recorded after the fact._ Three files listed here were not
+changed, correctly: `templates/register.html` already carried `required` at
+`6703e66`, `tests/test_register_optional_labels.py` already posted an email,
+and `tests/test_register_success_text.py` never POSTs `/register` at all. The
+predicted breakage did not materialise; the real gap was server-side
+enforcement. Recorded in commit `5bbeaac` but not here until now.
+
 - `main.py` (`register()` validation + enqueue; guarded `notifications` import; `start_worker()` at import)
-- `templates/register.html` (email marked required)
-- `tests/test_register_pg.py`, `tests/test_register_optional_labels.py`, `tests/test_register_success_text.py` (updated)
+- ~~`templates/register.html`~~ (already compliant — not changed)
+- `tests/test_register_pg.py`
+- ~~`tests/test_register_optional_labels.py`, `tests/test_register_success_text.py`~~ (already compliant — not changed)
 
 **Must NOT modify:**
 - `persistence.py` / `db/postgres_repo.py` (customer creation is unchanged here; the email-edit method is T8)
@@ -617,7 +626,18 @@ Legacy customers registered before this feature have no email on file, so their 
 - none
 
 **Modified files:**
-- `persistence.py` (`update_customer_email` on `CSVRepo` and `DBRepo`)
+
+_Scope amendment, recorded after the fact._ `DBRepo` did **not** get the
+method. It is documented at `persistence.py:44` as "legacy SQLite, only 5 of 7
+methods implemented" and has no customer methods at all — no `get_customer`,
+no `create_customer` — so adding `update_customer_email` there would put a
+customer method on a class that cannot do customers. This resolves ARCH's open
+question differently from its suggested default. The route distinguishes the
+resulting `AttributeError` from a transient failure (review finding F31), so an
+admin on that backend is told the backend is unsupported rather than to keep
+retrying. Recorded in commit `164eeeb` but not here until now.
+
+- `persistence.py` (`update_customer_email` on `CSVRepo`; **not** `DBRepo`, see above)
 - `db/postgres_repo.py` (`update_customer_email` on `PostgresRepo`)
 - `main.py` (`POST /admin/customers/<account_code>/email`)
 - `templates/admin_customer_lookup.html` (inline edit form in the `detail` state)
