@@ -33,14 +33,24 @@ from pathlib import Path
 # claims the very rows a test is about to drain. That produced an
 # intermittent failure in the retry-ladder tests.
 #
-# Disabling it here means no worker starts unless a test asks for one.
-# The tests that exercise start_worker set this themselves via monkeypatch,
-# so their coverage is unaffected.
-#
-# Set unconditionally rather than with setdefault: docker-compose exports
-# NOTIFICATIONS_ENABLED=true into the container the suite runs in, so a
-# default would never apply.
-os.environ["NOTIFICATIONS_ENABLED"] = "false"
+# This used to be done by forcing NOTIFICATIONS_ENABLED=false, but that flag
+# now also gates enqueues (ARCH A12), so switching it off would stop the
+# suite writing any notification rows at all. Instead the suite runs at the
+# production default and simply claims the worker slot before main.py can:
+# start_worker() is idempotent, so finding the handle already set makes it a
+# no-op. Tests that exercise start_worker itself reset the handle first.
+os.environ.setdefault("NOTIFICATIONS_ENABLED", "true")
+
+import notifications as _notifications  # noqa: E402
+
+_notifications._worker_thread = "reserved-by-conftest"
+
+# Import main here, while the reservation is guaranteed to be in place. If it
+# were left to whichever test imports main first, a test that had already
+# called _reset_worker_for_tests() would release the slot and main's
+# import-time start_worker() would spawn a real drainer mid-suite — the exact
+# race this file exists to prevent.
+import main as _main  # noqa: E402,F401
 
 import psycopg
 import pytest

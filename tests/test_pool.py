@@ -58,19 +58,38 @@ def test_the_wait_bound_is_configurable_per_call():
     with pytest.raises(PoolTimeout):
         pool_module.get_pool(dsn=DEAD_DSN, wait_timeout=1)
 
-    assert time.monotonic() - started < 6
+    # Below the 5s default, not merely below 6: a wait_timeout that is
+    # accepted and then ignored would still finish in ~5s and still pass
+    # (review finding F13).
+    assert time.monotonic() - started < 3
 
 
 def test_the_wait_bound_is_configurable_by_environment(monkeypatch):
     """Operators can raise it without a code change if a slow environment
     needs it."""
     monkeypatch.setenv("UNIFLEET_POOL_WAIT_SECONDS", "1")
-    started = time.monotonic()
 
-    with pytest.raises(Exception):
+    # Pin the plumbing directly. The timing assertion alone was decorative:
+    # DEFAULT_WAIT_SECONDS is 5.0, so "< 6" passed unchanged even if the
+    # environment variable were never read (review finding F13).
+    assert pool_module._wait_seconds() == 1.0
+
+    started = time.monotonic()
+    with pytest.raises(PoolTimeout):
         pool_module.get_pool(dsn=DEAD_DSN)
 
-    assert time.monotonic() - started < 6
+    assert time.monotonic() - started < 3
+
+
+def test_the_wait_bound_falls_back_to_the_default(monkeypatch):
+    """An unset, empty, zero, negative or unparseable value uses the default —
+    the other half of the pairing above."""
+    monkeypatch.delenv("UNIFLEET_POOL_WAIT_SECONDS", raising=False)
+    assert pool_module._wait_seconds() == pool_module.DEFAULT_WAIT_SECONDS
+
+    for bad in ("", "0", "-3", "soon"):
+        monkeypatch.setenv("UNIFLEET_POOL_WAIT_SECONDS", bad)
+        assert pool_module._wait_seconds() == pool_module.DEFAULT_WAIT_SECONDS
 
 
 def test_a_failed_construction_is_not_cached():

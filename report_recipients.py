@@ -42,8 +42,17 @@ def is_valid_email(email: str) -> bool:
     return bool(_EMAIL_RE.match(_normalise(email)))
 
 
-def list_all(include_inactive: bool = False, dsn: Optional[str] = None) -> list:
-    """Every recipient, newest first. Inactive ones only when asked for."""
+def list_all(include_inactive: bool = False, dsn: Optional[str] = None,
+             strict: bool = False) -> list:
+    """Every recipient, newest first. Inactive ones only when asked for.
+
+    `strict=True` re-raises instead of swallowing. The nightly cron needs
+    that: swallowing turned an unreachable database into an empty list, so a
+    Postgres outage took the "no recipients, nothing to send" branch and
+    exited 0 — a green Railway run on the night the report did not go out
+    (review finding F12). The web app keeps the swallowing default, where an
+    empty admin list beats a stack trace.
+    """
     clause = "" if include_inactive else "WHERE is_active "
     try:
         pool = get_pool(dsn=dsn)
@@ -55,13 +64,19 @@ def list_all(include_inactive: bool = False, dsn: Optional[str] = None) -> list:
                 )
                 return [dict(zip(_COLUMNS, row)) for row in cur.fetchall()]
     except Exception as e:
+        if strict:
+            raise
         print(f"⚠️ report_recipients.list_all failed: {e}", file=sys.stderr)
         return []
 
 
-def active_emails(dsn: Optional[str] = None) -> list:
-    """The addresses the nightly report actually goes to."""
-    return [r["email"] for r in list_all(dsn=dsn) if r["is_active"]]
+def active_emails(dsn: Optional[str] = None, strict: bool = False) -> list:
+    """The addresses the nightly report actually goes to.
+
+    See list_all's note on `strict` — the cron passes it so that "the database
+    is unreachable" cannot masquerade as "nobody is on the list".
+    """
+    return [r["email"] for r in list_all(dsn=dsn, strict=strict)]
 
 
 def add(email: str, label: str = "", dsn: Optional[str] = None) -> Optional[dict]:

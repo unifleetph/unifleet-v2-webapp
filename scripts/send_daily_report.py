@@ -119,7 +119,11 @@ def main(argv=None) -> int:
         return 1
 
     try:
-        recipients = report_recipients.active_emails()
+        # strict: an unreachable database must exit 1, not look like an empty
+        # list and exit 0. Without it the documented exit code was
+        # unreachable and a week of missed reports looked like a week of green
+        # cron runs (review finding F12).
+        recipients = report_recipients.active_emails(strict=True)
     except Exception as e:
         log(f"ERROR: could not read the recipient list: {e}")
         return 1

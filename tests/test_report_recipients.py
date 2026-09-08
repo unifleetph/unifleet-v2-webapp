@@ -335,3 +335,30 @@ def test_the_delete_confirmation_does_not_interpolate_the_address(client, monkey
         if "confirm(" in line:
             assert "alert(1)" not in line, f"address reached a JS handler: {line.strip()}"
             assert "evil.co" not in line, f"address reached a JS handler: {line.strip()}"
+
+
+# ============================================================
+# F12 — an unreachable database must not look like an empty list
+# ============================================================
+
+def test_strict_mode_raises_instead_of_returning_empty():
+    """GIVEN the database is unreachable WHEN active_emails(strict=True) is
+    called THEN it raises.
+
+    The nightly cron needs this: swallowing turned an outage into an empty
+    list, so the script took its "no recipients, nothing to send" branch and
+    exited 0 — a green Railway run on the night the report did not go out
+    (review finding F12).
+    """
+    dead = "postgresql://nobody:nobody@127.0.0.1:1/nonexistent?connect_timeout=1"
+
+    with pytest.raises(Exception):
+        report_recipients.active_emails(dsn=dead, strict=True)
+
+
+def test_the_web_app_default_still_swallows():
+    """The admin page prefers an empty list to a stack trace."""
+    dead = "postgresql://nobody:nobody@127.0.0.1:1/nonexistent?connect_timeout=1"
+
+    assert report_recipients.active_emails(dsn=dead) == []
+    assert report_recipients.list_all(dsn=dead) == []

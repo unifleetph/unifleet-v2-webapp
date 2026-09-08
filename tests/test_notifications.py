@@ -13,6 +13,8 @@ brief is the contract, and a "small" wording drift is a client-facing
 regression nobody would catch by eye.
 """
 
+import threading
+
 import psycopg
 import pytest
 
@@ -48,7 +50,14 @@ def _clean_notifications(schema_db):
 def customer(schema_db):
     """A real customers row. notifications.account_code is a FK, so an
     enqueue for a customer who does not exist is correctly rejected — in
-    production the customer was created moments earlier."""
+    production the customer was created moments earlier.
+
+    Cleans up after itself: schema_db is session-scoped, and leaving this row
+    behind meant tests/test_customer_repo.py's teardown was effectively
+    tidying up after this file. That only worked because collection order is
+    alphabetical, while AGENTS.md advertises the suite as parallel-safe
+    (review finding F14).
+    """
     with psycopg.connect(schema_db) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -57,7 +66,14 @@ def customer(schema_db):
                 ("HARR", "Harriet Fleet", "driver@example.com"),
             )
         conn.commit()
-    return "HARR"
+
+    yield "HARR"
+
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM notifications WHERE account_code = 'HARR'")
+            cur.execute("DELETE FROM customers WHERE account_code = 'HARR'")
+        conn.commit()
 
 
 def _rows(schema_db, **where):
@@ -683,7 +699,14 @@ def test_start_worker_is_idempotent(monkeypatch):
 
     assert first is True
     assert second is False
+
+    # Join before releasing the handle: this really does start a thread (with
+    # a no-op target), and leaving it briefly alive makes the suite-wide
+    # "no live drainer" guard below flaky.
+    started = notifications._worker_thread
     notifications._reset_worker_for_tests()
+    if isinstance(started, threading.Thread):
+        started.join(timeout=2)
 
 
 def test_start_worker_never_raises(monkeypatch):
@@ -707,7 +730,8 @@ def test_start_worker_never_raises(monkeypatch):
 
 @pytest.fixture
 def voucher(schema_db):
-    """A real vouchers row — notifications.voucher_id is a FK."""
+    """A real vouchers row — notifications.voucher_id is a FK. Cleans up after
+    itself, for the reason given on the `customer` fixture (finding F14)."""
     with psycopg.connect(schema_db) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -716,7 +740,14 @@ def voucher(schema_db):
                 ("V777",),
             )
         conn.commit()
-    return "V777"
+
+    yield "V777"
+
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM notifications WHERE voucher_id = 'V777'")
+            cur.execute("DELETE FROM vouchers WHERE voucher_id = 'V777'")
+        conn.commit()
 
 
 def test_flags_by_voucher_maps_flagged_rows_to_their_voucher(schema_db, voucher):
@@ -942,14 +973,26 @@ def test_the_warning_returns_after_a_recovery(schema_db, monkeypatch, capsys):
 
 
 def test_the_worker_does_not_start_during_the_test_suite():
-    """conftest.py disables the worker for the whole suite. If that ever
+    """conftest.py claims the worker slot before main.py can. If that ever
     stops working, the outbox tests become intermittently flaky again: the
     worker claims rows out from under them while their fixtures have
-    mailer.is_configured patched true (T15)."""
+    mailer.is_configured patched true (T15).
+
+    Asserts the state, not start_worker's return value: that returns False
+    both when disabled and when a worker is ALREADY RUNNING, so the old
+    version of this test passed in exactly the situation it existed to catch
+    (review finding F13).
+    """
     import main  # noqa: F401  — importing it is the point; it calls start_worker
 
-    assert notifications.start_worker() is False
-    notifications._reset_worker_for_tests()
+    # Check for a live drainer rather than the handle's value: tests that
+    # exercise start_worker reset the handle, so its value varies by run
+    # order, but no test may ever leave an actual polling thread behind.
+    live = [
+        t for t in threading.enumerate()
+        if t.name == "notifications-worker" and t.is_alive()
+    ]
+    assert live == [], f"a real worker thread is running — the flake is back: {live}"
 
 
 def test_enqueue_gives_up_quickly_when_the_database_is_unreachable():
@@ -1221,3 +1264,68 @@ def test_a_cleanly_sent_row_is_still_not_flagged(schema_db, voucher):
 
     assert notifications.flags_by_voucher([voucher], dsn=schema_db) == {}
     assert notifications.list_flagged(dsn=schema_db) == []
+
+
+# ------------------------------------------------------------
+# F11 — the flag must gate enqueues, not just the worker
+# ------------------------------------------------------------
+
+def test_the_flag_prevents_enqueuing(schema_db, monkeypatch):
+    """GIVEN NOTIFICATIONS_ENABLED is off WHEN a notification is enqueued THEN
+    no row is written.
+
+    ARCH A12 says the flag gates the worker AND all enqueues. Gating only the
+    worker meant rows accumulated while the flag was off and then all went out
+    at once when it was flipped — customers receiving "Booking Request
+    Received" for bookings long since confirmed. That defeats the rollout's
+    deploy-with-the-flag-off first step (review finding F11).
+    """
+    monkeypatch.setenv("NOTIFICATIONS_ENABLED", "false")
+
+    result = notifications.enqueue(
+        "account_code",
+        recipient="driver@example.com",
+        subject="s",
+        body="b",
+        dedupe_key="acct:GATED",
+        dsn=schema_db,
+    )
+
+    assert result is None
+    assert _rows(schema_db) == []
+
+
+def test_the_flag_prevents_recording_a_skip(schema_db, monkeypatch):
+    monkeypatch.setenv("NOTIFICATIONS_ENABLED", "false")
+
+    notifications.enqueue_skipped(
+        "booking_received", reason="no email", dsn=schema_db
+    )
+
+    assert _rows(schema_db) == []
+
+
+def test_the_flag_stops_delivery_without_a_restart(schema_db, monkeypatch, sent_ok):
+    """drain_once re-checks the flag, so flipping it takes effect on the next
+    poll rather than requiring the process to restart."""
+    row_id = _queue_one(schema_db, key="runtimeflip")
+    monkeypatch.setenv("NOTIFICATIONS_ENABLED", "false")
+
+    processed = notifications.drain_once(dsn=schema_db)
+
+    assert processed == 0
+    assert sent_ok == []
+    assert _row(schema_db, row_id)["status"] == "queued"
+
+
+def test_enqueuing_resumes_when_the_flag_is_back_on(schema_db, monkeypatch):
+    monkeypatch.setenv("NOTIFICATIONS_ENABLED", "true")
+
+    assert notifications.enqueue(
+        "account_code",
+        recipient="driver@example.com",
+        subject="s",
+        body="b",
+        dedupe_key="acct:UNGATED",
+        dsn=schema_db,
+    ) is not None

@@ -266,9 +266,15 @@ def pg_repo(schema_db):
     pool_module.reset_pool()
     repo = PostgresRepo(dsn=schema_db)
     yield repo
+    # Only the rows this fixture's tests create. It used to TRUNCATE
+    # notifications outright, which cleaned up after tests/test_notifications.py
+    # as a side effect and hid that file's missing teardown — and only worked
+    # because collection order is alphabetical (review finding F14).
     with __import__("psycopg").connect(schema_db) as conn:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM notifications")
+            cur.execute(
+                "DELETE FROM notifications WHERE account_code IN ('HARR', 'JETI')"
+            )
             cur.execute("DELETE FROM customers WHERE account_code IN ('HARR', 'JETI')")
         conn.commit()
     pool_module.reset_pool()

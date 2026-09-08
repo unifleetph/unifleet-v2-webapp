@@ -63,7 +63,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(sdr.price_store, "list_stations", lambda fuel_type: STATIONS)
     monkeypatch.setattr(
         sdr.report_recipients, "active_emails",
-        lambda: ["ops@example.com", "finance@example.com"],
+        lambda strict=False: ["ops@example.com", "finance@example.com"],
     )
 
     queued = []
@@ -164,7 +164,7 @@ def test_an_empty_recipient_list_exits_cleanly(env, monkeypatch):
     """GIVEN nobody on the list WHEN the script runs THEN it exits 0 having
     queued nothing — an empty list is a legitimate state, not a failure
     (verifies REQ edge case)."""
-    monkeypatch.setattr(sdr.report_recipients, "active_emails", lambda: [])
+    monkeypatch.setattr(sdr.report_recipients, "active_emails", lambda strict=False: [])
     queued = env
 
     assert sdr.main([]) == 0
@@ -250,7 +250,10 @@ def test_a_pdf_build_failure_exits_2_and_queues_nothing(env, monkeypatch):
 
 
 def test_an_unreadable_recipient_list_exits_1(env, monkeypatch):
-    def boom():
+    """The cron must call the strict variant, so a dead database exits 1
+    rather than looking like an empty list and exiting 0 (finding F12)."""
+    def boom(strict=False):
+        assert strict is True, "the cron must ask for the raising variant"
         raise RuntimeError("pg down")
 
     monkeypatch.setattr(sdr.report_recipients, "active_emails", boom)

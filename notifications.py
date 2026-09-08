@@ -172,6 +172,15 @@ def enqueue(
     raises: the caller is a request handler mid-registration, mid-booking,
     or mid-approval, and none of those may fail because of email.
     """
+    if not is_enabled():
+        # ARCH A12: the flag gates the worker and all enqueues. Gating only
+        # the worker meant rows piled up while the flag was off and then all
+        # went out at once when it was flipped — customers receiving "Booking
+        # Request Received" for bookings long since confirmed, which is
+        # exactly what the rollout's flag-off first step exists to prevent
+        # (review finding F11).
+        return None
+
     try:
         pool = get_pool(dsn=dsn)
         with pool.connection(timeout=ENQUEUE_POOL_TIMEOUT_SECONDS) as conn:
@@ -221,6 +230,9 @@ def enqueue_skipped(
     constraint, so two bookings by the same emailless customer both get their
     own flag rather than silently collapsing into one.
     """
+    if not is_enabled():
+        return None
+
     def _insert(cur, code, vid, note):
         cur.execute(
             "INSERT INTO notifications "
@@ -434,6 +446,11 @@ def drain_once(limit: int = 20, dsn: Optional[str] = None) -> int:
     """Claim every due row, send it, and record the outcome. Returns the
     number of rows processed."""
     global _unconfigured_logged
+
+    if not is_enabled():
+        # Re-checked per drain, not just at start_worker, so flipping the flag
+        # stops delivery without waiting for a restart.
+        return 0
 
     if not mailer.is_configured():
         # Leave everything queued: no number of retries fixes a missing API
