@@ -300,11 +300,16 @@ def _claim_due(cur, limit: int):
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-# ARCH's retry ladder: the delay before attempt N+1, in seconds. A provider
+# The retry ladder: the delay before the next attempt, in seconds. A provider
 # blip self-heals inside the first few steps; a real outage surfaces as an
-# admin flag within roughly fifteen minutes.
+# admin flag after the ladder is exhausted, roughly 12.5 minutes in.
+#
+# MAX_ATTEMPTS is len+1 because a delay is only consulted between attempts:
+# five delays separate six attempts. It was len, which made the 600s rung
+# unreachable and cut the real window to ~2.5 minutes while the comment and
+# ARCH both claimed fifteen (review finding F15).
 RETRY_BACKOFF_SECONDS = [1, 5, 30, 120, 600]
-MAX_ATTEMPTS = len(RETRY_BACKOFF_SECONDS)
+MAX_ATTEMPTS = len(RETRY_BACKOFF_SECONDS) + 1
 
 # A row that has sat in 'sending' this long was almost certainly abandoned by
 # a process that died mid-send (a redeploy). Reclaiming it risks one duplicate
@@ -493,52 +498,61 @@ def drain_once(limit: int = 20, dsn: Optional[str] = None) -> int:
 
     try:
         pool = get_pool(dsn=dsn)
+
+        # Claim in one short-lived connection and let it go before any network
+        # call. The send loop used to run inside this block, so a batch of 20
+        # rows against a stalled provider parked one of the pool's 8
+        # connections for up to ~200s — while request handlers wait 2s for a
+        # checkout by design. Nothing needs the same transaction: the claim is
+        # already committed (review finding F16).
         with pool.connection() as conn:
             with conn.cursor() as cur:
                 _reclaim_stale(cur)
                 claimed = _claim_due(cur, limit)
             conn.commit()
 
-            for row in claimed:
-                # Per-row, so one bad row cannot strand the rest of the batch
-                # — and, more importantly, cannot leave itself claimed with
-                # attempts unincremented, which used to stall the outbox
-                # permanently and invisibly (review finding B2).
-                try:
-                    attachment, note = _resolve_attachment(row["attachment_ref"])
-                    result = mailer.send(
-                        to=row["recipient"],
-                        subject=row["subject"],
-                        body=row["body"],
-                        attachment=attachment,
-                    )
-                except Exception as row_err:
-                    # An unexpected error is not retryable in any useful sense,
-                    # but it must still advance the ladder so the row ends up
-                    # `failed` and visible to an admin rather than looping.
-                    print(f"⚠️ notifications: row {row['id']} raised: {row_err}",
-                          file=sys.stderr)
-                    attachment, note = None, None
-                    result = SendResult(
-                        ok=False, status_code=0, error=repr(row_err)[:500]
-                    )
+        for row in claimed:
+            # Per-row, so one bad row cannot strand the rest of the batch
+            # — and, more importantly, cannot leave itself claimed with
+            # attempts unincremented, which used to stall the outbox
+            # permanently and invisibly (review finding B2).
+            try:
+                attachment, note = _resolve_attachment(row["attachment_ref"])
+                result = mailer.send(
+                    to=row["recipient"],
+                    subject=row["subject"],
+                    body=row["body"],
+                    attachment=attachment,
+                )
+            except Exception as row_err:
+                # An unexpected error is not retryable in any useful sense,
+                # but it must still advance the ladder so the row ends up
+                # `failed` and visible to an admin rather than looping.
+                print(f"⚠️ notifications: row {row['id']} raised: {row_err}",
+                      file=sys.stderr)
+                attachment, note = None, None
+                result = SendResult(
+                    ok=False, status_code=0, error=repr(row_err)[:500]
+                )
 
-                try:
+            # A fresh, short-lived connection per outcome: the send above may
+            # have taken ten seconds.
+            try:
+                with pool.connection() as conn:
                     with conn.cursor() as cur:
                         if result.ok:
                             _mark_sent(cur, row["id"], result.provider_message_id, note)
                         else:
                             _record_failure(cur, row["id"], row["attempts"] + 1, result)
                     conn.commit()
-                except Exception as write_err:
-                    # The outcome could not be recorded. The row stays
-                    # `sending`; the stale sweep reclaims it and now advances
-                    # attempts, so it terminates rather than looping.
-                    print(f"⚠️ notifications: could not record outcome for "
-                          f"row {row['id']}: {write_err}", file=sys.stderr)
-                    conn.rollback()
+            except Exception as write_err:
+                # The outcome could not be recorded. The row stays `sending`;
+                # the stale sweep reclaims it and now advances attempts, so it
+                # terminates rather than looping.
+                print(f"⚠️ notifications: could not record outcome for "
+                      f"row {row['id']}: {write_err}", file=sys.stderr)
 
-            return len(claimed)
+        return len(claimed)
     except Exception as e:
         print(f"⚠️ notifications.drain_once failed: {e}", file=sys.stderr)
         return 0

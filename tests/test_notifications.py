@@ -466,9 +466,60 @@ def test_a_5xx_returns_the_row_to_the_queue_with_backoff(schema_db, sends_failin
     assert "unavailable" in row["last_error"]
 
 
-def test_the_backoff_ladder_lengthens_with_each_attempt(schema_db, sends_failing):
-    """The delays follow ARCH's ladder: 1s, 5s, 30s, 2m, 10m."""
-    assert notifications.RETRY_BACKOFF_SECONDS == [1, 5, 30, 120, 600]
+@pytest.mark.parametrize("prior_attempts,expected_delay", [
+    (0, 1), (1, 5), (2, 30), (3, 120), (4, 600),
+])
+def test_each_rung_of_the_ladder_is_applied(schema_db, sends_failing,
+                                            prior_attempts, expected_delay):
+    """GIVEN a row that has already failed N times WHEN it fails again THEN
+    the next attempt is scheduled by the Nth rung.
+
+    This used to assert only that RETRY_BACKOFF_SECONDS equalled its own
+    literal, which exercised no logic and hid that the last rung was
+    unreachable: MAX_ATTEMPTS was len(...) so `attempts >= MAX_ATTEMPTS` fired
+    before index 4 was ever used, cutting the real window to ~2.5 minutes
+    while ARCH promised fifteen (review findings F15, F26).
+    """
+    row_id = _queue_one(schema_db, key=f"rung{prior_attempts}")
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE notifications SET attempts = %s WHERE id = %s",
+                (prior_attempts, row_id),
+            )
+        conn.commit()
+
+    notifications.drain_once(dsn=schema_db)
+
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status, attempts, "
+                "       EXTRACT(EPOCH FROM (next_attempt_at - NOW())) "
+                "FROM notifications WHERE id = %s",
+                (row_id,),
+            )
+            status, attempts, seconds_ahead = cur.fetchone()
+
+    assert status == "queued"
+    assert attempts == prior_attempts + 1
+    assert expected_delay - 2 <= float(seconds_ahead) <= expected_delay + 1, (
+        f"attempt {attempts} should wait ~{expected_delay}s, "
+        f"got {float(seconds_ahead):.1f}s"
+    )
+
+
+def test_the_whole_ladder_is_reachable():
+    """Every declared rung must be usable — a delay is consulted between
+    attempts, so five delays separate six attempts."""
+    assert notifications.MAX_ATTEMPTS == len(notifications.RETRY_BACKOFF_SECONDS) + 1
+
+
+def test_the_ladder_spans_the_documented_window():
+    """ARCH promises an outage surfaces as an admin flag in roughly fifteen
+    minutes; the rungs must actually add up to that."""
+    total = sum(notifications.RETRY_BACKOFF_SECONDS)
+    assert 600 <= total <= 1200, f"ladder spans {total}s"
 
 
 def test_a_4xx_fails_immediately_without_retrying(schema_db, sends_failing):
@@ -494,14 +545,17 @@ def test_the_ladder_terminates_after_five_attempts(schema_db, sends_failing):
     row_id = _queue_one(schema_db, key="exhausted")
     with psycopg.connect(schema_db) as conn:
         with conn.cursor() as cur:
-            cur.execute("UPDATE notifications SET attempts = 4 WHERE id = %s", (row_id,))
+            cur.execute(
+                "UPDATE notifications SET attempts = %s WHERE id = %s",
+                (notifications.MAX_ATTEMPTS - 1, row_id),
+            )
         conn.commit()
 
     notifications.drain_once(dsn=schema_db)
 
     row = _row(schema_db, row_id)
     assert row["status"] == "failed"
-    assert row["attempts"] == 5
+    assert row["attempts"] == notifications.MAX_ATTEMPTS
     assert row["last_error"]
 
 
@@ -625,11 +679,17 @@ def test_requeue_is_idempotent(schema_db):
     changes and no duplicate row appears (verifies REQ edge case)."""
     row_id = _queue_one(schema_db, key="doubleclick")
 
-    notifications.requeue(row_id, dsn=schema_db)
-    notifications.requeue(row_id, dsn=schema_db)
+    assert notifications.requeue(row_id, dsn=schema_db) is True
+    first = _row(schema_db, row_id)
 
-    assert len(_rows(schema_db)) == 1
-    assert _row(schema_db, row_id)["status"] == "queued"
+    assert notifications.requeue(row_id, dsn=schema_db) is True
+    second = _row(schema_db, row_id)
+
+    # The old assertion counted rows, which an UPDATE can never change —
+    # a no-op implementation would have satisfied it (review finding F26).
+    assert second["status"] == first["status"] == "queued"
+    assert second["attempts"] == first["attempts"] == 0
+    assert second["recipient"] == first["recipient"]
 
 
 def test_requeue_can_repoint_a_skipped_row_at_a_new_address(schema_db, customer):

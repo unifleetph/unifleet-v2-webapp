@@ -217,12 +217,25 @@ def test_a_second_run_the_same_day_queues_nothing_new(env, monkeypatch):
     assert len(seen) == 2
 
 
-def test_the_manila_date_is_read_in_manila_not_utc():
+def test_the_manila_date_is_read_in_manila_not_utc(monkeypatch):
     """Railway runs UTC; a 16:00 UTC run must stamp the Manila date, not the
-    previous day's (verifies A9)."""
-    expected = dt.datetime.now(ZoneInfo("Asia/Manila")).strftime("%Y-%m-%d")
+    previous day's (verifies A9).
 
-    assert sdr.manila_date() == expected
+    The instant is frozen rather than recomputed with the implementation's own
+    expression: comparing against datetime.now(Asia/Manila) passed for the ~16
+    hours a day when the two dates agree, so a UTC implementation would have
+    slipped through most of the time (review finding F26).
+    """
+    class _FrozenDatetime(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            # 2026-09-07 16:30 UTC is already 2026-09-08 in Manila
+            utc = dt.datetime(2026, 9, 7, 16, 30, tzinfo=dt.timezone.utc)
+            return utc.astimezone(tz) if tz else utc
+
+    monkeypatch.setattr(sdr.dt, "datetime", _FrozenDatetime)
+
+    assert sdr.manila_date() == "2026-09-08"
 
 
 # ============================================================

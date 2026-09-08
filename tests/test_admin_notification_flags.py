@@ -419,3 +419,51 @@ def test_the_dashboard_survives_a_failing_flagged_list(client, monkeypatch):
 
     assert resp.status_code == 200
     assert b"UF-TEST-00001" in resp.data
+
+
+def test_resend_does_not_redirect_off_site(client, monkeypatch):
+    """Referer is attacker-controlled, so a cross-site POST could bounce an
+    authenticated admin to any external page — a workable phishing step. The
+    project already had _safe_next() for this and admin_login used it; the new
+    routes did not (review finding F18)."""
+    _stub_flags(monkeypatch, {})
+    monkeypatch.setattr(main, "repo", _CustomerRepoStub())
+    _login(client)
+
+    resp = client.post(
+        "/admin/notifications/7/resend",
+        headers={"Referer": "https://evil.tld/phish"},
+    )
+
+    assert resp.status_code == 302
+    assert "evil.tld" not in resp.headers["Location"]
+    assert resp.headers["Location"].startswith("/")
+
+
+def test_resend_still_returns_to_a_same_site_referrer(client, monkeypatch):
+    """The guard must not break the normal case."""
+    _stub_flags(monkeypatch, {})
+    monkeypatch.setattr(main, "repo", _CustomerRepoStub())
+    _login(client)
+
+    resp = client.post(
+        "/admin/notifications/7/resend",
+        headers={"Referer": "http://localhost/admin?q=1"},
+    )
+
+    assert resp.headers["Location"].endswith("/admin?q=1")
+
+
+def test_a_protocol_relative_referrer_is_rejected(client, monkeypatch):
+    """//evil.tld is a URL the browser treats as absolute — the classic way
+    past a naive startswith('/') check."""
+    _stub_flags(monkeypatch, {})
+    monkeypatch.setattr(main, "repo", _CustomerRepoStub())
+    _login(client)
+
+    resp = client.post(
+        "/admin/notifications/7/resend",
+        headers={"Referer": "//evil.tld/phish"},
+    )
+
+    assert "evil.tld" not in resp.headers["Location"]

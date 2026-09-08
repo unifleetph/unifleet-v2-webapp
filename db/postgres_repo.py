@@ -523,7 +523,12 @@ class PostgresRepo:
         with self._pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE customers SET email = %s WHERE UPPER(account_code) = %s",
+                    # account_code = %s, not UPPER(account_code) = %s: the
+                    # parameter is already upper-cased, and the function call
+                    # defeats the primary-key index while making this write
+                    # case-insensitive where get_customer and customer_exists
+                    # are case-sensitive (review finding F23).
+                    "UPDATE customers SET email = %s WHERE account_code = %s",
                     (_clean_str(email), code),
                 )
                 updated = cur.rowcount

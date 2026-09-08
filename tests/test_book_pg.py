@@ -872,7 +872,13 @@ def test_an_enqueue_failure_does_not_fail_the_booking(client, monkeypatch):
 
 def test_booking_success_page_is_unchanged(client, monkeypatch, mail):
     """The success page still renders its payment info and amounts
-    (guards ARCH backward-regression risk for the booking success copy)."""
+    (guards ARCH backward-regression risk for the booking success copy).
+
+    Asserts a marker unique to the success template. The old version checked
+    only for "1000", which the booking form's own re-render on *rejection*
+    also contains — so it passed even if the success page had regressed to an
+    error page (review finding F26).
+    """
     monkeypatch.setattr(
         main, "repo", RepoStub(customer=dict(CUST, email="driver@example.com"))
     )
@@ -883,3 +889,8 @@ def test_booking_success_page_is_unchanged(client, monkeypatch, mail):
 
     assert resp.status_code == 200
     assert "1000" in html or "1,000" in html
+    assert "Enter Your 4-Letter Account Code" not in html, (
+        "this is the booking form re-render, not the success page"
+    )
+    assert "Next Step: Send Payment" in html
+    assert "Thank you for ordering from UniFleet." in html

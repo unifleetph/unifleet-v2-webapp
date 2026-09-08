@@ -8,6 +8,9 @@ import io
 import fcntl
 import hmac
 import subprocess
+import threading
+import time
+from urllib.parse import urlparse
 import pandas as pd
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -158,6 +161,21 @@ def manila_time_filter(value):
 # Session secret: required for signed session cookies (admin login) and
 # flash messages. Set SECRET_KEY in prod; random per-process fallback for dev.
 app.secret_key = os.environ.get("SECRET_KEY") or os.urandom(32)
+
+# F19 (review): the app has no CSRF tokens anywhere, and the new admin routes
+# widen what a cross-site POST can do — repointing a customer's email and then
+# resending their voucher PNG to it. Full CSRF protection is a separate piece
+# of work across every existing form; SameSite=Strict is the cheap half that
+# stops a third-party page's POST carrying the admin session at all.
+# Direct assignment, not setdefault: Flask already defines these keys with a
+# None default, so setdefault would leave them unset.
+app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+
+# F20 (review): /register is unauthenticated and now sends mail on every
+# successful POST, so an unbounded body is both a memory and a validation
+# concern. 256 KB is far more than any form here submits.
+app.config["MAX_CONTENT_LENGTH"] = 256 * 1024
 
 SUPPLIER_API_TOKEN = os.environ.get("SUPPLIER_API_TOKEN", "unifleet2025mvp")  # Default token
 # No weak default: key auth is disabled unless ADMIN_KEY is set in the env.
@@ -510,17 +528,17 @@ def admin_notification_resend(notification_id):
 
     if notifications is None:
         flash("Notifications are unavailable.", "error")
-        return redirect(request.referrer or url_for('admin'))
+        return redirect(_back_to('admin'))
 
     recipient = (request.form.get('recipient') or '').strip()
     if recipient and not _is_valid_email(recipient):
         flash("Please enter a valid Email Address.", "error")
-        return redirect(request.referrer or url_for('admin'))
+        return redirect(_back_to('admin'))
 
     row = notifications.get(notification_id)
     if row is None:
         flash("Notification not found.", "error")
-        return redirect(request.referrer or url_for('admin'))
+        return redirect(_back_to('admin'))
 
     # A skipped row has no recipient — it was recorded precisely because the
     # customer had no address on file. If an admin has since added one, this
@@ -542,15 +560,15 @@ def admin_notification_resend(notification_id):
                 "Add one on their customer page, then resend.",
                 "error",
             )
-            return redirect(request.referrer or url_for('admin'))
+            return redirect(_back_to('admin'))
 
     if not notifications.requeue(notification_id, recipient=recipient or None):
         flash("Could not requeue that notification.", "error")
-        return redirect(request.referrer or url_for('admin'))
+        return redirect(_back_to('admin'))
 
     append_audit("notification_resend", None, note=f"notification_id={notification_id}")
     flash("Notification queued for resending.", "success")
-    return redirect(request.referrer or url_for('admin'))
+    return redirect(_back_to('admin'))
 
 
 @app.route('/admin/customers/<account_code>/email', methods=['POST'])
@@ -565,7 +583,7 @@ def admin_customer_email(account_code):
         return redirect(url_for('admin_login', next=request.path))
 
     email = (request.form.get('email') or '').strip()
-    back = request.referrer or url_for('admin_customers', q=account_code)
+    back = _back_to('admin_customers', q=account_code)
 
     if not _is_valid_email(email):
         flash("Please enter a valid Email Address.", "error")
@@ -791,19 +809,23 @@ def _queue_booking_confirmed(row):
             )
             return
 
+        # Computed once: each call re-reads and re-hashes the voucher PNG, and
+        # if the image changed between two calls the dedupe key and the stored
+        # fingerprint would disagree — and that column is what R10's
+        # change-detection reads (review finding F17).
+        fingerprint = _voucher_fingerprint(row)
+
         subject, body = notifications.render_booking_confirmed()
         notifications.enqueue(
             "booking_confirmed",
             recipient=recipient,
             subject=subject,
             body=body,
-            dedupe_key=notifications.dedupe_booking_confirmed(
-                voucher_id, _voucher_fingerprint(row)
-            ),
+            dedupe_key=notifications.dedupe_booking_confirmed(voucher_id, fingerprint),
             account_code=account_code or None,
             voucher_id=voucher_id or None,
             attachment_ref=f"voucher_png:{voucher_id}",
-            fingerprint=_voucher_fingerprint(row),
+            fingerprint=fingerprint,
         )
     except Exception as e:
         print(f"⚠️ booking-confirmed email not queued for {voucher_id}: {e}")
@@ -988,6 +1010,52 @@ def _append_customer_csv_if_absent(new_row):
         finally:
             fcntl.flock(lockfile.fileno(), fcntl.LOCK_UN)
 
+# F20 (review): /register is unauthenticated, and every successful POST now
+# sends mail. dedupe_account_code keys on the freshly generated account code,
+# so resubmitting the same victim address produces a new code and a new send
+# each time — the outbox's idempotency does not apply. A trivial script turns
+# our Resend account into the delivery mechanism for an email flood, which
+# gets a sending domain suspended rather than merely rate-limited.
+#
+# Deliberately simple: an in-process counter, which is coherent because the
+# app runs a single gunicorn worker. It is a speed bump against scripted
+# abuse, not a defence against a distributed one; a real limiter belongs at
+# the edge.
+REGISTER_MAX_PER_WINDOW = 5
+REGISTER_WINDOW_SECONDS = 600
+
+_register_attempts = {}
+_register_attempts_lock = threading.Lock()
+
+
+def _register_rate_limited(client_ip: str) -> bool:
+    """True if this address has registered too often lately."""
+    if not client_ip:
+        return False
+
+    now = time.monotonic()
+    cutoff = now - REGISTER_WINDOW_SECONDS
+    with _register_attempts_lock:
+        # Prune whole entries so the dict cannot grow without bound.
+        for ip in [ip for ip, hits in _register_attempts.items()
+                   if not hits or hits[-1] < cutoff]:
+            del _register_attempts[ip]
+
+        hits = [t for t in _register_attempts.get(client_ip, []) if t >= cutoff]
+        if len(hits) >= REGISTER_MAX_PER_WINDOW:
+            _register_attempts[client_ip] = hits
+            return True
+
+        hits.append(now)
+        _register_attempts[client_ip] = hits
+        return False
+
+
+def _client_ip() -> str:
+    forwarded = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    return forwarded or (request.remote_addr or "")
+
+
 # Deliberately permissive: one @, no spaces, a dot in the domain. Catching
 # typos is the goal; RFC-complete validation rejects addresses that actually
 # work and would cost us real registrations.
@@ -1005,6 +1073,14 @@ def register():
         # Validation only — the stripped digit count is checked, but the
         # stored value is NOT rewritten (ARCH A3: this field predates the
         # REQ and has existing consumers).
+        if _register_rate_limited(_client_ip()):
+            flash(
+                "Too many registration attempts from this connection. "
+                "Please try again in a few minutes.",
+                "error",
+            )
+            return render_template('register.html', form_values=request.form)
+
         contact_number_digits = re.sub(r'\D', '', request.form.get('contact_number') or '')
         if len(contact_number_digits) < 10:
             flash("Please enter a valid Contact Number (at least 10 digits).", "error")
@@ -1106,6 +1182,34 @@ def terms():
 def _safe_next(target):
     """Only allow same-site relative redirects (guards open-redirect)."""
     return bool(target) and target.startswith('/') and not target.startswith('//')
+
+
+def _back_to(default_endpoint, **values):
+    """Where an admin action should return to.
+
+    Referer is attacker-controlled, so a cross-site POST could otherwise bounce
+    an authenticated admin to any external page — a workable phishing step
+    ("your session expired, log in again"). The new admin routes used it raw
+    (review finding F18).
+
+    _safe_next() alone is not enough here: it only accepts relative paths,
+    which is right for a `next` query parameter but wrong for Referer, which
+    browsers always send absolute. Using it unmodified would reject every
+    referrer and silently drop admins back on the dashboard instead of the
+    page they were working on. So same-origin absolute URLs are accepted, and
+    only their path is used.
+    """
+    referrer = request.referrer or ""
+    if _safe_next(referrer):
+        return referrer
+
+    if referrer:
+        parsed = urlparse(referrer)
+        if parsed.netloc and parsed.netloc == request.host:
+            path = parsed.path or "/"
+            return f"{path}?{parsed.query}" if parsed.query else path
+
+    return url_for(default_endpoint, **values)
 
 @app.route('/admin/login', methods=['GET', 'POST'])
 def admin_login():

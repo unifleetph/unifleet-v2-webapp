@@ -44,6 +44,15 @@ class RepoStub:
         return dict(data)
 
 
+@pytest.fixture(autouse=True)
+def _reset_register_throttle():
+    """The throttle is a module-level counter, so it leaks across tests: five
+    registrations in one test would block the next one."""
+    main._register_attempts.clear()
+    yield
+    main._register_attempts.clear()
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(data_paths, "CUSTOMERS_CSV", tmp_path / "customers.csv")
@@ -390,3 +399,79 @@ def test_registration_survives_a_missing_notifications_module(client, monkeypatc
 
     assert resp.status_code == 302
     assert len(stub.created) == 1
+
+
+# ============================================================
+# F18 / F19 / F20 — review hardening
+# ============================================================
+
+def test_repeated_registrations_from_one_address_are_throttled(client, monkeypatch, queued):
+    """GIVEN many registrations from one connection WHEN the limit is passed
+    THEN further attempts are refused.
+
+    /register is unauthenticated and now sends mail on every success, and
+    dedupe_account_code keys on the freshly generated code — so resubmitting
+    the same victim address produces a new code and a new send every time. A
+    script could turn our Resend account into an email flood, which gets a
+    sending domain suspended (review finding F20).
+    """
+    stub = RepoStub()
+    _use_repo(monkeypatch, stub)
+    for _ in range(main.REGISTER_MAX_PER_WINDOW):
+        assert client.post("/register", data=FORM).status_code == 302
+
+    blocked = client.post("/register", data=FORM)
+
+    assert blocked.status_code == 200
+    assert b"Too many registration attempts" in blocked.data
+    assert len(stub.created) == main.REGISTER_MAX_PER_WINDOW
+    assert len(queued) == main.REGISTER_MAX_PER_WINDOW
+
+
+def test_the_throttle_forgets_old_attempts(client, monkeypatch, queued):
+    """The window slides; it is a speed bump, not a ban."""
+    stub = RepoStub()
+    _use_repo(monkeypatch, stub)
+
+    for _ in range(main.REGISTER_MAX_PER_WINDOW):
+        client.post("/register", data=FORM)
+
+    # age every recorded attempt past the window
+    with main._register_attempts_lock:
+        for ip, hits in list(main._register_attempts.items()):
+            main._register_attempts[ip] = [
+                t - main.REGISTER_WINDOW_SECONDS - 1 for t in hits
+            ]
+
+    assert client.post("/register", data=FORM).status_code == 302
+
+
+def test_the_throttle_does_not_grow_without_bound(client, monkeypatch, queued):
+    """Expired entries are pruned, so the counter cannot become a slow leak."""
+    stub = RepoStub()
+    _use_repo(monkeypatch, stub)
+
+    with main._register_attempts_lock:
+        main._register_attempts["10.0.0.1"] = [
+            main.time.monotonic() - main.REGISTER_WINDOW_SECONDS - 5
+        ]
+
+    client.post("/register", data=FORM)
+
+    assert "10.0.0.1" not in main._register_attempts
+
+
+def test_the_admin_session_cookie_is_same_site_strict():
+    """No CSRF tokens exist anywhere in this app, and the new admin routes let
+    a cross-site POST repoint a customer's email and then resend their voucher
+    to it. Full CSRF protection is separate work across every existing form;
+    SameSite=Strict stops a third-party page's POST carrying the session at
+    all (review finding F19)."""
+    assert main.app.config["SESSION_COOKIE_SAMESITE"] == "Strict"
+    assert main.app.config["SESSION_COOKIE_HTTPONLY"] is True
+
+
+def test_the_request_body_is_capped():
+    """An unbounded body on an unauthenticated endpoint is both a memory and a
+    validation concern (review finding F20)."""
+    assert main.app.config["MAX_CONTENT_LENGTH"] == 256 * 1024

@@ -78,7 +78,8 @@ Required for Railway:
 - `RESEND_API_KEY` — Resend API key for outbound email. Sending is disabled unless set; the app still boots and queues notifications, which then sit in `notifications` until a key appears.
 - `MAIL_FROM` — From address on every customer email. Must be a monitored mailbox (customers reply to these), and its domain must be SPF/DKIM verified with Resend or mail lands in spam.
 - `MAIL_REPLY_TO` — optional Reply-To override. Defaults to replying to `MAIL_FROM`.
-- `NOTIFICATIONS_ENABLED` — operator kill switch for all outbound email. Anything falsey (`0`/`false`/`no`/`off`) stops the outbox worker without a code deploy. Defaults to on.
+- `NOTIFICATIONS_ENABLED` — operator kill switch for all outbound email. Anything falsey (`0`/`false`/`no`/`off`) stops the outbox worker *and* prevents new notifications being queued, so nothing accumulates to replay later. Defaults to on. **Rollout order:** deploy with it off → verify the sending domain (SPF/DKIM) → add internal recipients on `/admin/recipients` → turn it on → provision the `daily-report` cron service (see `docs/runbook.md`).
+- `UNIFLEET_POOL_WAIT_SECONDS` — optional. Bounds how long opening the shared Postgres pool waits for its first connection. Default 5. This is what stops a dead database stalling a request for 30 seconds; raise it only if a slow environment needs it.
 
 ## Gotchas
 
