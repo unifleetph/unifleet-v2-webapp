@@ -106,7 +106,7 @@
               <td>
                 <form method="POST"
                       action="{{ url_for('admin_recipient_delete', recipient_id=r.id) }}"
-                      onsubmit="return confirm('Remove {{ r.email }} from the nightly report?');">
+                      onsubmit="return confirm('Remove this recipient from the nightly report?');">
                   <button class="btn btn-danger" type="submit">Remove</button>
                 </form>
               </td>
