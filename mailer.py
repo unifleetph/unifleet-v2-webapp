@@ -73,29 +73,40 @@ def is_configured() -> bool:
 
 def send(to: str, subject: str, body: str, attachment=None) -> SendResult:
     """POST one email to Resend. Never raises — every failure comes back as
-    a SendResult with ok=False, so the caller can classify it."""
-    payload = {
-        "from": _mail_from(),
-        "to": [to],
-        "subject": subject,
-        "text": body,
-    }
-    reply_to = _reply_to()
-    if reply_to:
-        payload["reply_to"] = reply_to
+    a SendResult with ok=False, so the caller can classify it.
 
-    if attachment is not None:
-        filename, content, mimetype = attachment
-        payload["attachments"] = [{
-            "filename": filename,
-            "content": base64.b64encode(content).decode("ascii"),
-            "content_type": mimetype,
-        }]
-    headers = {
-        "Authorization": f"Bearer {_api_key()}",
-        "Content-Type": "application/json",
-    }
+    Payload construction is inside the try as well as the request: a malformed
+    attachment tuple raises ValueError on unpacking, and a non-bytes body
+    raises TypeError in b64encode. Those are programming errors, but this
+    function promises never to raise and the worker's loop relies on that
+    promise — an escape from here used to strand a whole batch of claimed rows
+    in `sending` forever (review finding B3).
+    """
     try:
+        payload = {
+            "from": _mail_from(),
+            "to": [to],
+            "subject": subject,
+            "text": body,
+        }
+
+        reply_to = _reply_to()
+        if reply_to:
+            payload["reply_to"] = reply_to
+
+        if attachment is not None:
+            filename, content, mimetype = attachment
+            payload["attachments"] = [{
+                "filename": filename,
+                "content": base64.b64encode(content).decode("ascii"),
+                "content_type": mimetype,
+            }]
+
+        headers = {
+            "Authorization": f"Bearer {_api_key()}",
+            "Content-Type": "application/json",
+        }
+
         response = requests.post(
             RESEND_ENDPOINT,
             json=payload,
@@ -103,10 +114,11 @@ def send(to: str, subject: str, body: str, attachment=None) -> SendResult:
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
     except Exception as exc:
-        # Timeout, DNS failure, connection refused, or anything else that
-        # kept us from getting a response at all. status_code 0 tells the
-        # worker this is retryable, unlike a 4xx the provider chose to send.
-        return SendResult(ok=False, status_code=0, error=_redact(str(exc))[:500])
+        # Timeout, DNS failure, connection refused, a malformed attachment, or
+        # anything else that kept us from getting a response at all.
+        # status_code 0 tells the worker this is retryable, unlike a 4xx the
+        # provider chose to send.
+        return SendResult(ok=False, status_code=0, error=_redact(repr(exc))[:500])
 
     return _classify(response)
 

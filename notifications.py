@@ -38,6 +38,7 @@ from typing import Optional
 import data_paths
 import mailer
 from db.pool import get_pool
+from mailer import SendResult
 
 # ============================================================
 # Email copy (REQ R1, R3, R4)
@@ -348,9 +349,18 @@ def _record_failure(cur, row_id: int, attempts: int, result) -> None:
 
 
 def _reclaim_stale(cur) -> int:
-    """Return rows abandoned mid-send to the queue."""
+    """Return rows abandoned mid-send to the queue.
+
+    `attempts` is incremented here as well. Without it a row that kills the
+    drain every time it is picked up — a malformed attachment, an unexpected
+    exception — cycles queued -> sending -> reclaimed indefinitely: it never
+    reaches MAX_ATTEMPTS, never becomes `failed`, and neither admin query
+    selects `sending` or `queued`, so it is invisible forever. Counting the
+    reclaim as an attempt gives that loop a termination condition
+    (review finding B2).
+    """
     cur.execute(
-        "UPDATE notifications SET status = 'queued' "
+        "UPDATE notifications SET status = 'queued', attempts = attempts + 1 "
         "WHERE status = 'sending' "
         "  AND next_attempt_at < NOW() - (%s * interval '1 minute')",
         (STALE_SENDING_MINUTES,),
@@ -423,19 +433,43 @@ def drain_once(limit: int = 20, dsn: Optional[str] = None) -> int:
             conn.commit()
 
             for row in claimed:
-                attachment, note = _resolve_attachment(row["attachment_ref"])
-                result = mailer.send(
-                    to=row["recipient"],
-                    subject=row["subject"],
-                    body=row["body"],
-                    attachment=attachment,
-                )
-                with conn.cursor() as cur:
-                    if result.ok:
-                        _mark_sent(cur, row["id"], result.provider_message_id, note)
-                    else:
-                        _record_failure(cur, row["id"], row["attempts"] + 1, result)
-                conn.commit()
+                # Per-row, so one bad row cannot strand the rest of the batch
+                # — and, more importantly, cannot leave itself claimed with
+                # attempts unincremented, which used to stall the outbox
+                # permanently and invisibly (review finding B2).
+                try:
+                    attachment, note = _resolve_attachment(row["attachment_ref"])
+                    result = mailer.send(
+                        to=row["recipient"],
+                        subject=row["subject"],
+                        body=row["body"],
+                        attachment=attachment,
+                    )
+                except Exception as row_err:
+                    # An unexpected error is not retryable in any useful sense,
+                    # but it must still advance the ladder so the row ends up
+                    # `failed` and visible to an admin rather than looping.
+                    print(f"⚠️ notifications: row {row['id']} raised: {row_err}",
+                          file=sys.stderr)
+                    attachment, note = None, None
+                    result = SendResult(
+                        ok=False, status_code=0, error=repr(row_err)[:500]
+                    )
+
+                try:
+                    with conn.cursor() as cur:
+                        if result.ok:
+                            _mark_sent(cur, row["id"], result.provider_message_id, note)
+                        else:
+                            _record_failure(cur, row["id"], row["attempts"] + 1, result)
+                    conn.commit()
+                except Exception as write_err:
+                    # The outcome could not be recorded. The row stays
+                    # `sending`; the stale sweep reclaims it and now advances
+                    # attempts, so it terminates rather than looping.
+                    print(f"⚠️ notifications: could not record outcome for "
+                          f"row {row['id']}: {write_err}", file=sys.stderr)
+                    conn.rollback()
 
             return len(claimed)
     except Exception as e:
@@ -560,6 +594,37 @@ def flags_by_voucher(voucher_ids, dsn: Optional[str] = None) -> dict:
         }
         for row in rows
     }
+
+
+def get(notification_id: int, dsn: Optional[str] = None) -> Optional[dict]:
+    """Read one notification row.
+
+    The resend route needs the row's account_code to re-resolve a recipient
+    for a skipped notification (a legacy customer whose address an admin has
+    since filled in). This module must not import the repo — ARCH's module
+    boundary — so the lookup itself belongs to the caller; this just hands it
+    the row.
+    """
+    try:
+        pool = get_pool(dsn=dsn)
+        with pool.connection(timeout=ENQUEUE_POOL_TIMEOUT_SECONDS) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, kind, recipient, account_code, voucher_id, status, "
+                    "       attempts, last_error "
+                    "FROM notifications WHERE id = %s",
+                    (notification_id,),
+                )
+                row = cur.fetchone()
+    except Exception as e:
+        print(f"⚠️ notifications.get({notification_id}) failed: {e}", file=sys.stderr)
+        return None
+
+    if row is None:
+        return None
+    cols = ["id", "kind", "recipient", "account_code", "voucher_id",
+            "status", "attempts", "last_error"]
+    return dict(zip(cols, row))
 
 
 def list_flagged(limit: int = 200, dsn: Optional[str] = None) -> list:

@@ -974,3 +974,125 @@ def test_enqueue_gives_up_quickly_when_the_database_is_unreachable():
 
     assert result is None
     assert elapsed < 10, f"enqueue blocked for {elapsed:.1f}s on a dead database"
+
+
+# ------------------------------------------------------------
+# B2 — one bad row must not stall the outbox
+# ------------------------------------------------------------
+
+def test_a_row_that_raises_becomes_failed_not_stuck(schema_db, monkeypatch):
+    """GIVEN a row whose send raises an unexpected exception WHEN it is drained
+    THEN it advances the ladder rather than staying claimed.
+
+    It used to be left in `sending` with attempts unincremented; the stale
+    sweep requeued it forever, MAX_ATTEMPTS was never reached, and no admin
+    query selects `sending` or `queued` — so the row looped invisibly and took
+    the rest of its batch with it (review finding B2).
+    """
+    monkeypatch.setattr(notifications.mailer, "is_configured", lambda: True)
+
+    def boom(**kwargs):
+        raise RuntimeError("something unforeseen")
+
+    monkeypatch.setattr(notifications.mailer, "send", boom)
+    row_id = _queue_one(schema_db, key="poison")
+
+    notifications.drain_once(dsn=schema_db)
+
+    row = _row(schema_db, row_id)
+    assert row["status"] == "queued", "must advance the ladder, not stay claimed"
+    assert row["attempts"] == 1
+    assert "something unforeseen" in row["last_error"]
+
+
+def test_a_row_that_raises_does_not_strand_the_rest_of_the_batch(schema_db, monkeypatch):
+    """The other rows in the same batch must still be delivered."""
+    monkeypatch.setattr(notifications.mailer, "is_configured", lambda: True)
+    sent = []
+
+    def selective(to, subject, body, attachment=None):
+        if to == "poison@example.com":
+            raise RuntimeError("bad row")
+        sent.append(to)
+        return mailer.SendResult(ok=True, status_code=200, provider_message_id="m")
+
+    monkeypatch.setattr(notifications.mailer, "send", selective)
+    bad = _queue_one(schema_db, key="bad", recipient="poison@example.com")
+    good = _queue_one(schema_db, key="good", recipient="fine@example.com")
+
+    notifications.drain_once(dsn=schema_db)
+
+    assert sent == ["fine@example.com"]
+    assert _row(schema_db, good)["status"] == "sent"
+    assert _row(schema_db, bad)["status"] == "queued"
+
+
+def test_a_repeatedly_raising_row_eventually_goes_terminal(schema_db, monkeypatch):
+    """The termination condition the old code lacked: after the ladder is
+    exhausted the row becomes `failed`, which is the only state an admin can
+    actually see."""
+    monkeypatch.setattr(notifications.mailer, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        notifications.mailer, "send",
+        lambda **kw: (_ for _ in ()).throw(RuntimeError("always broken")),
+    )
+    row_id = _queue_one(schema_db, key="alwaysbad")
+
+    for _ in range(notifications.MAX_ATTEMPTS + 1):
+        with psycopg.connect(schema_db) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE notifications SET next_attempt_at = NOW() "
+                    "WHERE id = %s AND status = 'queued'", (row_id,),
+                )
+            conn.commit()
+        notifications.drain_once(dsn=schema_db)
+
+    row = _row(schema_db, row_id)
+    assert row["status"] == "failed"
+    assert row["last_error"]
+
+
+def test_the_stale_sweep_advances_attempts(schema_db, sent_ok):
+    """A reclaimed row counts its abandoned attempt, so a row that keeps
+    killing the drain cannot cycle forever."""
+    row_id = _queue_one(schema_db, key="stalecount")
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE notifications SET status = 'sending', attempts = 2, "
+                "       next_attempt_at = NOW() - interval '10 minutes' "
+                "WHERE id = %s", (row_id,),
+            )
+        conn.commit()
+
+    notifications.drain_once(dsn=schema_db)
+
+    assert _row(schema_db, row_id)["attempts"] >= 3
+
+
+def test_a_failure_to_record_the_outcome_does_not_strand_the_batch(schema_db, monkeypatch):
+    """If the outcome write itself fails, the row stays claimed — but the
+    stale sweep now advances it, and the batch continues."""
+    monkeypatch.setattr(notifications.mailer, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        notifications.mailer, "send",
+        lambda **kw: mailer.SendResult(ok=True, status_code=200, provider_message_id="m"),
+    )
+    row_id = _queue_one(schema_db, key="writefail")
+
+    real_mark_sent = notifications._mark_sent
+    calls = {"n": 0}
+
+    def flaky_mark_sent(cur, rid, pmid, note=None):
+        calls["n"] += 1
+        raise RuntimeError("write failed")
+
+    monkeypatch.setattr(notifications, "_mark_sent", flaky_mark_sent)
+
+    processed = notifications.drain_once(dsn=schema_db)
+
+    assert processed == 1
+    assert calls["n"] == 1
+    assert _row(schema_db, row_id)["status"] == "sending"
+    monkeypatch.setattr(notifications, "_mark_sent", real_mark_sent)

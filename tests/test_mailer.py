@@ -300,3 +300,57 @@ def test_api_key_never_appears_in_a_provider_error_body(monkeypatch):
 
     assert result.ok is False
     assert key not in (result.error or "")
+
+
+# ============================================================
+# B3 — send() must never raise, including on bad arguments
+# ============================================================
+# The worker's loop depends on this promise. An escape from here stranded the
+# whole claimed batch in `sending` with attempts unincremented, where the
+# stale sweep requeued it forever and no admin query could see it.
+
+def test_a_malformed_attachment_tuple_does_not_raise(monkeypatch):
+    """GIVEN an attachment that is not a 3-tuple WHEN send() is called THEN it
+    returns a retryable failure instead of raising ValueError."""
+    monkeypatch.setattr(
+        mailer.requests, "post", lambda url, **kw: _FakeResponse(200, {"id": "m"})
+    )
+
+    result = mailer.send(
+        to="driver@example.com", subject="s", body="b",
+        attachment=("only-two", b"parts"),
+    )
+
+    assert result.ok is False
+    assert result.status_code == 0
+    assert "ValueError" in result.error
+
+
+def test_a_non_bytes_attachment_body_does_not_raise(monkeypatch):
+    """b64encode raises TypeError on a str payload."""
+    monkeypatch.setattr(
+        mailer.requests, "post", lambda url, **kw: _FakeResponse(200, {"id": "m"})
+    )
+
+    result = mailer.send(
+        to="driver@example.com", subject="s", body="b",
+        attachment=("v.png", "not-bytes", "image/png"),
+    )
+
+    assert result.ok is False
+    assert result.status_code == 0
+    assert "TypeError" in result.error
+
+
+def test_the_api_key_is_redacted_from_an_argument_error(monkeypatch):
+    """The new failure path must respect N2 like every other one."""
+    monkeypatch.setattr(
+        mailer.requests, "post", lambda url, **kw: _FakeResponse(200, {"id": "m"})
+    )
+
+    result = mailer.send(
+        to="driver@example.com", subject="s", body="b",
+        attachment=("v.png", "not-bytes", "image/png"),
+    )
+
+    assert "re_test_key_abc123" not in (result.error or "")

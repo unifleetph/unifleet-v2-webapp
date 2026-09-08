@@ -306,3 +306,32 @@ def test_the_email_input_is_labelled(client, monkeypatch):
 
     assert 'for="new-email"' in html
     assert 'id="new-email"' in html
+
+
+def test_the_delete_confirmation_does_not_interpolate_the_address(client, monkeypatch):
+    """A stored address must never reach a JS string literal.
+
+    Jinja escapes `'` to `&#39;`, but the HTML parser decodes that back to a
+    real quote before the JS parser sees it, so escaping does not hold inside
+    an onsubmit handler. _EMAIL_RE permits `'` (it only excludes @ and
+    whitespace), so a crafted address would break out and execute in an
+    authenticated admin session (review finding B6).
+    """
+    import datetime as dt
+
+    hostile = "x'-alert(1)-'@evil.co"
+    monkeypatch.setattr(main.report_recipients, "list_all", lambda **kw: [
+        {"id": 1, "email": hostile, "label": None, "is_active": True,
+         "created_at": dt.datetime(2026, 9, 8), "updated_at": dt.datetime(2026, 9, 8)},
+    ])
+    _login(client)
+
+    html = client.get("/admin/recipients").get_data(as_text=True)
+
+    # The address still renders in text context, where escaping does hold.
+    assert "evil.co" in html
+    # But no confirm() handler may carry any part of it.
+    for line in html.splitlines():
+        if "confirm(" in line:
+            assert "alert(1)" not in line, f"address reached a JS handler: {line.strip()}"
+            assert "evil.co" not in line, f"address reached a JS handler: {line.strip()}"

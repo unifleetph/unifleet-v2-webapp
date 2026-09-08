@@ -14,6 +14,8 @@ import pytest
 
 import main
 
+_MISSING = object()
+
 
 VOUCHER = {
     "voucher_id": "UF-TEST-00001",
@@ -46,7 +48,7 @@ def _login(client):
     client.post("/admin/login", data={"password": "s3cret"})
 
 
-def _stub_flags(monkeypatch, flags, requeue_result=True, requeued=None):
+def _stub_flags(monkeypatch, flags, requeue_result=True, requeued=None, row=_MISSING):
     monkeypatch.setattr(
         main.notifications, "flags_by_voucher", lambda ids, **kw: flags
     )
@@ -57,6 +59,13 @@ def _stub_flags(monkeypatch, flags, requeue_result=True, requeued=None):
         return requeue_result
 
     monkeypatch.setattr(main.notifications, "requeue", fake_requeue)
+
+    stored = {
+        "id": 7, "kind": "booking_confirmed", "recipient": "driver@example.com",
+        "account_code": "HARR", "voucher_id": "UF-TEST-00001",
+        "status": "failed", "attempts": 5, "last_error": "provider said no",
+    } if row is _MISSING else row
+    monkeypatch.setattr(main.notifications, "get", lambda nid, **kw: stored)
 
 
 # ============================================================
@@ -179,13 +188,33 @@ def test_resend_requires_admin(client, monkeypatch):
     assert requeued == []
 
 
-def test_resend_returns_404_for_an_unknown_notification(client, monkeypatch):
-    _stub_flags(monkeypatch, {}, requeue_result=False)
+def test_resend_reports_an_unknown_notification(client, monkeypatch):
+    """An unknown id flashes and redirects, like every other admin route.
+
+    It used to return a bare 404. That both broke the convention and, because
+    requeue returns False on any exception, told the admin "not found" when
+    the truth was "the database is down" (review finding).
+    """
+    _stub_flags(monkeypatch, {}, requeue_result=False, row=None)
     _login(client)
 
-    resp = client.post("/admin/notifications/999999/resend")
+    resp = client.post("/admin/notifications/999999/resend", follow_redirects=True)
 
-    assert resp.status_code == 404
+    assert resp.status_code == 200
+    assert b"Notification not found" in resp.data
+
+
+def test_resend_distinguishes_a_requeue_failure_from_a_missing_row(client, monkeypatch):
+    """A row that exists but cannot be requeued (e.g. the database went away
+    between the read and the write) must not be reported as missing."""
+    _stub_flags(monkeypatch, {}, requeue_result=False)
+    monkeypatch.setattr(main, "repo", _CustomerRepoStub())
+    _login(client)
+
+    resp = client.post("/admin/notifications/7/resend", follow_redirects=True)
+
+    assert b"Could not requeue" in resp.data
+    assert b"not found" not in resp.data
 
 
 def test_resend_is_audited(client, monkeypatch):
@@ -226,3 +255,91 @@ def test_the_dashboard_links_to_recipient_management(client, monkeypatch):
     html = client.get("/admin").get_data(as_text=True)
 
     assert "/admin/recipients" in html
+
+
+# ============================================================
+# B1 — Resend must pick up an address added after the skip
+# ============================================================
+
+class _CustomerRepoStub(RepoStub):
+    def __init__(self, customers=None, **kw):
+        super().__init__(**kw)
+        self._customers = customers or {}
+
+    def get_customer(self, account_code):
+        return self._customers.get(str(account_code or "").strip().upper())
+
+
+def test_resend_resolves_a_missing_recipient_from_the_customer_record(client, monkeypatch):
+    """GIVEN a skipped notification whose customer now HAS an email WHEN an
+    admin clicks Resend THEN the row is requeued against that address.
+
+    This is the R6 -> R9 -> R8 recovery: a legacy customer books with no email
+    on file, an admin adds one, and Resend delivers. Before the fix the route
+    passed recipient=None and the worker was handed a row it could only fail
+    to send (review finding B1).
+    """
+    requeued = []
+    skipped_row = {
+        "id": 9, "kind": "booking_received", "recipient": None,
+        "account_code": "HARR", "voucher_id": "UF-TEST-00001",
+        "status": "skipped", "attempts": 0, "last_error": "no email on file",
+    }
+    _stub_flags(monkeypatch, {}, requeued=requeued, row=skipped_row)
+    monkeypatch.setattr(
+        main, "repo", _CustomerRepoStub(customers={"HARR": {"email": "fixed@example.com"}})
+    )
+    _login(client)
+
+    resp = client.post("/admin/notifications/9/resend")
+
+    assert resp.status_code == 302
+    assert requeued == [(9, "fixed@example.com")], (
+        "Resend must requeue against the address the admin just added"
+    )
+
+
+def test_resend_refuses_when_the_customer_still_has_no_email(client, monkeypatch):
+    """GIVEN a skipped row whose customer still has no address WHEN Resend is
+    clicked THEN nothing is requeued and the admin is told what to do."""
+    requeued = []
+    skipped_row = {
+        "id": 9, "kind": "booking_received", "recipient": None,
+        "account_code": "HARR", "voucher_id": "UF-TEST-00001",
+        "status": "skipped", "attempts": 0, "last_error": "no email on file",
+    }
+    _stub_flags(monkeypatch, {}, requeued=requeued, row=skipped_row)
+    monkeypatch.setattr(main, "repo", _CustomerRepoStub(customers={"HARR": {"email": ""}}))
+    _login(client)
+
+    resp = client.post("/admin/notifications/9/resend", follow_redirects=True)
+
+    assert requeued == [], "must not requeue a row the worker cannot send"
+    assert b"still has no email address on file" in resp.data
+
+
+def test_resend_keeps_an_existing_recipient(client, monkeypatch):
+    """A failed row already has an address; the lookup must not disturb it."""
+    requeued = []
+    _stub_flags(monkeypatch, {}, requeued=requeued)
+    monkeypatch.setattr(
+        main, "repo", _CustomerRepoStub(customers={"HARR": {"email": "other@example.com"}})
+    )
+    _login(client)
+
+    client.post("/admin/notifications/7/resend")
+
+    assert requeued == [(7, None)], (
+        "an existing recipient is left alone; requeue keeps the row's own address"
+    )
+
+
+def test_an_explicit_recipient_override_still_wins(client, monkeypatch):
+    requeued = []
+    _stub_flags(monkeypatch, {}, requeued=requeued)
+    monkeypatch.setattr(main, "repo", _CustomerRepoStub())
+    _login(client)
+
+    client.post("/admin/notifications/7/resend", data={"recipient": "override@example.com"})
+
+    assert requeued == [(7, "override@example.com")]

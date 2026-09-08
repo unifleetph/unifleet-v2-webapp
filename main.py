@@ -474,8 +474,36 @@ def admin_notification_resend(notification_id):
         flash("Please enter a valid Email Address.", "error")
         return redirect(request.referrer or url_for('admin'))
 
+    row = notifications.get(notification_id)
+    if row is None:
+        flash("Notification not found.", "error")
+        return redirect(request.referrer or url_for('admin'))
+
+    # A skipped row has no recipient — it was recorded precisely because the
+    # customer had no address on file. If an admin has since added one, this
+    # is where it gets picked up; without it, Resend requeues a row the worker
+    # can only fail to send (review finding B1). notifications.py cannot do
+    # this lookup itself: it must not import the repo (ARCH A15).
+    if not recipient and not (row.get('recipient') or '').strip():
+        account_code = (row.get('account_code') or '').strip()
+        if account_code:
+            try:
+                customer = repo.get_customer(account_code) or {}
+                recipient = str(customer.get('email') or '').strip()
+            except Exception as e:
+                print(f"⚠️ could not resolve recipient for {account_code}: {e}")
+
+        if not recipient:
+            flash(
+                "That customer still has no email address on file. "
+                "Add one on their customer page, then resend.",
+                "error",
+            )
+            return redirect(request.referrer or url_for('admin'))
+
     if not notifications.requeue(notification_id, recipient=recipient or None):
-        return "<h2>Notification not found.</h2>", 404
+        flash("Could not requeue that notification.", "error")
+        return redirect(request.referrer or url_for('admin'))
 
     append_audit("notification_resend", None, note=f"notification_id={notification_id}")
     flash("Notification queued for resending.", "success")
