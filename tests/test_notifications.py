@@ -950,3 +950,27 @@ def test_the_worker_does_not_start_during_the_test_suite():
 
     assert notifications.start_worker() is False
     notifications._reset_worker_for_tests()
+
+
+def test_enqueue_gives_up_quickly_when_the_database_is_unreachable():
+    """enqueue runs inside the request handler, so it must not sit on a long
+    pool wait — that would stall a registration for the whole timeout before
+    swallowing the failure, which is the stall N1 exists to prevent.
+
+    This is the test T3 could not make pass: the bound belongs in db/pool.py,
+    which T14 added (verifies N1, R7)."""
+    import time
+
+    started = time.monotonic()
+    result = notifications.enqueue(
+        "account_code",
+        recipient="driver@example.com",
+        subject="s",
+        body="b",
+        dedupe_key="acct:SLOW",
+        dsn="postgresql://nobody:nobody@127.0.0.1:1/nonexistent?connect_timeout=1",
+    )
+    elapsed = time.monotonic() - started
+
+    assert result is None
+    assert elapsed < 10, f"enqueue blocked for {elapsed:.1f}s on a dead database"

@@ -986,7 +986,7 @@ disk and the worker reads it at send time, which keeps report building out of
 
 ## Task T14: Bound pool construction so a dead database fails fast
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** high
@@ -1031,6 +1031,17 @@ This matters because `notifications.enqueue` runs inside `/register`, `/book`, a
 - **Key decisions:** ARCH N1 (mail must never stall the request path) and A1 (the outbox exists so the request path stays fast — a 30s block at enqueue defeats it).
 - **Libraries:** `psycopg_pool` — already a dependency.
 - **High-risk callouts:** H-risk. Every Postgres-touching module shares this singleton, and the test suite's `reset_pool()` discipline depends on current behavior. Decide deliberately whether a failed `wait()` should raise or return a pool that retries in the background — the callers that swallow (`audit_log`, `notifications`) tolerate a raise, but `db/postgres_repo.py` may not. Check its call sites before choosing.
+
+**Resolved during implementation:** `db/postgres_repo.py` does not use `get_pool` at
+all — it builds its own `ConnectionPool` and calls its own `pool.wait()`
+(`db/postgres_repo.py:164-172`), so it is unaffected by this change. Every actual
+`get_pool` caller already has to cope with `wait()` raising `PoolTimeout` today, so
+the decision is settled by evidence: keep the raise, bound only how long it takes.
+
+**Follow-up worth its own task:** `PostgresRepo.__init__` has the identical
+unbounded `pool.wait()`, so constructing that repo against an unreachable database
+still blocks ~30s. Out of scope here (this task owns `db/pool.py`), and it bites at
+app startup rather than mid-request, but it is the same bug in a second place.
 
 ### Scope Boundaries
 

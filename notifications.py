@@ -49,11 +49,9 @@ from db.pool import get_pool
 # is far more than a healthy local pool needs and short enough that a customer
 # never notices a dead database.
 #
-# CAVEAT: this bounds the checkout wait once the pool exists, which is the
-# steady-state case. It does NOT bound pool construction: db.pool.get_pool()
-# calls pool.wait(), whose own timeout argument defaults to 30s regardless of
-# the pool's timeout= setting. So the first enqueue in a process whose
-# database is unreachable still blocks ~30s. Fixing that is T14.
+# This bounds the checkout wait once the pool exists. Pool *construction* is
+# bounded separately by db.pool's own wait timeout (T14), so the first enqueue
+# in a process whose database is unreachable no longer blocks for ~30s either.
 ENQUEUE_POOL_TIMEOUT_SECONDS = 2
 
 ACCOUNT_CODE_SUBJECT = "UniFleet Account Code"
