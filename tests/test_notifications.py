@@ -1096,3 +1096,128 @@ def test_a_failure_to_record_the_outcome_does_not_strand_the_batch(schema_db, mo
     assert calls["n"] == 1
     assert _row(schema_db, row_id)["status"] == "sending"
     monkeypatch.setattr(notifications, "_mark_sent", real_mark_sent)
+
+
+def test_enqueue_does_not_reconfigure_the_shared_pool(schema_db, monkeypatch):
+    """enqueue's 2s bound must apply to its own checkout, not to the pool.
+
+    db.pool is process-wide and first-caller-wins, so passing a timeout to
+    get_pool() made every other consumer inherit it (review finding F10).
+    """
+    captured = {}
+    real_get_pool = notifications.get_pool
+
+    def spy(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        return real_get_pool(*args, **kwargs)
+
+    monkeypatch.setattr(notifications, "get_pool", spy)
+
+    notifications.enqueue(
+        "account_code",
+        recipient="driver@example.com",
+        subject="s",
+        body="b",
+        dedupe_key="acct:POOLCFG",
+        dsn=schema_db,
+    )
+
+    assert "timeout" not in captured["kwargs"], (
+        "enqueue must not set the shared pool's default checkout timeout"
+    )
+
+
+# ------------------------------------------------------------
+# F9 — the FK must not swallow the flag it exists alongside
+# ------------------------------------------------------------
+
+def test_a_skipped_row_survives_an_unknown_account_code(schema_db):
+    """GIVEN an account code that matches no customer WHEN the skip is
+    recorded THEN a flag row still lands.
+
+    notifications.account_code is a FK to customers, so this insert used to
+    raise and be swallowed — meaning the one case the branch documents itself
+    as covering ("the account code matches no customer") was the one case it
+    could not record. Same for a customer created while Postgres was down,
+    and for any CSV-backed deployment (review finding F9).
+    """
+    notifications.enqueue_skipped(
+        "booking_received",
+        account_code="NOPE",
+        reason="customer has no email on file",
+        dsn=schema_db,
+    )
+
+    rows = _rows(schema_db)
+    assert len(rows) == 1, "the admin flag must survive a dangling account code"
+    assert rows[0]["status"] == "skipped"
+    assert rows[0]["account_code"] is None
+    assert "NOPE" in rows[0]["last_error"], "the code is preserved for the admin"
+
+
+def test_a_skipped_row_survives_an_unknown_voucher_id(schema_db, customer):
+    notifications.enqueue_skipped(
+        "booking_confirmed",
+        account_code="HARR",
+        voucher_id="UF-DOES-NOT-EXIST",
+        reason="customer has no email on file",
+        dsn=schema_db,
+    )
+
+    rows = _rows(schema_db)
+    assert len(rows) == 1
+    assert "UF-DOES-NOT-EXIST" in rows[0]["last_error"]
+
+
+def test_a_valid_skip_still_keeps_its_references(schema_db, customer):
+    """The fallback must not fire when the references are good — the admin
+    surface keys off account_code."""
+    notifications.enqueue_skipped(
+        "booking_received",
+        account_code="HARR",
+        reason="customer has no email on file",
+        dsn=schema_db,
+    )
+
+    row = _rows(schema_db)[0]
+    assert row["account_code"] == "HARR"
+    assert row["last_error"] == "customer has no email on file"
+
+
+def test_flagged_reads_include_a_sent_row_that_lost_its_attachment(schema_db, voucher):
+    """A confirmation sent without its voucher PNG must reach an admin.
+
+    It ends as `sent` with a note, which both admin queries used to filter
+    out — so ARCH A6's manual-follow-up flag existed only as a string nobody
+    could read (review finding F8).
+    """
+    row_id = _queue_one(schema_db, key="lostattach", voucher_id=voucher)
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE notifications SET status = 'sent', "
+                "       last_error = 'attachment_missing' WHERE id = %s",
+                (row_id,),
+            )
+        conn.commit()
+
+    flags = notifications.flags_by_voucher([voucher], dsn=schema_db)
+    flagged = notifications.list_flagged(dsn=schema_db)
+
+    assert flags[voucher]["last_error"] == "attachment_missing"
+    assert [r["id"] for r in flagged] == [row_id]
+
+
+def test_a_cleanly_sent_row_is_still_not_flagged(schema_db, voucher):
+    """The widened predicate must not turn every delivered email into a flag."""
+    row_id = _queue_one(schema_db, key="cleanlysent", voucher_id=voucher)
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE notifications SET status = 'sent', last_error = NULL "
+                "WHERE id = %s", (row_id,),
+            )
+        conn.commit()
+
+    assert notifications.flags_by_voucher([voucher], dsn=schema_db) == {}
+    assert notifications.list_flagged(dsn=schema_db) == []

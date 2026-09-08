@@ -59,6 +59,7 @@ def _stub_flags(monkeypatch, flags, requeue_result=True, requeued=None, row=_MIS
         return requeue_result
 
     monkeypatch.setattr(main.notifications, "requeue", fake_requeue)
+    monkeypatch.setattr(main.notifications, "list_flagged", lambda **kw: [])
 
     stored = {
         "id": 7, "kind": "booking_confirmed", "recipient": "driver@example.com",
@@ -343,3 +344,78 @@ def test_an_explicit_recipient_override_still_wins(client, monkeypatch):
     client.post("/admin/notifications/7/resend", data={"recipient": "override@example.com"})
 
     assert requeued == [(7, "override@example.com")]
+
+
+# ============================================================
+# F7 / F8 — flags that no voucher row can carry
+# ============================================================
+
+def _stub_flagged(monkeypatch, rows):
+    monkeypatch.setattr(main.notifications, "list_flagged", lambda **kw: rows)
+
+
+def test_a_failed_account_code_email_is_visible(client, monkeypatch):
+    """GIVEN a failed registration email WHEN /admin renders THEN it appears.
+
+    Account-code notifications carry voucher_id = NULL, so the per-row join
+    can never show them — a failed registration email was invisible in every
+    admin surface, and R7 requires it to be visible (review finding F7).
+    """
+    _stub_flags(monkeypatch, {})
+    _stub_flagged(monkeypatch, [{
+        "id": 11, "kind": "account_code", "recipient": "new@example.com",
+        "account_code": "HARR", "voucher_id": None, "status": "failed",
+        "attempts": 5, "last_error": "provider said no", "created_at": None,
+    }])
+    _login(client)
+
+    html = client.get("/admin").get_data(as_text=True)
+
+    assert "account_code" in html
+    assert "new@example.com" in html
+    assert "/admin/notifications/11/resend" in html
+
+
+def test_an_attachment_missing_send_is_flagged(client, monkeypatch):
+    """A confirmation that shipped without its voucher PNG is `sent`, so it
+    was filtered out of both admin queries — invisible, despite A6 promising
+    a manual-follow-up flag (review finding F8)."""
+    _stub_flags(monkeypatch, {
+        "UF-TEST-00001": {
+            "notification_id": 12, "kind": "booking_confirmed",
+            "status": "sent", "attempts": 1, "last_error": "attachment_missing",
+        }
+    })
+    _stub_flagged(monkeypatch, [])
+    _login(client)
+
+    html = client.get("/admin").get_data(as_text=True)
+
+    assert "Sent, no voucher" in html
+    assert "/admin/notifications/12/resend" in html
+
+
+def test_the_problem_list_is_absent_when_nothing_is_flagged(client, monkeypatch):
+    _stub_flags(monkeypatch, {})
+    _stub_flagged(monkeypatch, [])
+    _login(client)
+
+    html = client.get("/admin").get_data(as_text=True)
+
+    assert "Email problems needing attention" not in html
+
+
+def test_the_dashboard_survives_a_failing_flagged_list(client, monkeypatch):
+    """/admin must degrade, not 500, if the outbox is unavailable."""
+    _stub_flags(monkeypatch, {})
+
+    def boom(**kw):
+        raise RuntimeError("outbox unavailable")
+
+    monkeypatch.setattr(main.notifications, "list_flagged", boom)
+    _login(client)
+
+    resp = client.get("/admin")
+
+    assert resp.status_code == 200
+    assert b"UF-TEST-00001" in resp.data

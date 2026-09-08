@@ -357,6 +357,14 @@ CREATE INDEX IF NOT EXISTS idx_notifications_status_next_attempt
 CREATE INDEX IF NOT EXISTS idx_notifications_voucher_id
     ON notifications(voucher_id);
 
+-- list_flagged() renders on every /admin load and reads the newest flagged
+-- rows. Without a partial index that is a backwards walk of the primary key
+-- across a table that is never pruned, because failures are rare by design.
+CREATE INDEX IF NOT EXISTS idx_notifications_flagged
+    ON notifications(id DESC)
+    WHERE status IN ('failed', 'skipped')
+       OR (status = 'sent' AND last_error IS NOT NULL);
+
 -- ============================================================
 -- Report recipients (ARCH-brief-11-email-notifications, T1).
 -- The admin-managed internal distribution list for the nightly

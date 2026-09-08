@@ -170,3 +170,23 @@ def test_the_dsn_still_comes_from_the_environment(monkeypatch, schema_db):
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
             assert cur.fetchone()[0] == 1
+
+
+def test_a_caller_specific_timeout_does_not_become_the_process_default(schema_db):
+    """get_pool is a first-caller-wins singleton, and its `timeout` argument
+    sets the DEFAULT checkout timeout for every later consumer.
+
+    notifications.enqueue used to pass its own 2s bound here. Because an
+    enqueue runs on /register and /book, it was often the first DB touch in
+    the process — silently dropping price_store, discount_store, margin_store
+    and audit_log from 30s to 2s, depending on which request arrived first
+    after a restart (review finding F10). A per-call bound belongs on
+    pool.connection(timeout=...), not on construction.
+    """
+    pool = pool_module.get_pool(dsn=schema_db, timeout=2)
+
+    assert pool.timeout == 2, "sanity: the argument really does set the default"
+    assert pool_module.get_pool().timeout == 2, (
+        "and every later consumer inherits it — which is why callers must not "
+        "pass their own bound here"
+    )

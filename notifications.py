@@ -35,6 +35,8 @@ import threading
 import time
 from typing import Optional
 
+import psycopg
+
 import data_paths
 import mailer
 from db.pool import get_pool
@@ -171,7 +173,7 @@ def enqueue(
     or mid-approval, and none of those may fail because of email.
     """
     try:
-        pool = get_pool(dsn=dsn, timeout=ENQUEUE_POOL_TIMEOUT_SECONDS)
+        pool = get_pool(dsn=dsn)
         with pool.connection(timeout=ENQUEUE_POOL_TIMEOUT_SECONDS) as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -196,6 +198,10 @@ def enqueue(
         return None
 
 
+def _is_fk_violation(exc) -> bool:
+    return isinstance(exc, psycopg.errors.ForeignKeyViolation)
+
+
 def enqueue_skipped(
     kind: str,
     *,
@@ -215,17 +221,38 @@ def enqueue_skipped(
     constraint, so two bookings by the same emailless customer both get their
     own flag rather than silently collapsing into one.
     """
+    def _insert(cur, code, vid, note):
+        cur.execute(
+            "INSERT INTO notifications "
+            "  (kind, recipient, account_code, voucher_id, status, "
+            "   last_error, subject, body) "
+            "VALUES (%s, NULL, %s, %s, 'skipped', %s, '', '')",
+            (kind, code, vid, note),
+        )
+
     try:
-        pool = get_pool(dsn=dsn, timeout=ENQUEUE_POOL_TIMEOUT_SECONDS)
-        with pool.connection(timeout=ENQUEUE_POOL_TIMEOUT_SECONDS) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO notifications "
-                    "  (kind, recipient, account_code, voucher_id, status, "
-                    "   last_error, subject, body) "
-                    "VALUES (%s, NULL, %s, %s, 'skipped', %s, '', '')",
-                    (kind, account_code, voucher_id, reason),
-                )
+        pool = get_pool(dsn=dsn)
+        try:
+            with pool.connection(timeout=ENQUEUE_POOL_TIMEOUT_SECONDS) as conn:
+                with conn.cursor() as cur:
+                    _insert(cur, account_code, voucher_id, reason)
+        except Exception as e:
+            if not _is_fk_violation(e):
+                raise
+            # The customer or voucher this refers to is not in Postgres: an
+            # account code that matches no customer, a customer created while
+            # Postgres was down (the /register pg_error path writes CSV only),
+            # or a CSV-backed deployment. Those are precisely the cases R6's
+            # "skip and flag" exists to make visible, and the FK was silently
+            # swallowing every one of them (review finding F9).
+            #
+            # Keep the flag, drop the references, and preserve what they were
+            # in the reason so an admin can still act on it.
+            detail = f"{reason} (account_code={account_code or '-'}, " \
+                     f"voucher_id={voucher_id or '-'}; not present in Postgres)"
+            with pool.connection(timeout=ENQUEUE_POOL_TIMEOUT_SECONDS) as conn:
+                with conn.cursor() as cur:
+                    _insert(cur, None, None, detail)
     except Exception as e:
         print(f"⚠️ notifications.enqueue_skipped({kind}) failed: {e}", file=sys.stderr)
 
@@ -555,6 +582,16 @@ def _reset_worker_for_tests() -> None:
 # Admin read paths
 # ============================================================
 
+# What counts as needing an admin's attention. `sent` rows are included when
+# they carry a note, because a confirmation that shipped without its voucher
+# PNG is `sent` — and that was invisible everywhere, despite ARCH A6 promising
+# it "becomes the admin's manual-follow-up flag" (review finding F8).
+_FLAGGED_PREDICATE = (
+    "(status IN ('failed', 'skipped') "
+    " OR (status = 'sent' AND last_error IS NOT NULL))"
+)
+
+
 def flags_by_voucher(voucher_ids, dsn: Optional[str] = None) -> dict:
     """Map voucher_id -> flag info for every failed or skipped notification.
 
@@ -574,7 +611,7 @@ def flags_by_voucher(voucher_ids, dsn: Optional[str] = None) -> dict:
                     "SELECT DISTINCT ON (voucher_id) "
                     "       voucher_id, id, kind, status, attempts, last_error "
                     "FROM notifications "
-                    "WHERE voucher_id = ANY(%s) AND status IN ('failed', 'skipped') "
+                    f"WHERE voucher_id = ANY(%s) AND {_FLAGGED_PREDICATE} "
                     "ORDER BY voucher_id, id DESC",
                     (ids,),
                 )
@@ -637,7 +674,7 @@ def list_flagged(limit: int = 200, dsn: Optional[str] = None) -> list:
                     "SELECT id, kind, recipient, account_code, voucher_id, status, "
                     "       attempts, last_error, created_at "
                     "FROM notifications "
-                    "WHERE status IN ('failed', 'skipped') "
+                    f"WHERE {_FLAGGED_PREDICATE} "
                     "ORDER BY id DESC LIMIT %s",
                     (limit,),
                 )

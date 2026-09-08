@@ -290,9 +290,22 @@ def admin():
                     )
         except Exception as e:
             print(f"⚠️ Error loading notification flags: {e}")
+
     except Exception as e:
         print(f"⚠️ Error loading vouchers: {e}")
         vouchers = []
+
+    # Notifications that are not tied to a voucher — the account-code email
+    # above all — have no row in the table above, so a failed registration
+    # email was invisible in every admin surface (review finding F7). This is
+    # the list ARCH specified for exactly that, and it also carries the
+    # attachment-missing cases the per-row badge cannot show.
+    flagged_notifications = []
+    try:
+        if notifications is not None:
+            flagged_notifications = notifications.list_flagged(limit=50)
+    except Exception as e:
+        print(f"⚠️ Error loading flagged notifications: {e}")
 
     # NEW: supply station options + persisted selections for the PDF filter UI
     # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T3/T4/T6 wire up
@@ -312,6 +325,7 @@ def admin():
         ops_token=OPS_TOKEN,
         station_options=stations,
         selected_station_ids=selected_station_ids,
+        flagged_notifications=flagged_notifications,
     )
 
 # =========================

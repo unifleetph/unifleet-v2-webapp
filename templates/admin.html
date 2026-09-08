@@ -278,6 +278,12 @@
       .mail-flag { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; font-weight: 600; }
     .mail-flag-failed { background: #fee2e2; color: #b91c1c; }
     .mail-flag-skipped { background: #fef3c7; color: #92400e; }
+    .mail-flag-attention { background: #ffedd5; color: #9a3412; }
+    .mail-problems { margin: 16px 0; padding: 12px 14px; border: 1px solid #fed7aa; background: #fffbeb; border-radius: 8px; }
+    .mail-problems h3 { margin: 0 0 8px; font-size: 15px; color: #9a3412; }
+    .mail-problems table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .mail-problems th, .mail-problems td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #fed7aa; }
+    .mail-problems .muted { color: #7c2d12; }
     .resend-button { margin-top: 4px; padding: 2px 8px; font-size: 0.8em; border: 1px solid #d1d5db; border-radius: 4px; background: #fff; cursor: pointer; }
   </style>
 </head>
@@ -295,6 +301,43 @@
         <a href="/admin/bookings/export" download>Export All Bookings</a>
 
     </div>
+
+    {% if flagged_notifications %}
+      <div class="mail-problems">
+        <h3>Email problems needing attention ({{ flagged_notifications|length }})</h3>
+        <p class="muted" style="margin:0 0 8px;">
+          Includes account-code emails, which are not tied to a booking and so
+          never appear in the table below.
+        </p>
+        <table>
+          <thead>
+            <tr><th>Type</th><th>Customer</th><th>Booking</th><th>To</th><th>State</th><th>Reason</th><th>Resend</th></tr>
+          </thead>
+          <tbody>
+            {% for n in flagged_notifications %}
+              <tr>
+                <td>{{ n.kind }}</td>
+                <td>{{ n.account_code or '—' }}</td>
+                <td>{{ n.voucher_id or '—' }}</td>
+                <td>{{ n.recipient or 'no address on file' }}</td>
+                <td>
+                  {% if n.status == 'skipped' %}Not sent
+                  {% elif n.status == 'sent' %}Sent, needs follow-up
+                  {% else %}Failed after {{ n.attempts }}
+                  {% endif %}
+                </td>
+                <td class="muted">{{ n.last_error or '' }}</td>
+                <td>
+                  <form method="POST" action="/admin/notifications/{{ n.id }}/resend">
+                    <button type="submit" class="resend-button">Resend</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
 
     <!-- Supplier PDF filter + actions (persist via cookie) -->
     <!-- NOTE: removed `open` so it's collapsed by default -->
@@ -425,7 +468,10 @@
 
                 <td>
                     {% if row.notification_flag %}
-                        {% if row.notification_flag.status == 'skipped' %}
+                        {% if row.notification_flag.status == 'sent' %}
+                            <span class="mail-flag mail-flag-attention"
+                                  title="{{ row.notification_flag.last_error }}">Sent, no voucher</span>
+                        {% elif row.notification_flag.status == 'skipped' %}
                             <span class="mail-flag mail-flag-skipped"
                                   title="No email on file for this customer — add one on the customer page, then resend.">No email</span>
                         {% else %}
