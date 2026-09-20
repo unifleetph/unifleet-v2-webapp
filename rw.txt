@@ -27,8 +27,10 @@ dockerfilePath = "Dockerfile"
 preDeployCommand = "python db/apply.py db/schema.sql db/seed_stations.sql db/seed_prices.sql"
 startCommand = 'sh -c "gunicorn --bind 0.0.0.0:$PORT --workers 1 main:app"'
 
-# NOTE: the nightly supplier sheet is NOT scheduled here. Railway's
-# config-as-code has no cron table, and one config file describes one
-# service. It runs as its own Cron Schedule service configured in the
-# Railway dashboard, exactly like the `backup` service — see docs/runbook.md
-# for the schedule, command and required variables.
+# NOTE: the daily supplier sheet is not scheduled here, and it has no
+# separate service. Railway's config-as-code has no cron table, and a cron
+# service that has to be created by hand is exactly what went missing. The web
+# service's own outbox worker checks once a minute whether today's report has
+# been queued and queues it, so it goes out at 00:00 Asia/Manila and catches up
+# after downtime. See docs/runbook.md ("The daily supplier report") for how it
+# works and how to check it.

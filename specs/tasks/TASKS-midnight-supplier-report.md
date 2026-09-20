@@ -540,7 +540,7 @@ If the recipient list is empty, no report can be sent, and silence is exactly ho
 
 ## Task T9: Docs and rollout
 
-> **Status:** not started
+> **Status:** blocked
 > **Verification:** checklist
 > **Effort:** s
 > **Priority:** medium
@@ -564,6 +564,8 @@ Retire the "create a Railway `daily-report` service" instructions, since the app
 - **Deploy to `dev`, wait for the first tick** — expected: each recipient gets one report email with the PDF, and no second copy within an hour (N3, part 1)
 - **Open the PDF** — expected: Status column, all live orders, and a "Report for [date]" title
 - **Next real 00:00 Manila** — expected: exactly one email per recipient, with no manual step (N3, part 2)
+
+> **Progress (2026-09-21):** the first six items are done and evidenced (searches, runbook and AGENTS.md read-through, `.env` targets the local `db` container, `make test-db` 799 passed, `verify_build.py` RESULT: PASS). **Blocked on the last three, which need a live deploy:** the first-tick email after deploying to `dev`, opening that PDF, and the next real 00:00 Manila delivery (N3). They can only be observed by someone with the deployed environment and the recipient inbox.
 
 ### Implementation Notes
 

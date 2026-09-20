@@ -64,7 +64,7 @@ python db/apply.py db/schema.sql db/seed_stations.sql db/seed_prices.sql
 
 **Railway deploy:** `rw.txt` pins `builder = "DOCKERFILE"`, so every deploy builds a fresh image from `poetry.lock`. `preDeployCommand` runs `db/apply.py`, `startCommand` runs gunicorn (both override the Dockerfile CMD, which chains the same two for local use).
 
-**Email notifications:** `mailer.py` (Resend HTTP client) → `notifications.py` (Postgres outbox + worker thread) → `report_recipients.py` (internal report list). `scripts/send_daily_report.py` runs on a Railway cron at 16:00 UTC (= 00:00 Asia/Manila) and enqueues the nightly supplier sheet. Nothing sends inline: handlers enqueue, a daemon thread drains.
+**Email notifications:** `mailer.py` (Resend HTTP client) → `notifications.py` (Postgres outbox + worker thread) → `report_recipients.py` (internal report list). `daily_report.py` owns the daily supplier sheet (what a live order is, the PDF, and queueing it). The web worker calls it once a minute and queues today's report (Manila date) if it has not been queued, so it goes out at 00:00 Asia/Manila (16:00 UTC) and catches up after downtime; there is no separate cron service. `scripts/send_daily_report.py` is the manual trigger over the same code. Nothing sends inline: handlers enqueue, a daemon thread drains.
 
 ## Environment variables
 
@@ -78,7 +78,7 @@ Required for Railway:
 - `RESEND_API_KEY` — Resend API key for outbound email. Sending is disabled unless set; the app still boots and queues notifications, which then sit in `notifications` until a key appears.
 - `MAIL_FROM` — From address on every customer email. Must be a monitored mailbox (customers reply to these), and its domain must be SPF/DKIM verified with Resend or mail lands in spam.
 - `MAIL_REPLY_TO` — optional Reply-To override. Defaults to replying to `MAIL_FROM`.
-- `NOTIFICATIONS_ENABLED` — operator kill switch for all outbound email. Anything falsey (`0`/`false`/`no`/`off`) stops the outbox worker *and* prevents new notifications being queued, so nothing accumulates to replay later. Defaults to on. **Rollout order:** deploy with it off → verify the sending domain (SPF/DKIM) → add internal recipients on `/admin/recipients` → turn it on → provision the `daily-report` cron service (see `docs/runbook.md`).
+- `NOTIFICATIONS_ENABLED` — operator kill switch for all outbound email. Anything falsey (`0`/`false`/`no`/`off`) stops the outbox worker *and* prevents new notifications being queued, so nothing accumulates to replay later. Defaults to on. **Rollout order:** deploy with it off → verify the sending domain (SPF/DKIM) → add internal recipients on `/admin/recipients` → turn it on. Turning it on queues today's supplier report within a minute if none exists for the current Manila date, so expect one email at that step (see `docs/runbook.md`, "The daily supplier report").
 - `UNIFLEET_POOL_WAIT_SECONDS` — optional. Bounds how long opening the shared Postgres pool waits for its first connection. Default 5. This is what stops a dead database stalling a request for 30 seconds; raise it only if a slow environment needs it.
 
 ## Gotchas
