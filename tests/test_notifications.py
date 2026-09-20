@@ -955,8 +955,10 @@ def test_a_registered_resolver_supplies_the_attachment(schema_db, sent_ok, monke
 
 
 def test_a_resolver_that_raises_still_sends_and_flags(schema_db, sent_ok, monkeypatch):
-    """A report the worker cannot rebuild must not swallow the email — the
-    recipients still learn the run happened, and the flag says to follow up."""
+    """A row whose attachment cannot be rebuilt still goes out and is flagged —
+    the recipient still hears from us and the flag says to follow up. This is
+    the general rule; a `daily_report` row is the exception and is retried
+    instead of sent bare (ARCH-midnight-supplier-report A9, tested below)."""
     def boom(ident):
         raise RuntimeError("reportlab exploded")
 
@@ -1619,3 +1621,220 @@ def test_single_enqueue_is_unchanged(schema_db):
 
     assert isinstance(first, int)
     assert again is None
+
+
+# ------------------------------------------------------------
+# Daily report retry rules (T4, ARCH-midnight-supplier-report A8/A9/A10)
+#
+# A customer email that cannot be delivered surfaces as an admin flag after
+# about 12.5 minutes. The midnight report instead keeps retrying through an
+# outage until it succeeds (REQ R7), and is never sent without its PDF.
+# ------------------------------------------------------------
+
+def _queue_daily(schema_db, key="a", date="2026-09-20", **overrides):
+    kwargs = {
+        "recipient": f"{key}@example.com",
+        "subject": "UniFleet Daily Supplier Sheet",
+        "body": "body",
+        "dedupe_key": f"daily:{date}:{key}@example.com",
+        "attachment_ref": f"daily_pdf:{date}",
+        "dsn": schema_db,
+    }
+    kwargs.update(overrides)
+    return notifications.enqueue("daily_report", **kwargs)
+
+
+def _set_attempts(schema_db, row_id, attempts):
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE notifications SET attempts = %s WHERE id = %s",
+                        (attempts, row_id))
+        conn.commit()
+
+
+def _seconds_ahead(schema_db, row_id):
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT EXTRACT(EPOCH FROM (next_attempt_at - NOW())) "
+                "FROM notifications WHERE id = %s", (row_id,))
+            return float(cur.fetchone()[0])
+
+
+@pytest.fixture
+def daily_pdf_ok(monkeypatch):
+    """A working daily_pdf resolver that records the date it was asked for."""
+    asked = []
+
+    def resolver(ident):
+        asked.append(ident)
+        return (f"UniFleet_Supplier_Sheet_{ident}.pdf", b"%PDF-daily", "application/pdf")
+
+    monkeypatch.setitem(notifications._ATTACHMENT_RESOLVERS, "daily_pdf", resolver)
+    return asked
+
+
+def test_a_daily_report_keeps_retrying_past_the_ladder(schema_db, sends_failing, daily_pdf_ok):
+    """GIVEN a daily report that has already failed MAX_ATTEMPTS-1 times WHEN it
+    fails again with a 5xx THEN it is still queued, not failed (verifies R7)."""
+    row_id = _queue_daily(schema_db)
+    _set_attempts(schema_db, row_id, notifications.MAX_ATTEMPTS - 1)
+
+    notifications.drain_once(dsn=schema_db)
+
+    row = _row(schema_db, row_id)
+    assert row["status"] == "queued"
+    assert row["attempts"] == notifications.MAX_ATTEMPTS
+    assert row["scheduled_ahead"] is True
+
+
+@pytest.mark.parametrize("prior_attempts", [5, 6, 20, 500])
+def test_a_daily_reports_retry_delay_is_capped_at_ten_minutes(
+    schema_db, sends_failing, daily_pdf_ok, prior_attempts
+):
+    """GIVEN a daily report far past the ladder WHEN it fails again THEN the next
+    attempt is 600s away, never longer (verifies R7)."""
+    row_id = _queue_daily(schema_db, key=f"cap{prior_attempts}")
+    _set_attempts(schema_db, row_id, prior_attempts)
+
+    notifications.drain_once(dsn=schema_db)
+
+    assert 598 <= _seconds_ahead(schema_db, row_id) <= 601
+    assert _row(schema_db, row_id)["status"] == "queued"
+
+
+def test_a_daily_report_with_no_response_is_retried(schema_db, sends_failing, daily_pdf_ok):
+    state, _ = sends_failing
+    state["result"] = mailer.SendResult(ok=False, status_code=0, error="timed out")
+    row_id = _queue_daily(schema_db)
+    _set_attempts(schema_db, row_id, notifications.MAX_ATTEMPTS + 2)
+
+    notifications.drain_once(dsn=schema_db)
+
+    assert _row(schema_db, row_id)["status"] == "queued"
+
+
+def test_a_rejected_address_fails_a_daily_report_immediately(schema_db, sends_failing, daily_pdf_ok):
+    """GIVEN a 4xx for one recipient's address WHEN the row is drained THEN it is
+    failed on the first attempt, and another recipient's row is unaffected
+    (verifies REQ edge case: rejected address)."""
+    state, _ = sends_failing
+    state["result"] = mailer.SendResult(ok=False, status_code=422, error="Invalid `to`")
+    row_id = _queue_daily(schema_db, key="bad")
+
+    notifications.drain_once(dsn=schema_db)
+
+    row = _row(schema_db, row_id)
+    assert row["status"] == "failed"
+    assert row["attempts"] == 1
+
+
+def test_a_daily_report_is_never_sent_without_its_pdf(schema_db, sent_ok, monkeypatch):
+    """GIVEN the daily PDF cannot be built at send time WHEN the row is drained
+    THEN no email goes out and the row is retried, with the reason kept
+    (verifies ARCH A9)."""
+    def boom(ident):
+        raise RuntimeError("reportlab exploded")
+
+    monkeypatch.setitem(notifications._ATTACHMENT_RESOLVERS, "daily_pdf", boom)
+    row_id = _queue_daily(schema_db)
+
+    notifications.drain_once(dsn=schema_db)
+
+    row = _row(schema_db, row_id)
+    assert sent_ok == []                       # nothing was mailed
+    assert row["status"] == "queued"
+    assert row["attempts"] == 1
+    assert row["scheduled_ahead"] is True
+    assert "pdf" in (row["last_error"] or "").lower()
+
+
+def test_a_daily_report_with_no_registered_resolver_is_not_sent_bare(schema_db, sent_ok, monkeypatch):
+    monkeypatch.delitem(notifications._ATTACHMENT_RESOLVERS, "daily_pdf", raising=False)
+    row_id = _queue_daily(schema_db)
+
+    notifications.drain_once(dsn=schema_db)
+
+    assert sent_ok == []
+    assert _row(schema_db, row_id)["status"] == "queued"
+
+
+def test_a_daily_report_with_its_pdf_sends_normally(schema_db, sent_ok, daily_pdf_ok):
+    row_id = _queue_daily(schema_db)
+
+    notifications.drain_once(dsn=schema_db)
+
+    assert _row(schema_db, row_id)["status"] == "sent"
+    filename, content, mimetype = sent_ok[0]["attachment"]
+    assert content == b"%PDF-daily" and mimetype == "application/pdf"
+
+
+def test_a_retried_daily_report_keeps_its_own_date(schema_db, sends_failing, daily_pdf_ok):
+    """GIVEN a report for 2026-09-20 that failed and is retried later, after the
+    Manila date has moved on WHEN it is rebuilt THEN the PDF is asked for
+    2026-09-20, not today (verifies R8)."""
+    state, _ = sends_failing
+    row_id = _queue_daily(schema_db, date="2026-09-20")
+    notifications.drain_once(dsn=schema_db)                       # first try fails
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE notifications SET next_attempt_at = NOW() WHERE id = %s",
+                        (row_id,))
+        conn.commit()
+
+    notifications.drain_once(dsn=schema_db)                       # the retry
+
+    assert daily_pdf_ok == ["2026-09-20", "2026-09-20"]
+
+
+def test_an_unconfigured_mailer_leaves_a_daily_report_queued_without_using_attempts(
+    schema_db, monkeypatch, daily_pdf_ok
+):
+    monkeypatch.setattr(notifications.mailer, "is_configured", lambda: False)
+    row_id = _queue_daily(schema_db)
+
+    notifications.drain_once(dsn=schema_db)
+
+    row = _row(schema_db, row_id)
+    assert row["status"] == "queued" and row["attempts"] == 0
+
+
+# --- Regression guard: customer emails keep today's rules ---
+
+@pytest.mark.parametrize("kind", ["account_code", "booking_received", "booking_confirmed"])
+def test_customer_emails_still_exhaust_the_ladder(schema_db, sends_failing, kind):
+    """Guards ARCH backward-regression risk for notifications._record_failure:
+    the never-give-up rule applies to daily reports only."""
+    row_id = notifications.enqueue(
+        kind, recipient="driver@example.com", subject="s", body="b",
+        dedupe_key=f"cust:{kind}", dsn=schema_db,
+    )
+    _set_attempts(schema_db, row_id, notifications.MAX_ATTEMPTS - 1)
+
+    notifications.drain_once(dsn=schema_db)
+
+    row = _row(schema_db, row_id)
+    assert row["status"] == "failed"
+    assert row["attempts"] == notifications.MAX_ATTEMPTS
+
+
+def test_a_customer_email_with_a_missing_attachment_still_sends_and_flags(
+    schema_db, sent_ok, tmp_path, monkeypatch
+):
+    """Guards the same risk: only daily reports refuse to send without their
+    attachment; a booking confirmation still goes out and is flagged."""
+    monkeypatch.setattr(
+        notifications.data_paths, "official_qr_png_path",
+        lambda vid: tmp_path / "does_not_exist.png",
+    )
+    row_id = notifications.enqueue(
+        "booking_confirmed", recipient="driver@example.com", subject="s", body="b",
+        dedupe_key="cust:missing-png", attachment_ref="voucher_png:V999", dsn=schema_db,
+    )
+
+    notifications.drain_once(dsn=schema_db)
+
+    row = _row(schema_db, row_id)
+    assert row["status"] == "sent"
+    assert sent_ok[0]["attachment"] is None
+    assert "attachment_missing" in row["last_error"]

@@ -365,10 +365,10 @@ def _claim_due(cur, limit: int):
         "    FOR UPDATE SKIP LOCKED "
         "    LIMIT %s"
         ") "
-        "RETURNING id, recipient, subject, body, attachment_ref, attempts",
+        "RETURNING id, kind, recipient, subject, body, attachment_ref, attempts",
         (limit,),
     )
-    cols = ["id", "recipient", "subject", "body", "attachment_ref", "attempts"]
+    cols = ["id", "kind", "recipient", "subject", "body", "attachment_ref", "attempts"]
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
@@ -382,6 +382,12 @@ def _claim_due(cur, limit: int):
 # ARCH both claimed fifteen (review finding F15).
 RETRY_BACKOFF_SECONDS = [1, 5, 30, 120, 600]
 MAX_ATTEMPTS = len(RETRY_BACKOFF_SECONDS) + 1
+
+# The midnight supplier report is the one email that must not be given up on
+# (ARCH-midnight-supplier-report A8/A9): a transient failure keeps retrying at
+# the ladder's longest delay until it gets through, and it is never sent
+# without its PDF. Everything else keeps the ladder above.
+DAILY_REPORT_KIND = "daily_report"
 
 # A row that has sat in 'sending' this long was almost certainly abandoned by
 # a process that died mid-send (a redeploy). Reclaiming it risks one duplicate
@@ -457,16 +463,22 @@ def _mark_sent(cur, row_id: int, provider_message_id, note=None) -> None:
     )
 
 
-def _record_failure(cur, row_id: int, attempts: int, result) -> None:
+def _record_failure(cur, row_id: int, attempts: int, result, *,
+                    retry_forever: bool = False) -> None:
     """Advance the retry ladder, or go terminal.
 
     A 4xx is the provider telling us this will never work — a malformed or
     blocked address. Retrying it burns fifteen minutes before showing the
     admin a flag they could have had immediately. 5xx and status_code 0 (no
     response at all) are the retryable cases.
+
+    `retry_forever` is for the daily report: past the ladder it never goes
+    terminal on a transient failure, and keeps waiting the longest rung
+    between attempts. A 4xx is still terminal, since a rejected address does
+    not improve with time.
     """
     permanent = 400 <= result.status_code < 500
-    exhausted = attempts >= MAX_ATTEMPTS
+    exhausted = attempts >= MAX_ATTEMPTS and not retry_forever
 
     if permanent or exhausted:
         cur.execute(
@@ -477,7 +489,7 @@ def _record_failure(cur, row_id: int, attempts: int, result) -> None:
         )
         return
 
-    delay = RETRY_BACKOFF_SECONDS[attempts - 1]
+    delay = RETRY_BACKOFF_SECONDS[min(attempts, len(RETRY_BACKOFF_SECONDS)) - 1]
     cur.execute(
         "UPDATE notifications SET status = 'queued', attempts = %s, "
         "       next_attempt_at = NOW() + (%s * interval '1 second'), "
@@ -588,14 +600,24 @@ def drain_once(limit: int = 20, dsn: Optional[str] = None) -> int:
             # — and, more importantly, cannot leave itself claimed with
             # attempts unincremented, which used to stall the outbox
             # permanently and invisibly (review finding B2).
+            is_daily_report = row["kind"] == DAILY_REPORT_KIND
             try:
                 attachment, note = _resolve_attachment(row["attachment_ref"])
-                result = mailer.send(
-                    to=row["recipient"],
-                    subject=row["subject"],
-                    body=row["body"],
-                    attachment=attachment,
-                )
+                if is_daily_report and attachment is None:
+                    # A "report" with no PDF looks like success and isn't one.
+                    # Treat it as a failed attempt and try again (A9); the
+                    # reason stays on the row for an admin to read.
+                    result = SendResult(
+                        ok=False, status_code=0,
+                        error=f"daily report PDF unavailable ({note or 'no attachment'})",
+                    )
+                else:
+                    result = mailer.send(
+                        to=row["recipient"],
+                        subject=row["subject"],
+                        body=row["body"],
+                        attachment=attachment,
+                    )
             except Exception as row_err:
                 # An unexpected error is not retryable in any useful sense,
                 # but it must still advance the ladder so the row ends up
@@ -615,7 +637,8 @@ def drain_once(limit: int = 20, dsn: Optional[str] = None) -> int:
                         if result.ok:
                             _mark_sent(cur, row["id"], result.provider_message_id, note)
                         else:
-                            _record_failure(cur, row["id"], row["attempts"] + 1, result)
+                            _record_failure(cur, row["id"], row["attempts"] + 1, result,
+                                            retry_forever=is_daily_report)
                     conn.commit()
             except Exception as write_err:
                 # The outcome could not be recorded. The row stays `sending`;

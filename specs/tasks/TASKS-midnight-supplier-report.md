@@ -216,7 +216,7 @@ The daily report will be scheduled by the web process's own worker. This adds a 
 
 ## Task T4: Retry rules for daily reports
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** m
 > **Priority:** high
