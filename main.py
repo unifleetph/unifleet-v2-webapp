@@ -544,9 +544,13 @@ def admin_recipients():
         flash(f"Added {email}.", "success")
         return redirect(url_for('admin_recipients'))
 
+    recipients = report_recipients.list_all(include_inactive=True)
     return render_template(
         'admin_recipients.html',
-        recipients=report_recipients.list_all(include_inactive=True),
+        recipients=recipients,
+        # Nobody active means the daily report has no one to go to, which from
+        # the outside looks the same as it not working (ARCH-midnight-supplier-report A11).
+        no_active_recipients=not any(r.get('is_active') for r in recipients),
     )
 
 

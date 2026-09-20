@@ -483,7 +483,7 @@ Connect the pieces: the app registers the tick and the send-time PDF builder, so
 
 ## Task T8: Empty-recipient warning on the admin recipients page
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** ui
 > **Effort:** xs
 > **Priority:** medium
