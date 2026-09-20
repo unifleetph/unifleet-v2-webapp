@@ -190,3 +190,213 @@ def test_the_on_demand_supplier_sheet_still_lists_only_unredeemed_orders(monkeyp
 
     assert r.status_code == 200
     assert captured["ids"] == ["UF-UNREDEEMED"]
+
+
+# ============================================================
+# ensure_today_queued (T6) — the idempotent tick body
+#
+# These use the real outbox and recipient list on the ephemeral test database
+# (`schema_db`, so `make test-db`), because "already queued today" and "all
+# rows or none" are properties of the database, not of a stub.
+# ============================================================
+
+import psycopg  # noqa: E402
+
+import notifications  # noqa: E402
+import report_recipients  # noqa: E402
+
+UTC = dt.timezone.utc
+
+
+def _utc(y, mo, d, h, mi):
+    return dt.datetime(y, mo, d, h, mi, tzinfo=UTC)
+
+
+# 00:05 Manila on 2026-09-21 is 16:05 UTC on 2026-09-20.
+MIDNIGHT_PLUS_5 = _utc(2026, 9, 20, 16, 5)
+
+
+@pytest.fixture
+def tick_db(schema_db, monkeypatch):
+    import db.pool as pool_module
+
+    monkeypatch.setenv("NOTIFICATIONS_ENABLED", "true")
+
+    def _clean():
+        with psycopg.connect(schema_db) as conn:
+            with conn.cursor() as cur:
+                cur.execute("TRUNCATE notifications")
+                cur.execute("DELETE FROM report_recipients")
+            conn.commit()
+
+    pool_module.reset_pool()
+    _clean()
+    yield schema_db
+    pool_module.reset_pool()
+    _clean()
+
+
+def _add_recipient(dsn, email):
+    assert report_recipients.add(email, dsn=dsn) is not None
+
+
+def _rows(dsn):
+    with psycopg.connect(dsn) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT kind, recipient, dedupe_key, attachment_ref, subject, body, status "
+                "FROM notifications ORDER BY id"
+            )
+            cols = ["kind", "recipient", "dedupe_key", "attachment_ref", "subject", "body", "status"]
+            return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def _tick(repo, dsn, now=MIDNIGHT_PLUS_5):
+    return daily_report.ensure_today_queued(repo, now=now, dsn=dsn)
+
+
+def test_one_row_is_queued_per_recipient_with_the_days_keys(tick_db):
+    _add_recipient(tick_db, "a@example.com")
+    _add_recipient(tick_db, "b@example.com")
+
+    queued = _tick(RepoStub([_v("UF-1")]), tick_db)
+
+    rows = _rows(tick_db)
+    assert queued == 2
+    assert {r["recipient"] for r in rows} == {"a@example.com", "b@example.com"}
+    for r in rows:
+        assert r["kind"] == "daily_report"
+        assert r["status"] == "queued"
+        assert r["dedupe_key"] == f"daily:2026-09-21:{r['recipient']}"
+        assert r["attachment_ref"] == "daily_pdf:2026-09-21"
+        assert "2026-09-21" in r["subject"]
+
+
+def test_a_second_tick_the_same_day_queues_nothing(tick_db):
+    _add_recipient(tick_db, "a@example.com")
+    repo = RepoStub([_v("UF-1")])
+
+    first = _tick(repo, tick_db)
+    second = _tick(repo, tick_db, now=_utc(2026, 9, 21, 3, 0))  # later, same Manila day
+
+    assert first == 1 and second == 0
+    assert len(_rows(tick_db)) == 1
+
+
+def test_a_day_with_no_live_orders_is_still_queued(tick_db):
+    _add_recipient(tick_db, "a@example.com")
+
+    queued = _tick(RepoStub([]), tick_db)
+
+    assert queued == 1
+    assert "no live orders" in _rows(tick_db)[0]["body"].lower()
+
+
+def test_a_recipient_added_after_the_day_was_queued_waits_for_tomorrow(tick_db):
+    _add_recipient(tick_db, "a@example.com")
+    repo = RepoStub([_v("UF-1")])
+    _tick(repo, tick_db)
+
+    _add_recipient(tick_db, "late@example.com")
+    again = _tick(repo, tick_db)
+
+    assert again == 0
+    assert {r["recipient"] for r in _rows(tick_db)} == {"a@example.com"}
+    # ...and the next Manila day includes them.
+    next_day = _tick(repo, tick_db, now=_utc(2026, 9, 21, 16, 5))
+    assert next_day == 2
+
+
+def test_an_empty_recipient_list_queues_nothing_then_catches_up(tick_db):
+    """GIVEN nobody is on the list WHEN the tick runs THEN nothing is queued and
+    nothing raises; once someone is added the same day, the next tick queues
+    that day's report (verifies R10)."""
+    repo = RepoStub([_v("UF-1")])
+
+    assert _tick(repo, tick_db) == 0
+    assert _rows(tick_db) == []
+
+    _add_recipient(tick_db, "first@example.com")
+    assert _tick(repo, tick_db) == 1
+    assert [r["recipient"] for r in _rows(tick_db)] == ["first@example.com"]
+
+
+def test_a_pdf_that_cannot_be_built_queues_nothing_and_is_retried(tick_db, monkeypatch):
+    _add_recipient(tick_db, "a@example.com")
+    repo = RepoStub([_v("UF-1")])
+    real_build = daily_report.build_pdf
+
+    def boom(repo_, report_date):
+        raise RuntimeError("reportlab exploded")
+
+    monkeypatch.setattr(daily_report, "build_pdf", boom)
+    assert _tick(repo, tick_db) == 0            # quietly, no exception
+    assert _rows(tick_db) == []
+
+    monkeypatch.setattr(daily_report, "build_pdf", real_build)
+    assert _tick(repo, tick_db) == 1            # the next tick tries again
+
+
+def test_the_report_day_is_the_manila_day_not_the_utc_day(tick_db):
+    _add_recipient(tick_db, "a@example.com")
+    repo = RepoStub([_v("UF-1")])
+
+    _tick(repo, tick_db, now=_utc(2026, 9, 20, 15, 59))   # still 2026-09-20 in Manila
+    _tick(repo, tick_db, now=_utc(2026, 9, 20, 16, 0))    # midnight: 2026-09-21
+
+    assert [r["dedupe_key"] for r in _rows(tick_db)] == [
+        "daily:2026-09-20:a@example.com",
+        "daily:2026-09-21:a@example.com",
+    ]
+
+
+def test_missed_days_are_not_backfilled(tick_db):
+    _add_recipient(tick_db, "a@example.com")
+
+    queued = _tick(RepoStub([_v("UF-1")]), tick_db, now=_utc(2026, 9, 25, 5, 0))
+
+    rows = _rows(tick_db)
+    assert queued == 1
+    assert [r["dedupe_key"] for r in rows] == ["daily:2026-09-25:a@example.com"]
+
+
+def test_the_email_says_it_was_sent_late_only_after_an_hour(tick_db):
+    """GIVEN a report queued 61 minutes after 00:00 Manila WHEN the body is built
+    THEN it says so and names the day; at 00:05 it does not (verifies R8)."""
+    _add_recipient(tick_db, "a@example.com")
+    repo = RepoStub([_v("UF-1")])
+
+    _tick(repo, tick_db, now=_utc(2026, 9, 20, 16, 5))     # 00:05 Manila on 2026-09-21
+    _tick(repo, tick_db, now=_utc(2026, 9, 21, 17, 1))     # 01:01 Manila on 2026-09-22
+
+    on_time, late = _rows(tick_db)
+    assert "sent late" not in on_time["body"].lower()
+    assert "sent late" in late["body"].lower()
+    assert "2026-09-22" in late["body"]
+
+
+def test_the_body_reports_how_many_live_orders_the_pdf_holds(tick_db):
+    _add_recipient(tick_db, "a@example.com")
+
+    _tick(RepoStub([_v("UF-1"), _v("UF-2", "Redeemed"), _v("UF-3", deleted_at="2026-09-01")]),
+          tick_db)
+
+    assert "Live orders in this report: 2" in _rows(tick_db)[0]["body"]
+
+
+def test_an_unreachable_database_is_survived_quietly(tick_db, monkeypatch, capsys):
+    def down(*a, **kw):
+        raise RuntimeError("database is down")
+
+    monkeypatch.setattr(daily_report, "get_pool", down)
+
+    assert _tick(RepoStub([_v("UF-1")]), tick_db) == 0
+    assert "database is down" in capsys.readouterr().err
+
+
+def test_nothing_is_queued_when_the_kill_switch_is_off(tick_db, monkeypatch):
+    _add_recipient(tick_db, "a@example.com")
+    monkeypatch.setenv("NOTIFICATIONS_ENABLED", "false")
+
+    assert _tick(RepoStub([_v("UF-1")]), tick_db) == 0
+    assert _rows(tick_db) == []

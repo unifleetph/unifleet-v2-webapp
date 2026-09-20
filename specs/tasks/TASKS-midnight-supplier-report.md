@@ -347,7 +347,7 @@ One module defines what counts as a live order and builds the daily PDF from it.
 
 ## Task T6: `daily_report.py` — `ensure_today_queued`
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** m
 > **Priority:** high
