@@ -83,7 +83,7 @@ _Testability note: there is no PDF-text parser in the project. Test pure helpers
 
 ## Task T2: Supplier PDF pagination
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** test-after
 > **Effort:** m
 > **Priority:** high
@@ -110,7 +110,7 @@ The current builder draws the table once on one page, so a long list runs off th
 
 ##### Regression Guard
 
-- **short list stays one page** — GIVEN about 10 orders WHEN the PDF is built THEN it is a single page with the same layout as today _(guards ARCH backward-regression risk for `report_pdf.py`)_
+- **short list keeps today's layout** — GIVEN about 10 orders WHEN the PDF is built THEN it is the same two pages as today (table on page 1, FAQ spilling onto page 2) and the drawn content is identical to before the change _(guards ARCH backward-regression risk for `report_pdf.py`)_. _Corrected during implementation: the plan said "one page", but the FAQ already pushes a 10-row sheet onto a second page._
 - **on-demand sheet** — GIVEN the default call used by `/supplier-sheet.pdf` WHEN built with a long list THEN it paginates too and the existing tests pass _(guards the same risk)_
 
 ### Verification Checklist

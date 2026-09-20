@@ -142,22 +142,27 @@ def test_faq_existing_three_entries_unchanged():
 # on-demand /supplier-sheet.pdf output so it cannot drift (A12).
 # ============================================================
 
-def _pdf_text(pdf_bytes: bytes) -> str:
-    """Text drawn on the pages of a reportlab PDF. reportlab writes each page
-    stream as ASCII85 + Flate, so undo both; no PDF-parsing dependency."""
-    chunks = []
+def _pdf_page_texts(pdf_bytes: bytes) -> list:
+    """Text drawn on each page of a reportlab PDF, in page order. reportlab
+    writes each page stream as ASCII85 + Flate, so undo both; no PDF-parsing
+    dependency."""
+    pages = []
     for m in re.finditer(rb"stream\r?\n(.*?)endstream", pdf_bytes, re.S):
         data = m.group(1).strip()
         try:
             if data.endswith(b"~>"):
                 data = base64.a85decode(data[:-2], adobe=False)
-            chunks.append(zlib.decompress(data))
+            text = zlib.decompress(data).decode("latin-1")
         except Exception:
             continue
-    text = b"\n".join(chunks).decode("latin-1")
-    # Undo PDF string escaping: \( \) \\ and octal codes such as \226 (en dash).
-    text = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), text)
-    return re.sub(r"\\([()\\])", r"\1", text)
+        # Undo PDF string escaping: \( \) \\ and octal codes such as \226 (en dash).
+        text = re.sub(r"\\([0-7]{3})", lambda mm: chr(int(mm.group(1), 8)), text)
+        pages.append(re.sub(r"\\([()\\])", r"\1", text))
+    return pages
+
+
+def _pdf_text(pdf_bytes: bytes) -> str:
+    return "\n".join(_pdf_page_texts(pdf_bytes))
 
 
 _STATIONS = [{"id": "s1", "name": "Cleanfuel"}]
@@ -294,3 +299,105 @@ def test_default_pdf_has_no_status_column_and_the_old_title():
     assert "Report for" not in text
     assert "Status" not in text
     assert "No orders for" not in text
+
+
+# ============================================================
+# Pagination (T2, ARCH-midnight-supplier-report)
+#
+# The daily report holds every order ever, so the table has to split across
+# pages. Before this the table was drawn once on one page and rows past the
+# bottom edge silently vanished.
+# ============================================================
+
+def _page_count(pdf_bytes: bytes) -> int:
+    return pdf_bytes.count(b"/Type /Page") - pdf_bytes.count(b"/Type /Pages")
+
+
+def _many_vouchers(n: int) -> list:
+    return [_voucher(voucher_id=f"UF-{i:04d}", status="Redeemed") for i in range(1, n + 1)]
+
+
+# --- Regression guard: short lists keep today's layout ---
+# Today a 10-row sheet is already two pages: the table fits on page 1 and the
+# FAQ spills onto page 2. Pagination must not change that.
+
+def test_short_list_keeps_todays_two_pages_with_every_row():
+    pdf = build_supplier_pdf(vouchers=_many_vouchers(10), target_station_ids=[], stations=_STATIONS)
+    assert _page_count(pdf) == 2
+    text = _pdf_text(pdf)
+    assert "UF-0001" in text and "UF-0010" in text
+    assert "Frequently Asked Questions" in text
+
+
+def test_short_daily_list_keeps_two_pages_with_every_row():
+    pdf = build_supplier_pdf(
+        vouchers=_many_vouchers(10), target_station_ids=[], stations=_STATIONS,
+        include_status=True, report_date="2026-09-20",
+    )
+    assert _page_count(pdf) == 2
+    text = _pdf_text(pdf)
+    assert "UF-0001" in text and "UF-0010" in text
+
+
+# --- Pagination ---
+
+def test_a_long_list_spills_onto_more_pages():
+    short = build_supplier_pdf(vouchers=_many_vouchers(10), target_station_ids=[], stations=_STATIONS)
+    long = build_supplier_pdf(vouchers=_many_vouchers(200), target_station_ids=[], stations=_STATIONS)
+    assert _page_count(long) > _page_count(short) + 1
+
+
+def test_no_row_is_lost_across_pages():
+    pdf = build_supplier_pdf(
+        vouchers=_many_vouchers(200), target_station_ids=[], stations=_STATIONS,
+        include_status=True, report_date="2026-09-20",
+    )
+    text = _pdf_text(pdf)
+    missing = [f"UF-{i:04d}" for i in range(1, 201) if f"UF-{i:04d}" not in text]
+    assert missing == []
+
+
+def test_header_repeats_on_every_page_that_has_rows():
+    pdf = build_supplier_pdf(
+        vouchers=_many_vouchers(200), target_station_ids=[], stations=_STATIONS,
+        include_status=True, report_date="2026-09-20",
+    )
+    row_pages = [p for p in _pdf_page_texts(pdf) if "UF-0" in p]
+    assert len(row_pages) > 1
+    for page in row_pages:
+        assert "Voucher ID" in page and "Status" in page
+
+
+def test_the_on_demand_sheet_paginates_too():
+    pdf = build_supplier_pdf(vouchers=_many_vouchers(200), target_station_ids=[], stations=_STATIONS)
+    text = _pdf_text(pdf)
+    assert all(f"UF-{i:04d}" in text for i in range(1, 201))
+    assert "Status" not in text
+    row_pages = [p for p in _pdf_page_texts(pdf) if "UF-0" in p]
+    assert len(row_pages) > 1 and all("Voucher ID" in p for p in row_pages)
+
+
+def test_faq_comes_after_the_last_table_row():
+    pdf = build_supplier_pdf(vouchers=_many_vouchers(200), target_station_ids=[], stations=_STATIONS)
+    text = _pdf_text(pdf)
+    assert text.rindex("UF-0200") < text.index("Frequently Asked Questions")
+
+
+def test_no_table_is_drawn_taller_than_the_page():
+    """Rows drawn past the bottom edge are still in the file's text but are
+    invisible, so the text check alone can't tell a lost row from a shown one.
+    The table's vertical grid lines give each drawn table's height."""
+    page_height = 595.28  # A4 landscape, points
+    for kwargs in ({}, {"include_status": True, "report_date": "2026-09-20"}):
+        pdf = build_supplier_pdf(
+            vouchers=_many_vouchers(200), target_station_ids=[], stations=_STATIONS, **kwargs
+        )
+        heights = []
+        for page in _pdf_page_texts(pdf):
+            for x1, y1, x2, y2 in re.findall(
+                r"n ([\d.]+) ([\d.]+) m ([\d.]+) ([\d.]+) l S", page
+            ):
+                if x1 == x2:  # vertical line
+                    heights.append(abs(float(y2) - float(y1)))
+        assert heights, "expected table grid lines in the PDF"
+        assert max(heights) < page_height

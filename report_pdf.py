@@ -273,7 +273,9 @@ def build_supplier_pdf(*, vouchers, target_station_ids, stations, logo_path=None
     if include_status:
         # Make room for Status (after Voucher ID) inside the same 272mm.
         col_widths = [58*mm, 22*mm, 38*mm, 20*mm, 28*mm, 36*mm, 24*mm, 46*mm]
-    table = Table(data, colWidths=col_widths)
+    # repeatRows: when the table splits across pages every page starts with
+    # the header row again.
+    table = Table(data, colWidths=col_widths, repeatRows=1)
 
     table.setStyle(TableStyle([
         ("FONT", (0,0), (-1,0), "Helvetica-Bold", 10),
@@ -294,9 +296,30 @@ def build_supplier_pdf(*, vouchers, target_station_ids, stations, logo_path=None
         ("BOTTOMPADDING", (0,0), (-1,0), 6),
     ]))
 
-    tw, th = table.wrapOn(c, page_w - 2*x_margin, y - 10*mm)
-    table.drawOn(c, x_margin, y - th)
-    y = y - th - (8 * mm)
+    # The table goes page by page. The daily report holds every order ever, so
+    # a single drawOn would run rows off the bottom of page 1 and lose them.
+    table_w = page_w - 2*x_margin
+    bottom_margin = 10 * mm
+    pending = table
+    while True:
+        avail_h = y - bottom_margin
+        tw, th = pending.wrapOn(c, table_w, avail_h)
+        if th <= avail_h:
+            pending.drawOn(c, x_margin, y - th)
+            y = y - th - (8 * mm)
+            break
+        parts = pending.split(table_w, avail_h)
+        if len(parts) < 2:
+            # Nothing more can be split off (a single row taller than the
+            # page); draw it as-is rather than loop forever.
+            pending.drawOn(c, x_margin, y - th)
+            y = y - th - (8 * mm)
+            break
+        first, pending = parts[0], parts[1]
+        fw, fh = first.wrapOn(c, table_w, avail_h)
+        first.drawOn(c, x_margin, y - fh)
+        c.showPage()
+        y = page_h - y_margin
 
     if report_date and not rows:
         y = _draw_paragraph(c, _empty_message(report_date), subtitle_style,
