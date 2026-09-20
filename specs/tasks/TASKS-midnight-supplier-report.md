@@ -150,7 +150,7 @@ _Testability note: page count comes from the PDF bytes (verify in implementation
 
 ## Task T3: Outbox additions — periodic tick and atomic batch enqueue
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** m
 > **Priority:** high

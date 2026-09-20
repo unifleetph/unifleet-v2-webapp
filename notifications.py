@@ -22,6 +22,8 @@ Public API (T3):
   render_booking_confirmed()    -> (subject, body)
   enqueue(kind, ...)            -> int | None   (None on dedupe collision or DB failure)
   enqueue_skipped(kind, ...)    -> None
+  enqueue_batch(rows)           -> int | None  (all rows in one transaction)
+  register_periodic_task(fn, interval_seconds)   (run by the worker loop)
 
 Email copy is verbatim from docs/Brief-11_email.md — client-approved, so it
 is not to be "improved". The markdown fence's 4-space indentation and a few
@@ -202,6 +204,52 @@ def enqueue(
     # path, and the app must run exactly as it did before.
     return _run(_insert, dsn=dsn, timeout=ENQUEUE_POOL_TIMEOUT_SECONDS,
                 label=f"enqueue({kind})")
+
+
+def enqueue_batch(rows, *, dsn: Optional[str] = None) -> Optional[int]:
+    """Queue several emails in ONE transaction: all of them or none.
+
+    Each row is a dict with kind, recipient, subject, body and dedupe_key,
+    and optionally account_code, voucher_id, attachment_ref and fingerprint.
+    Returns how many rows were newly queued (rows whose dedupe key already
+    exists are skipped, so a repeat returns 0), or None when nothing was
+    written because the flag is off or the database failed. Never raises.
+
+    The daily report queues one row per recipient. Written one at a time, a
+    crash part-way would leave a day half-queued, and the "already queued
+    today" check would then hide the recipients who missed out
+    (ARCH-midnight-supplier-report A3).
+    """
+    if not is_enabled():
+        return None
+    rows = list(rows or [])
+    if not rows:
+        return 0
+
+    def _insert_all(cur):
+        queued = 0
+        for r in rows:
+            cur.execute(
+                "INSERT INTO notifications "
+                "  (kind, recipient, account_code, voucher_id, dedupe_key, "
+                "   voucher_fingerprint, attachment_ref, subject, body) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (dedupe_key) DO NOTHING "
+                "RETURNING id",
+                (
+                    r["kind"], r.get("recipient"), r.get("account_code"),
+                    r.get("voucher_id"), r.get("dedupe_key"), r.get("fingerprint"),
+                    r.get("attachment_ref"), r.get("subject"), r.get("body"),
+                ),
+            )
+            if cur.fetchone():
+                queued += 1
+        return queued
+
+    # An exception inside _run's connection block rolls the whole transaction
+    # back, which is what makes this atomic.
+    return _run(_insert_all, dsn=dsn, timeout=ENQUEUE_POOL_TIMEOUT_SECONDS,
+                label="enqueue_batch")
 
 
 def _run(operation, *, dsn=None, timeout=None, label="", default=None):
@@ -606,6 +654,61 @@ def is_enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+# Periodic tasks run inside the worker loop (ARCH-midnight-supplier-report
+# A1). They are registered rather than imported: this module may not depend on
+# the repo or the PDF builder (ARCH-brief-11 A15), so main.py hands over the
+# callable, the same way it registers an attachment resolver.
+_periodic_tasks = []
+_periodic_lock = threading.Lock()
+
+
+def register_periodic_task(fn, interval_seconds: float) -> None:
+    """Have the worker call `fn()` about every `interval_seconds`.
+
+    Registering the same callable again replaces its entry, so a re-import
+    can't make a task run twice. The task must be safe to repeat; it is called
+    in the worker thread, and anything it raises is logged and swallowed.
+    """
+    with _periodic_lock:
+        for task in _periodic_tasks:
+            if task["fn"] is fn:
+                task["interval"] = interval_seconds
+                return
+        _periodic_tasks.append({"fn": fn, "interval": interval_seconds, "last_run": None})
+
+
+def _run_periodic_tasks(now: Optional[float] = None) -> None:
+    """Run every registered task that is due. Never raises.
+
+    A task that raises must not stop the others, the worker loop, or sending,
+    so each is isolated. The kill switch is honoured per call, like drain_once,
+    so flipping it off stops the schedule without a restart.
+    """
+    if not is_enabled():
+        return
+    now = time.monotonic() if now is None else now
+    with _periodic_lock:
+        tasks = list(_periodic_tasks)
+    for task in tasks:
+        last = task["last_run"]
+        if last is not None and now - last < task["interval"]:
+            continue
+        # Stamped before the call, so a task that keeps failing is retried on
+        # its own interval rather than on every poll.
+        task["last_run"] = now
+        try:
+            task["fn"]()
+        except Exception as e:
+            name = getattr(task["fn"], "__name__", repr(task["fn"]))
+            print(f"⚠️ notifications periodic task {name} failed: {e}", file=sys.stderr)
+
+
+def _reset_periodic_tasks_for_tests() -> None:
+    """Clear the registry. Tests only."""
+    with _periodic_lock:
+        _periodic_tasks.clear()
+
+
 def _drain_forever() -> None:
     """The worker loop. Each iteration is wrapped so a transient database or
     provider problem cannot kill the thread — if it died, emails would queue
@@ -615,6 +718,10 @@ def _drain_forever() -> None:
             drain_once()
         except Exception as e:
             print(f"⚠️ notifications worker iteration failed: {e}", file=sys.stderr)
+        try:
+            _run_periodic_tasks()
+        except Exception as e:
+            print(f"⚠️ notifications periodic tasks failed: {e}", file=sys.stderr)
         time.sleep(POLL_INTERVAL_SECONDS)
 
 

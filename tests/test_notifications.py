@@ -1403,3 +1403,219 @@ def test_enqueuing_resumes_when_the_flag_is_back_on(schema_db, monkeypatch):
         dedupe_key="acct:UNGATED",
         dsn=schema_db,
     ) is not None
+
+
+# ------------------------------------------------------------
+# Periodic tasks (T3, ARCH-midnight-supplier-report A1/A2)
+#
+# The daily report is scheduled by the web process's own worker. notifications
+# may not import the repo or the PDF builder (ARCH-brief-11 A15), so the
+# report registers a tick here instead, the same way it registers an
+# attachment resolver.
+# ------------------------------------------------------------
+
+@pytest.fixture
+def periodic(monkeypatch):
+    """A clean periodic-task registry, restored afterwards."""
+    monkeypatch.setenv("NOTIFICATIONS_ENABLED", "true")
+    notifications._reset_periodic_tasks_for_tests()
+    yield
+    notifications._reset_periodic_tasks_for_tests()
+
+
+class _StopLoop(Exception):
+    pass
+
+
+def _run_worker_loop(monkeypatch, iterations):
+    """Run _drain_forever for a fixed number of iterations, without sleeping."""
+    sleeps = {"n": 0}
+
+    def fake_sleep(_seconds):
+        sleeps["n"] += 1
+        if sleeps["n"] >= iterations:
+            raise _StopLoop
+
+    monkeypatch.setattr(notifications.time, "sleep", fake_sleep)
+    with pytest.raises(_StopLoop):
+        notifications._drain_forever()
+
+
+def test_a_registered_tick_runs_about_once_per_interval(periodic):
+    """GIVEN a tick with a 60s interval WHEN the runner is called at 0, 30, 60
+    and 119 seconds THEN it runs at 0 and 60 only (verifies R11)."""
+    calls = []
+    notifications.register_periodic_task(lambda: calls.append(1), interval_seconds=60)
+
+    for now in (0, 30, 60, 119):
+        notifications._run_periodic_tasks(now=now)
+
+    assert len(calls) == 2
+
+
+def test_the_worker_loop_runs_registered_ticks(periodic, monkeypatch):
+    """GIVEN a registered tick WHEN the worker loop iterates THEN the tick is
+    called from it (verifies R11)."""
+    calls = []
+    monkeypatch.setattr(notifications, "drain_once", lambda *a, **kw: 0)
+    notifications.register_periodic_task(lambda: calls.append(1), interval_seconds=0)
+
+    _run_worker_loop(monkeypatch, iterations=3)
+
+    assert len(calls) >= 1
+
+
+def test_registering_the_same_tick_twice_registers_it_once(periodic):
+    calls = []
+
+    def tick():
+        calls.append(1)
+
+    notifications.register_periodic_task(tick, interval_seconds=60)
+    notifications.register_periodic_task(tick, interval_seconds=60)
+    notifications._run_periodic_tasks(now=0)
+
+    assert len(calls) == 1
+
+
+def test_a_raising_tick_is_logged_and_does_not_stop_the_loop_or_sending(
+    periodic, monkeypatch, capsys
+):
+    """GIVEN a tick that raises WHEN the worker loop iterates THEN the error is
+    logged, other ticks still run, and drain_once keeps being called
+    (verifies N1)."""
+    drains = []
+    good_calls = []
+    monkeypatch.setattr(notifications, "drain_once", lambda *a, **kw: drains.append(1) or 0)
+
+    def bad_tick():
+        raise RuntimeError("tick blew up")
+
+    notifications.register_periodic_task(bad_tick, interval_seconds=0)
+    notifications.register_periodic_task(lambda: good_calls.append(1), interval_seconds=0)
+
+    _run_worker_loop(monkeypatch, iterations=3)
+
+    assert len(drains) == 3            # sending never stopped
+    assert len(good_calls) >= 1        # the next tick still ran
+    assert "tick blew up" in capsys.readouterr().err
+
+
+def test_no_tick_runs_when_the_kill_switch_is_off(periodic, monkeypatch):
+    """GIVEN NOTIFICATIONS_ENABLED is false WHEN ticks are due THEN none run
+    (REQ edge case: kill switch), and start_worker starts nothing."""
+    calls = []
+    notifications.register_periodic_task(lambda: calls.append(1), interval_seconds=0)
+    monkeypatch.setenv("NOTIFICATIONS_ENABLED", "false")
+
+    notifications._run_periodic_tasks(now=0)
+    notifications._reset_worker_for_tests()
+
+    assert calls == []
+    assert notifications.start_worker() is False
+
+
+def test_drain_once_is_unaffected_by_registered_ticks(periodic, schema_db, sent_ok):
+    """Regression guard: drain_once itself never runs ticks, so a customer email
+    is sent exactly as before even when a tick is registered and would raise
+    (guards ARCH backward-regression risk for notifications customer email
+    paths)."""
+    def bad_tick():
+        raise RuntimeError("must not run inside drain_once")
+
+    notifications.register_periodic_task(bad_tick, interval_seconds=0)
+    row_id = _queue_one(schema_db, key="drain-guard")
+
+    assert notifications.drain_once(dsn=schema_db) == 1
+    assert _row(schema_db, row_id)["status"] == "sent"
+    assert len(sent_ok) == 1
+
+
+# ------------------------------------------------------------
+# Batch enqueue (T3, ARCH-midnight-supplier-report A3)
+#
+# All of a day's recipient rows are written in one transaction, so a crash
+# part-way can never leave a day half-queued.
+# ------------------------------------------------------------
+
+def _batch_row(n, **overrides):
+    row = {
+        "kind": "daily_report",
+        "recipient": f"person{n}@example.com",
+        "subject": "UniFleet Daily Supplier Sheet",
+        "body": "body",
+        "dedupe_key": f"daily:2026-09-20:person{n}@example.com",
+        "attachment_ref": "daily_pdf:2026-09-20",
+    }
+    row.update(overrides)
+    return row
+
+
+def _count_notifications(schema_db):
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM notifications")
+            return cur.fetchone()[0]
+
+
+def test_a_batch_writes_every_row_and_returns_the_count(schema_db):
+    queued = notifications.enqueue_batch([_batch_row(1), _batch_row(2), _batch_row(3)],
+                                         dsn=schema_db)
+
+    assert queued == 3
+    assert _count_notifications(schema_db) == 3
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT status, kind, attachment_ref FROM notifications")
+            assert cur.fetchall() == [("queued", "daily_report", "daily_pdf:2026-09-20")]
+
+
+def test_a_batch_is_atomic_when_one_insert_fails(schema_db, capsys):
+    """GIVEN three rows where the second is invalid (no subject) WHEN the batch
+    is queued THEN none persist and the caller is told it failed (verifies A3
+    safety)."""
+    rows = [_batch_row(1), _batch_row(2, subject=None), _batch_row(3)]
+
+    result = notifications.enqueue_batch(rows, dsn=schema_db)
+
+    assert result is None
+    assert _count_notifications(schema_db) == 0
+    assert "enqueue_batch" in capsys.readouterr().err
+
+
+def test_a_batch_skips_existing_dedupe_keys_and_counts_only_new_rows(schema_db):
+    """GIVEN one dedupe key already exists WHEN the batch is queued THEN it is
+    skipped and the count is the number newly queued; a repeat queues none
+    (verifies R9)."""
+    notifications.enqueue_batch([_batch_row(1)], dsn=schema_db)
+
+    first = notifications.enqueue_batch([_batch_row(1), _batch_row(2), _batch_row(3)],
+                                        dsn=schema_db)
+    second = notifications.enqueue_batch([_batch_row(1), _batch_row(2), _batch_row(3)],
+                                         dsn=schema_db)
+
+    assert first == 2
+    assert second == 0
+    assert _count_notifications(schema_db) == 3
+
+
+def test_an_empty_batch_queues_nothing(schema_db):
+    assert notifications.enqueue_batch([], dsn=schema_db) == 0
+
+
+def test_a_batch_writes_nothing_when_the_kill_switch_is_off(schema_db, monkeypatch):
+    monkeypatch.setenv("NOTIFICATIONS_ENABLED", "false")
+
+    assert notifications.enqueue_batch([_batch_row(1)], dsn=schema_db) is None
+    assert _count_notifications(schema_db) == 0
+
+
+def test_single_enqueue_is_unchanged(schema_db):
+    """Regression guard: enqueue still returns an id, and None on a dedupe
+    collision (guards ARCH backward-regression risk for notifications
+    customer email paths)."""
+    first = _queue_one(schema_db, key="single")
+    again = _queue_one(schema_db, key="single")
+
+    assert isinstance(first, int)
+    assert again is None
