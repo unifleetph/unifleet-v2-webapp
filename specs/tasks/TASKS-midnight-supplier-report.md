@@ -280,7 +280,7 @@ Today a failed send goes terminal after 6 attempts (about 12.5 minutes), and a P
 
 ## Task T5: `daily_report.py` — live-order rule and PDF build
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** high
