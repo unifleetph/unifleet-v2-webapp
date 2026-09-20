@@ -416,7 +416,7 @@ The idempotent tick body: if today's Manila-date report hasn't been queued, queu
 
 ## Task T7: Wiring — `main.py` and the script wrapper
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** test-after
 > **Effort:** s
 > **Priority:** high

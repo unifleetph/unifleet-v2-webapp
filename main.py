@@ -56,40 +56,69 @@ except Exception as _e:
     _traceback.print_exc()
     print("=" * 72, file=sys.stderr)
 
+# The midnight supplier report (ARCH-midnight-supplier-report). Guarded for
+# the same reason: it pulls in the PDF builder and the outbox, and the app
+# must still boot and serve if either cannot be imported.
+try:
+    import daily_report
+    _DAILY_REPORT_IMPORT_ERROR = None
+except Exception as _e:
+    daily_report = None
+    _DAILY_REPORT_IMPORT_ERROR = str(_e)
+    print(f"⚠️  DAILY REPORT DISABLED: {_e}", file=sys.stderr)
+
 # Start the outbox drainer. start_worker() swallows its own failures and is
 # idempotent, and it no-ops when NOTIFICATIONS_ENABLED is off or the mailer
 # is unconfigured — so this line cannot stop the app from booting, which is
 # the only thing that matters at import time.
-def _build_daily_report_pdf(manila_date: str):
-    """Rebuild the nightly supplier sheet at send time.
+def _build_daily_report_pdf(report_date: str):
+    """Rebuild the daily supplier sheet at send time.
 
-    The cron enqueues only a reference; the bytes are produced here, in the
-    web process, because the cron runs as its own Railway service and a Volume
-    mounts to exactly one service — a file the cron wrote would not be
-    readable by the worker that sends the mail (review finding B5).
+    The queued row carries only a reference (`daily_pdf:<date>`); the bytes are
+    produced here, in the web process, so the report always reflects the
+    orders as they stand when it is sent, and a retry after midnight is still
+    labelled with the day it covers (ARCH-midnight-supplier-report A10).
 
     Registered rather than imported by notifications.py, which may not depend
-    on the repo or the PDF builder (ARCH A15).
+    on the repo or the PDF builder (ARCH-brief-11 A15).
     """
-    if build_supplier_pdf is None:
-        raise RuntimeError(f"PDF builder unavailable: {_PDF_IMPORT_ERROR}")
+    if daily_report is None:
+        raise RuntimeError(f"daily report unavailable: {_DAILY_REPORT_IMPORT_ERROR}")
 
-    stations = price_store.list_stations("Biodiesel")
-    vouchers = [
-        v for v in _exclude_deleted(repo.list_all_vouchers())
-        if str(v.get("status") or "").strip() == "Unredeemed"
-    ]
-    pdf_bytes = build_supplier_pdf(
-        vouchers=vouchers,
-        target_station_ids=set(s.get("id") for s in stations if s.get("id")),
-        stations=stations,
-        logo_path=data_paths.STATIC_LOGO_PATH,
-    )
-    return (f"UniFleet_Supplier_Sheet_{manila_date}.pdf", pdf_bytes, "application/pdf")
+    pdf_bytes = daily_report.build_pdf(repo, report_date)
+    return (f"UniFleet_Supplier_Sheet_{report_date}.pdf", pdf_bytes, "application/pdf")
+
+
+DAILY_REPORT_TICK_SECONDS = 60
+
+
+def _daily_report_tick():
+    """Queue today's supplier report if it has not been queued yet.
+
+    Run about once a minute by the outbox worker (ARCH-midnight-supplier-report
+    A1). This is what makes the report happen at midnight with no separate
+    scheduled service, and what sends it late after downtime.
+    """
+    # The worker thread starts while this module is still importing, before
+    # `repo` below exists. Skip that first pass; the next tick finds it.
+    current_repo = globals().get("repo")
+    if daily_report is None or current_repo is None:
+        return 0
+    return daily_report.ensure_today_queued(current_repo)
+
+
+def _register_notification_hooks():
+    """Hand the outbox worker what it may not import itself: the send-time PDF
+    builder and the daily report tick. Idempotent."""
+    notifications.register_attachment_resolver("daily_pdf", _build_daily_report_pdf)
+    if daily_report is not None:
+        notifications.register_periodic_task(
+            _daily_report_tick, DAILY_REPORT_TICK_SECONDS
+        )
 
 
 if notifications is not None:
-    notifications.register_attachment_resolver("daily_pdf", _build_daily_report_pdf)
+    _register_notification_hooks()
     notifications.start_worker()
 
 # NEW: discounts storage
