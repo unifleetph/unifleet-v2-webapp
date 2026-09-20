@@ -301,6 +301,38 @@ class CSVRepo:
             finally:
                 fcntl.flock(lockfile.fileno(), fcntl.LOCK_UN)
 
+    def update_customer_email(self, account_code: str, email: str) -> bool:
+        """Set one customer's email. Returns False if the code is unknown.
+
+        Exists so an admin can fill in the address for a customer who
+        registered before email was required, then resend the notifications
+        that were skipped for want of one (R9).
+
+        Takes the same sidecar lock as create_customer_if_absent: this
+        rewrites customers.csv wholesale, and /register appends to that same
+        file, so an unlocked rewrite can drop a concurrently appended row.
+        """
+        code = str(account_code or "").strip().upper()
+        addr = str(email or "").strip()
+        lock_path = str(data_paths.CUSTOMERS_CSV) + ".lock"
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        with open(lock_path, "a+") as lockfile:
+            fcntl.flock(lockfile.fileno(), fcntl.LOCK_EX)
+            try:
+                df = self._read_customers()
+                if df.empty:
+                    return False
+                mask = df["account_code"].astype(str).str.strip().str.upper() == code
+                if not mask.any():
+                    return False
+                df.loc[mask, "email"] = addr
+                df[CUSTOMER_COLUMNS].to_csv(
+                    str(data_paths.CUSTOMERS_CSV), index=False, encoding="utf-8-sig"
+                )
+                return True
+            finally:
+                fcntl.flock(lockfile.fileno(), fcntl.LOCK_UN)
+
     def get_customer(self, account_code: str) -> Optional[Dict]:
         """Fetch a customer by account_code (case-insensitive). None if absent."""
         code = str(account_code or "").strip().upper()

@@ -44,6 +44,15 @@ class RepoStub:
         return dict(data)
 
 
+@pytest.fixture(autouse=True)
+def _reset_register_throttle():
+    """The throttle is a module-level counter, so it leaks across tests: five
+    registrations in one test would block the next one."""
+    main._register_attempts.clear()
+    yield
+    main._register_attempts.clear()
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(data_paths, "CUSTOMERS_CSV", tmp_path / "customers.csv")
@@ -207,3 +216,262 @@ def test_register_country_code_select_renders(client, monkeypatch):
 
     assert 'name="mobile_country_code"' in body
     assert '<option value="+63" selected>+63 (Philippines)</option>' in body
+
+
+# ============================================================
+# T5 — email required, account-code email queued
+# (ARCH-brief-11-email-notifications)
+# ============================================================
+
+@pytest.fixture
+def queued(monkeypatch):
+    """Capture enqueue calls instead of writing to Postgres."""
+    calls = []
+
+    def fake_enqueue(kind, **kwargs):
+        calls.append({"kind": kind, **kwargs})
+        return len(calls)
+
+    monkeypatch.setattr(main.notifications, "enqueue", fake_enqueue)
+    return calls
+
+
+def test_blank_email_is_rejected_and_creates_no_customer(client, monkeypatch, queued):
+    """GIVEN a registration with an empty email WHEN it is submitted THEN the
+    form re-renders with an error and no customer is created (verifies R2)."""
+    stub = RepoStub()
+    _use_repo(monkeypatch, stub)
+    form = dict(FORM, email="")
+
+    resp = client.post("/register", data=form)
+
+    assert resp.status_code == 200
+    assert stub.created == []
+    assert queued == []
+
+
+def test_malformed_email_is_rejected(client, monkeypatch, queued):
+    """GIVEN an email of 'not-an-email' WHEN submitted THEN it is rejected and
+    no customer is created (verifies R2, REQ edge case)."""
+    stub = RepoStub()
+    _use_repo(monkeypatch, stub)
+
+    resp = client.post("/register", data=dict(FORM, email="not-an-email"))
+
+    assert resp.status_code == 200
+    assert stub.created == []
+    assert queued == []
+
+
+@pytest.mark.parametrize("bad", ["no-at-sign.com", "two@@at.com", "trailing@", "@leading.com", "spaces in@example.com"])
+def test_email_validation_rejects_malformed_addresses(client, monkeypatch, queued, bad):
+    stub = RepoStub()
+    _use_repo(monkeypatch, stub)
+
+    client.post("/register", data=dict(FORM, email=bad))
+
+    assert stub.created == [], f"{bad!r} should not have been accepted"
+
+
+def test_rejected_registration_preserves_entered_values(client, monkeypatch, queued):
+    """GIVEN a rejected submission WHEN the form re-renders THEN the other
+    entered values are still populated, so the customer is not retyping
+    everything (verifies R2)."""
+    _use_repo(monkeypatch, RepoStub())
+
+    resp = client.post("/register", data=dict(FORM, email=""))
+    html = resp.get_data(as_text=True)
+
+    assert "Harrods" in html
+    assert "Harry" in html
+
+
+def test_valid_registration_queues_the_account_code_email(client, monkeypatch, queued):
+    """GIVEN a valid submission WHEN the customer is created THEN exactly one
+    account_code notification is queued for that address, carrying the real
+    account code (verifies R1)."""
+    stub = RepoStub()
+    _use_repo(monkeypatch, stub)
+
+    resp = client.post("/register", data=FORM)
+
+    assert resp.status_code == 302
+    assert len(queued) == 1
+    call = queued[0]
+    assert call["kind"] == "account_code"
+    assert call["recipient"] == "harry@example.com"
+    code = stub.created[0]["account_code"]
+    assert call["account_code"] == code
+    assert code in call["body"]
+    assert call["subject"] == "UniFleet Account Code"
+    assert call["dedupe_key"] == f"acct:{code}"
+
+
+def test_the_email_is_queued_only_after_the_customer_is_stored(client, monkeypatch):
+    """A code must never be emailed for an account that failed to save, so the
+    enqueue happens after both the repo write and the CSV append (verifies R1)."""
+    stub = RepoStub()
+    _use_repo(monkeypatch, stub)
+    seen = {}
+
+    def fake_enqueue(kind, **kwargs):
+        seen["created_at_enqueue_time"] = list(stub.created)
+        seen["csv_exists"] = data_paths.CUSTOMERS_CSV.exists()
+        return 1
+
+    monkeypatch.setattr(main.notifications, "enqueue", fake_enqueue)
+
+    client.post("/register", data=FORM)
+
+    assert len(seen["created_at_enqueue_time"]) == 1
+    assert seen["csv_exists"] is True
+
+
+def test_an_enqueue_failure_does_not_fail_registration(client, monkeypatch):
+    """GIVEN the outbox raises WHEN a valid registration is submitted THEN the
+    customer is still created and the success redirect still happens
+    (verifies R7, ARCH forward stress-test)."""
+    stub = RepoStub()
+    _use_repo(monkeypatch, stub)
+
+    def boom(kind, **kwargs):
+        raise RuntimeError("outbox exploded")
+
+    monkeypatch.setattr(main.notifications, "enqueue", boom)
+
+    resp = client.post("/register", data=FORM)
+
+    assert resp.status_code == 302
+    assert len(stub.created) == 1
+
+
+# ------------------------------------------------------------
+# Regression guards
+# ------------------------------------------------------------
+
+def test_contact_number_rule_is_unchanged(client, monkeypatch, queued):
+    """The pre-existing >=10 digit rule still rejects short numbers
+    (guards ARCH-brief-8 R9/R10)."""
+    stub = RepoStub()
+    _use_repo(monkeypatch, stub)
+
+    resp = client.post("/register", data=dict(FORM, contact_number="0900"))
+
+    assert resp.status_code == 200
+    assert stub.created == []
+
+
+def test_postgres_down_path_still_registers(client, monkeypatch, queued):
+    """GIVEN create_customer_if_absent raises WHEN a valid registration is
+    submitted THEN the pg_error sentinel path still completes it
+    (guards main.py's existing Postgres-down resilience)."""
+    class RaisingRepo(RepoStub):
+        def create_customer_if_absent(self, data):
+            raise RuntimeError("Postgres is down")
+
+    _use_repo(monkeypatch, RaisingRepo())
+
+    resp = client.post("/register", data=FORM)
+
+    assert resp.status_code == 302
+
+
+def test_email_field_is_marked_required_in_the_form(client):
+    """The client-side attribute backs up the server-side rule (verifies R2)."""
+    html = client.get("/register").get_data(as_text=True)
+
+    assert re.search(r'name="email"[^>]*required', html) or re.search(
+        r'required[^>]*name="email"', html
+    )
+
+
+def test_registration_survives_a_missing_notifications_module(client, monkeypatch):
+    """GIVEN the notifications module failed to import WHEN a valid
+    registration is submitted THEN it still completes. main.py guards the
+    import the way it guards build_supplier_pdf: a mail problem must never
+    take down registration (guards ARCH backward-regression risk for
+    main.py module import)."""
+    stub = RepoStub()
+    _use_repo(monkeypatch, stub)
+    monkeypatch.setattr(main, "notifications", None)
+
+    resp = client.post("/register", data=FORM)
+
+    assert resp.status_code == 302
+    assert len(stub.created) == 1
+
+
+# ============================================================
+# F18 / F19 / F20 — review hardening
+# ============================================================
+
+def test_repeated_registrations_from_one_address_are_throttled(client, monkeypatch, queued):
+    """GIVEN many registrations from one connection WHEN the limit is passed
+    THEN further attempts are refused.
+
+    /register is unauthenticated and now sends mail on every success, and
+    dedupe_account_code keys on the freshly generated code — so resubmitting
+    the same victim address produces a new code and a new send every time. A
+    script could turn our Resend account into an email flood, which gets a
+    sending domain suspended (review finding F20).
+    """
+    stub = RepoStub()
+    _use_repo(monkeypatch, stub)
+    for _ in range(main.REGISTER_MAX_PER_WINDOW):
+        assert client.post("/register", data=FORM).status_code == 302
+
+    blocked = client.post("/register", data=FORM)
+
+    assert blocked.status_code == 200
+    assert b"Too many registration attempts" in blocked.data
+    assert len(stub.created) == main.REGISTER_MAX_PER_WINDOW
+    assert len(queued) == main.REGISTER_MAX_PER_WINDOW
+
+
+def test_the_throttle_forgets_old_attempts(client, monkeypatch, queued):
+    """The window slides; it is a speed bump, not a ban."""
+    stub = RepoStub()
+    _use_repo(monkeypatch, stub)
+
+    for _ in range(main.REGISTER_MAX_PER_WINDOW):
+        client.post("/register", data=FORM)
+
+    # age every recorded attempt past the window
+    with main._register_attempts_lock:
+        for ip, hits in list(main._register_attempts.items()):
+            main._register_attempts[ip] = [
+                t - main.REGISTER_WINDOW_SECONDS - 1 for t in hits
+            ]
+
+    assert client.post("/register", data=FORM).status_code == 302
+
+
+def test_the_throttle_does_not_grow_without_bound(client, monkeypatch, queued):
+    """Expired entries are pruned, so the counter cannot become a slow leak."""
+    stub = RepoStub()
+    _use_repo(monkeypatch, stub)
+
+    with main._register_attempts_lock:
+        main._register_attempts["10.0.0.1"] = [
+            main.time.monotonic() - main.REGISTER_WINDOW_SECONDS - 5
+        ]
+
+    client.post("/register", data=FORM)
+
+    assert "10.0.0.1" not in main._register_attempts
+
+
+def test_the_admin_session_cookie_is_same_site_strict():
+    """No CSRF tokens exist anywhere in this app, and the new admin routes let
+    a cross-site POST repoint a customer's email and then resend their voucher
+    to it. Full CSRF protection is separate work across every existing form;
+    SameSite=Strict stops a third-party page's POST carrying the session at
+    all (review finding F19)."""
+    assert main.app.config["SESSION_COOKIE_SAMESITE"] == "Strict"
+    assert main.app.config["SESSION_COOKIE_HTTPONLY"] is True
+
+
+def test_the_request_body_is_capped():
+    """An unbounded body on an unauthenticated endpoint is both a memory and a
+    validation concern (review finding F20)."""
+    assert main.app.config["MAX_CONTENT_LENGTH"] == 256 * 1024

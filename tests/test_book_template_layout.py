@@ -37,7 +37,8 @@ class RepoStub:
 def client(monkeypatch):
     monkeypatch.setattr(main, "repo", RepoStub())
     monkeypatch.setattr(main.price_store, "list_stations", lambda fuel_type: [])
-    monkeypatch.setattr(main.discount_store, "get_all", lambda fuel_type: {})
+    monkeypatch.setattr(main.discount_store, "get_all_with_exempt", lambda fuel_type: {})
+    monkeypatch.setattr(main.margin_store, "get", lambda: 0.0)
     main.app.config.update(TESTING=True)
     return main.app.test_client()
 

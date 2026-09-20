@@ -139,3 +139,41 @@ def test_customer_export_still_404s_for_unknown_account_code(client, monkeypatch
     r = client.get("/admin/customers/export?account_code=NOPE")
 
     assert r.status_code == 404
+
+
+# ============================================================
+# Deleted-order exclusion (T3, ARCH-delete-order-button)
+# ============================================================
+
+def _deleted_booking(voucher_id, account_code):
+    row = _booking(voucher_id, account_code)
+    row["deleted_at"] = "2026-09-02T00:00:00"
+    return row
+
+
+def test_export_all_bookings_excludes_deleted_orders(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(
+        customers=[CUSTOMER],
+        vouchers=[_booking("UF-5", "HARR"), _deleted_booking("UF-6", "HARR")],
+    ))
+    _login(client)
+
+    r = client.get("/admin/bookings/export")
+
+    assert r.status_code == 200
+    df = pd.read_csv(pd.io.common.BytesIO(r.data))
+    assert set(df["voucher_id"]) == {"UF-5"}
+
+
+def test_customer_export_excludes_deleted_orders(client, monkeypatch):
+    monkeypatch.setattr(main, "repo", RepoStub(
+        customers=[CUSTOMER],
+        vouchers=[_booking("UF-7", "HARR"), _deleted_booking("UF-8", "HARR")],
+    ))
+    _login(client)
+
+    r = client.get("/admin/customers/export?account_code=HARR")
+
+    assert r.status_code == 200
+    df = pd.read_csv(pd.io.common.BytesIO(r.data))
+    assert set(df["voucher_id"]) == {"UF-7"}

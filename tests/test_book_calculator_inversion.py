@@ -65,6 +65,9 @@ class RepoStub:
 def env(tmp_path, monkeypatch):
     monkeypatch.setattr(data_paths, "CUSTOMERS_CSV", tmp_path / "customers.csv")
     monkeypatch.setattr(data_paths, "PRESETS_DIR", tmp_path)
+    # REQ-profit-margin: default to 0% so this file's calculator-math
+    # assertions keep exercising raw discount values unchanged.
+    monkeypatch.setattr(main.margin_store, "get", lambda: 0.0)
     main.app.config.update(TESTING=True)
     return tmp_path
 
@@ -86,8 +89,11 @@ def _book(client, monkeypatch, repo_stub, amount, price=76.03, discount=5.50):
         lambda fuel_type: [{"id": "ecooil-cainta", "name": "EcoOil - Cainta",
                              "price_php_per_liter": price, "updated_at": 0}]
     )
-    monkeypatch.setattr(main.discount_store, "get_all", lambda fuel_type: {})
-    monkeypatch.setattr(main.discount_store, "get", lambda station, fuel_type: discount)
+    monkeypatch.setattr(main.discount_store, "get_all_with_exempt", lambda fuel_type: {})
+    monkeypatch.setattr(
+        main.discount_store, "get_with_exempt",
+        lambda station, fuel_type: {"value": discount, "margin_exempt": True}
+    )
 
     return client.post("/book", data={
         "account_code": "HARR",

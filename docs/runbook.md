@@ -58,6 +58,86 @@ The UniFleet v2 deployment on Railway consists of:
 | Volume | `unifleet-pgdata-backups` | Railway Volume | Mounted at `/backups` on `backup` |
 | Domain | `unifleet.asia` | DNS A/CNAME | Points at Railway's edge IP |
 
+### The daily supplier report
+
+The supplier sheet email goes out **every day at 00:00 Asia/Manila** (16:00 UTC;
+the Philippines has no DST) to every active address on `/admin/recipients`. It
+lists **every live order** (not deleted; Unverified, Unredeemed or Redeemed)
+over all time, with a Status column. On a day with no orders the PDF still
+arrives and says "No orders for <date>".
+
+**There is no separate service to provision.** The `web` service schedules it
+itself: its outbox worker checks once a minute whether today's report (Manila
+date) has been queued, and queues one email per active recipient if not. It
+therefore also catches up after downtime: if `web` was down at midnight, the
+report is queued when it comes back, and the email says it was sent late once
+that is more than an hour past 00:00 Manila. Only today's report is sent;
+missed days are not backfilled. (An earlier design used a Railway Cron Schedule
+service called `daily-report`. It was never created, which is why no midnight
+report ever arrived. If you find one, delete it; it is harmless but pointless,
+because a report is queued once per Manila day whoever asks first.)
+
+What each piece does:
+
+| Piece | Job |
+|---|---|
+| `web` outbox worker | once a minute: queue today's report if not yet queued; every 5 s: send what is queued |
+| `daily_report.py` | the one definition of a "live order", the PDF, and the "queue today's report" step |
+| `scripts/send_daily_report.py` | manual trigger over the same code (see below) |
+
+It needs on `web` only what email already needs: `RESEND_API_KEY`,
+`MAIL_FROM` (SPF/DKIM verified), `NOTIFICATIONS_ENABLED` not set to a false
+value, and `PERSISTENCE_BACKEND` set correctly, since the report is built from
+the orders `web` reads.
+
+**Rules worth knowing**
+
+- **Turning email on sends today's report straight away.** The first check
+  after `NOTIFICATIONS_ENABLED` becomes true (or after a deploy) queues today's
+  report if none exists for the current Manila date. Expect one email
+  right after the rollout step; that is also your first proof it works.
+- **One report per Manila day.** Once any recipient has today's report queued,
+  the day is done. An address added later that day gets tomorrow's report.
+- **Nobody active on the list** means nothing can be sent. The recipients page
+  shows a warning, and the first address added that day gets that day's report.
+- **`NOTIFICATIONS_ENABLED` off stops the report on purpose:** no worker, no
+  schedule, nothing queued. A forgotten switch looks exactly like a broken
+  report, so check it first.
+- **Failures keep retrying.** A send that fails on a provider error or timeout
+  is retried every 10 minutes until it goes through, however long that takes.
+  A rejected address (a 4xx from Resend) fails at once and shows in the flagged
+  list on `/admin`. A report whose PDF cannot be built is never emailed without
+  it; it is retried too, and the reason is on the notification row.
+  **A report that is still being retried is not on the `/admin` flagged list**
+  (that list shows only failed rows and sent rows that carry a note), so a long
+  outage is visible in the logs and the `notifications` table, not on `/admin`.
+
+**Checking it**
+
+1. **Did it run?** In the `web` logs, search for `daily report:`. You should
+   see `queued 2026-… for N of N recipient(s); … live orders, PDF … bytes` once
+   per day. `no active recipients` means the list is empty or everyone is
+   paused; `could not build the report` or `could not read the recipient list`
+   give the cause.
+2. **Is it stuck?** Look at the newest daily report rows (Railway → `unifleet`
+   database → Query, or `make psql` locally):
+
+   ```sql
+   SELECT id, recipient, status, attempts, last_error, next_attempt_at
+   FROM notifications WHERE kind = 'daily_report' ORDER BY id DESC LIMIT 10;
+   ```
+
+   `sent` is done. `queued` with `attempts` above 0 is retrying, and
+   `last_error` says why. `failed` is a rejected address; it also shows on the
+   `/admin` flagged list, where the admin Resend button re-queues it.
+3. **Dry run from a shell with `web`'s variables:**
+   `python scripts/send_daily_report.py --dry-run` builds the report and prints
+   what would be queued, writing nothing. Without `--dry-run` it queues today's
+   report through the same code as the worker (and does nothing if it is
+   already queued). It needs `DATABASE_URL` and `PERSISTENCE_BACKEND`; exit
+   codes: 0 done or nothing to do, 1 a variable is missing or the database is
+   unreachable, 2 the PDF could not be built.
+
 ## 2. Dashboard bookmarks
 
 Bookmark these on day 1. The exact URLs depend on the project ID assigned by Railway; replace `<project-id>` and `<service-id>` with the actual values shown in the dashboard URL bar.
