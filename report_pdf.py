@@ -82,20 +82,75 @@ def _fuel_type_display(fuel_type) -> str:
     return _FUEL_TYPE_DISPLAY.get(ft, ft)
 
 
-def _build_supplier_row(r: dict) -> list:
-    """Turn one voucher dict into a supplier-sheet row (7 columns).
-    Pure and reportlab-free, so it's testable without a PDF-parsing
-    dependency (T8's testability note)."""
+_SUPPLIER_HEADER = ["Station (Expected)", "Amount (PHP)", "Driver name", "Plate",
+                    "Fuel Type", "Voucher ID", "Name / Signature"]
+
+
+def _supplier_header(include_status: bool = False) -> list:
+    """Header row. The daily report adds a Status column after Voucher ID
+    (ARCH-midnight-supplier-report A6); the on-demand sheet does not."""
+    header = list(_SUPPLIER_HEADER)
+    if include_status:
+        header.insert(6, "Status")
+    return header
+
+
+def _status_display(status) -> str:
+    """A blank status is an order that has not been verified yet."""
+    return (str(status).strip() if status is not None else "") or "Unverified"
+
+
+def _has_amount(r: dict) -> bool:
+    return any(
+        _coalesce(r.get(k)) is not None
+        for k in ("total_dispensed", "total_dispensed_php", "requested_amount_php")
+    )
+
+
+def _build_supplier_row(r: dict, include_status: bool = False) -> list:
+    """Turn one voucher dict into a supplier-sheet row (7 columns, 8 with
+    Status). Pure and reportlab-free, so it's testable without a
+    PDF-parsing dependency (T8's testability note)."""
     amount = _total_amount_php_from_row(r)
-    return [
+    # Unverified orders may not have an amount yet. The daily report leaves
+    # that cell blank rather than claiming 0.00; the on-demand sheet keeps
+    # its existing behaviour.
+    amount_cell = "" if include_status and not _has_amount(r) else f"{_fmt_money(amount)}"
+    row = [
         (r.get("station") or "").strip(),
-        f"{_fmt_money(amount)}",
+        amount_cell,
         r.get("driver_name") or "",
         r.get("vehicle_plate") or "",
         _fuel_type_display(r.get("fuel_type")),
         r.get("voucher_id") or "",
         "",  # Name / Signature
     ]
+    if include_status:
+        row.insert(6, _status_display(r.get("status")))
+    return row
+
+
+def _report_title(report_date=None) -> str:
+    """Page title. The daily report is labelled with the day it covers, so a
+    late email is never mistaken for a later day's (A10)."""
+    if report_date:
+        return f"UniFleet \u2013 Supplier Sheet (Report for {report_date})"
+    return "UniFleet \u2013 Unredeemed Fuel Vouchers (PDF Version)"
+
+
+def _empty_message(report_date) -> str:
+    return f"No orders for {report_date}"
+
+
+def _table_data(rows: list, header: list, report_date=None) -> list:
+    """Header plus rows. With no rows, the on-demand sheet keeps its dash
+    placeholder; the daily report shows only the header and draws
+    `_empty_message` beneath it instead (A7)."""
+    if rows:
+        return [header] + list(rows)
+    if report_date:
+        return [header]
+    return [header, ["\u2014"] * len(header)]
 
 
 def _total_amount_php_from_row(r: dict) -> float:
@@ -122,9 +177,16 @@ def _total_amount_php_from_row(r: dict) -> float:
 
     return round(requested + discount, 2)
 
-def build_supplier_pdf(*, vouchers, target_station_ids, stations, logo_path=None) -> bytes:
+def build_supplier_pdf(*, vouchers, target_station_ids, stations, logo_path=None,
+                       include_status=False, report_date=None) -> bytes:
     """
     Supplier Sheet (A4 landscape)
+
+    `include_status` and `report_date` are opt-in extras for the nightly
+    email (ARCH-midnight-supplier-report): a Status column, a "Report for
+    <date>" title and a "No orders for <date>" message on an empty day.
+    Left at their defaults the output is the on-demand /supplier-sheet.pdf,
+    unchanged.
 
     Columns:
       - Station (Expected)
@@ -152,7 +214,7 @@ def build_supplier_pdf(*, vouchers, target_station_ids, stations, logo_path=None
         if not include:
             continue
 
-        rows.append(_build_supplier_row(r))
+        rows.append(_build_supplier_row(r, include_status=include_status))
 
     # Canvas
     buf = BytesIO()
@@ -175,7 +237,7 @@ def build_supplier_pdf(*, vouchers, target_station_ids, stations, logo_path=None
     faq_a = ParagraphStyle("FAQA", parent=styles["BodyText"], leading=14, spaceAfter=8)
 
     # Title/subtitle (left)
-    y = _draw_paragraph(c, "UniFleet – Unredeemed Fuel Vouchers (PDF Version)", title_style, x_margin, y, page_w - 2*x_margin)
+    y = _draw_paragraph(c, _report_title(report_date), title_style, x_margin, y, page_w - 2*x_margin)
     ts_mnl = datetime.now(ZoneInfo("Asia/Manila")).strftime("%Y-%m-%d %H:%M")
     y = _draw_paragraph(c, f"Generated: {ts_mnl}", subtitle_style, x_margin, y, page_w - 2*x_margin)
     y -= 6 * mm
@@ -193,9 +255,8 @@ def build_supplier_pdf(*, vouchers, target_station_ids, stations, logo_path=None
             pass
 
     # Table (adjusted widths & row height via padding)
-    header = ["Station (Expected)", "Amount (PHP)", "Driver name", "Plate", "Fuel Type", "Voucher ID", "Name / Signature"]
-    data = [header]
-    data.extend(rows if rows else [["—"] * len(header)])
+    header = _supplier_header(include_status)
+    data = _table_data(rows, header, report_date)
 
     # Column widths (fit within A4 landscape minus margins)
     # Totals to ~272mm with 12mm side margins (page width 297mm).
@@ -209,6 +270,9 @@ def build_supplier_pdf(*, vouchers, target_station_ids, stations, logo_path=None
         38*mm,  # Voucher ID
         52*mm,  # Name/Signature
     ]
+    if include_status:
+        # Make room for Status (after Voucher ID) inside the same 272mm.
+        col_widths = [58*mm, 22*mm, 38*mm, 20*mm, 28*mm, 36*mm, 24*mm, 46*mm]
     table = Table(data, colWidths=col_widths)
 
     table.setStyle(TableStyle([
@@ -233,6 +297,11 @@ def build_supplier_pdf(*, vouchers, target_station_ids, stations, logo_path=None
     tw, th = table.wrapOn(c, page_w - 2*x_margin, y - 10*mm)
     table.drawOn(c, x_margin, y - th)
     y = y - th - (8 * mm)
+
+    if report_date and not rows:
+        y = _draw_paragraph(c, _empty_message(report_date), subtitle_style,
+                            x_margin, y, page_w - 2*x_margin)
+        y -= 8 * mm
 
     # FAQ section
     def ensure_space(h_needed):
