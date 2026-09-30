@@ -65,21 +65,27 @@ BOOKING_CONFIRMED_SUBJECT = "Booking Confirmed - UniFleet"
 
 _ACCOUNT_CODE_BODY = (
     "Hi,\n"
+    "\n"
     "Thank you for registering with UniFleet!\n"
     "Your Account Code is:\n"
     "{account_code}\n"
     "Please keep this code for your future UniFleet bookings and transactions.\n"
+    "\n"
     "Thank you,\n"
     "UniFleet"
 )
 
 _BOOKING_RECEIVED_BODY = (
     "Hi,\n"
+    "\n"
     "We’ve received your UniFleet booking request.\n"
+    "\n"
     "Your request is currently being reviewed and is not yet confirmed. "
     "You will receive another email once your booking has been confirmed.\n"
+    "\n"
     "Please wait for our Confirmation and Fuel Voucher email before "
     "proceeding to the station.\n"
+    "\n"
     "Thank you,\n"
     "UniFleet"
 )

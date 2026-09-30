@@ -113,10 +113,12 @@ def test_account_code_copy_matches_the_brief():
     assert subject == "UniFleet Account Code"
     assert body == (
         "Hi,\n"
+        "\n"
         "Thank you for registering with UniFleet!\n"
         "Your Account Code is:\n"
         "HARR\n"
         "Please keep this code for your future UniFleet bookings and transactions.\n"
+        "\n"
         "Thank you,\n"
         "UniFleet"
     )
@@ -130,11 +132,15 @@ def test_booking_received_copy_matches_the_brief():
     assert subject == "Booking Request Received - UniFleet"
     assert body == (
         "Hi,\n"
+        "\n"
         "We’ve received your UniFleet booking request.\n"
+        "\n"
         "Your request is currently being reviewed and is not yet confirmed. "
         "You will receive another email once your booking has been confirmed.\n"
+        "\n"
         "Please wait for our Confirmation and Fuel Voucher email before "
         "proceeding to the station.\n"
+        "\n"
         "Thank you,\n"
         "UniFleet"
     )
