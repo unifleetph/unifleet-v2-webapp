@@ -153,3 +153,139 @@ def test_clear_all_removes_discounts_across_all_fuel_types(store, test_station):
 
     assert store.get(test_station["name"], "Biodiesel") is None
     assert store.get(test_station["name"], "Premium") is None
+
+
+def _margin_exempt(schema_db, station_id, fuel_type):
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT margin_exempt FROM discounts WHERE station_id = %s AND fuel_type = %s",
+                (station_id, fuel_type),
+            )
+            row = cur.fetchone()
+    return row[0] if row else None
+
+
+# ============================================================
+# Grandfather Flag on Write (T2, REQ-profit-margin)
+# ============================================================
+
+def test_new_set_insert_marks_margin_exempt_false(store, test_station, schema_db):
+    store.set(test_station["name"], "Biodiesel", 2.0, actor="t", reason="r")
+    assert _margin_exempt(schema_db, test_station["id"], "Biodiesel") is False
+
+
+def test_existing_row_set_update_leaves_margin_exempt_untouched(store, test_station, schema_db):
+    store.set(test_station["name"], "Biodiesel", 2.0, actor="t", reason="r")
+    # Simulate a pre-existing (grandfathered) row by flipping the flag directly,
+    # the way the migration's DEFAULT TRUE backfill would have set it.
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE discounts SET margin_exempt = TRUE WHERE station_id = %s AND fuel_type = %s",
+                (test_station["id"], "Biodiesel"),
+            )
+        conn.commit()
+
+    store.set(test_station["name"], "Biodiesel", 3.5, actor="t", reason="edit")
+
+    assert _margin_exempt(schema_db, test_station["id"], "Biodiesel") is True
+
+
+def test_repeated_edits_never_flip_margin_exempt(store, test_station, schema_db):
+    store.set(test_station["name"], "Biodiesel", 1.0, actor="t", reason="r")
+    assert _margin_exempt(schema_db, test_station["id"], "Biodiesel") is False
+
+    for value in (2.0, 3.0, 4.0):
+        store.set(test_station["name"], "Biodiesel", value, actor="t", reason="r")
+        assert _margin_exempt(schema_db, test_station["id"], "Biodiesel") is False
+
+
+def test_set_many_new_row_insert_marks_margin_exempt_false(store, test_station, schema_db):
+    store.set_many([
+        {"station": test_station["name"], "fuel_type": "Premium", "value": 2.0},
+    ], actor="t", reason="bulk")
+    assert _margin_exempt(schema_db, test_station["id"], "Premium") is False
+
+
+def test_set_many_existing_row_update_leaves_margin_exempt_untouched(store, test_station, schema_db):
+    store.set(test_station["name"], "Premium", 2.0, actor="t", reason="r")
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE discounts SET margin_exempt = TRUE WHERE station_id = %s AND fuel_type = %s",
+                (test_station["id"], "Premium"),
+            )
+        conn.commit()
+
+    store.set_many([
+        {"station": test_station["name"], "fuel_type": "Premium", "value": 3.0},
+    ], actor="t", reason="bulk edit")
+
+    assert _margin_exempt(schema_db, test_station["id"], "Premium") is True
+
+
+def test_column_default_backfills_pre_existing_style_row_as_exempt(test_station, schema_db):
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO discounts (station_id, fuel_type, discount_per_liter) VALUES (%s, %s, %s)",
+                (test_station["id"], "Unleaded", 1.5),
+            )
+        conn.commit()
+    assert _margin_exempt(schema_db, test_station["id"], "Unleaded") is True
+
+
+# ============================================================
+# Exempt-Aware Reads (T2, REQ-profit-margin)
+# ============================================================
+
+def test_get_all_with_exempt_returns_correct_flags_for_mixed_rows(store, test_station, schema_db):
+    store.set(test_station["name"], "Biodiesel", 1.0, actor="t", reason="r")  # margin_exempt=False
+    store.set(test_station["name"], "Premium", 2.0, actor="t", reason="r")
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE discounts SET margin_exempt = TRUE WHERE station_id = %s AND fuel_type = %s",
+                (test_station["id"], "Premium"),
+            )
+        conn.commit()
+
+    biodiesel = store.get_all_with_exempt("Biodiesel")
+    premium = store.get_all_with_exempt("Premium")
+
+    assert biodiesel[test_station["name"]]["value"] == 1.0
+    assert biodiesel[test_station["name"]]["margin_exempt"] is False
+    assert premium[test_station["name"]]["value"] == 2.0
+    assert premium[test_station["name"]]["margin_exempt"] is True
+
+
+def test_get_with_exempt_returns_value_and_flag(store, test_station):
+    store.set(test_station["name"], "Biodiesel", 1.0, actor="t", reason="r")
+    result = store.get_with_exempt(test_station["name"], "Biodiesel")
+    assert result == {"value": 1.0, "margin_exempt": False}
+
+
+def test_get_with_exempt_returns_none_when_no_discount_row(store, test_station):
+    assert store.get_with_exempt(test_station["name"], "Premium") is None
+
+
+# ============================================================
+# Regression Guard — clear_all() unaffected by the new column
+# ============================================================
+
+def test_clear_all_removes_both_exempt_and_non_exempt_rows(store, test_station, schema_db):
+    store.set(test_station["name"], "Biodiesel", 1.0, actor="t", reason="r")
+    store.set(test_station["name"], "Premium", 2.0, actor="t", reason="r")
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE discounts SET margin_exempt = TRUE WHERE station_id = %s AND fuel_type = %s",
+                (test_station["id"], "Premium"),
+            )
+        conn.commit()
+
+    store.clear_all(actor="t", reason="clear")
+
+    assert store.get(test_station["name"], "Biodiesel") is None
+    assert store.get(test_station["name"], "Premium") is None

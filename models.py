@@ -36,11 +36,17 @@ VOUCHER_COLUMNS = [
     "created_at",
     "updated_at",
 
+    # --- NEW (soft-delete, REQ-delete-order-button) ---
+    "deleted_at",
+
     # --- NEW (booking-time snapshots we’ll freeze in main.py) ---
     "price_snapshot_php_per_liter",
     "price_snapshot_updated_at",
     "discount_snapshot_php_per_liter",
     "discount_snapshot_captured_at",
+
+    # --- NEW (REQ-profit-margin: margin % live at checkout-start) ---
+    "margin_pct_at_booking",
 
     # (these may already exist in your project; keep them if present)
     "discount_total_php",

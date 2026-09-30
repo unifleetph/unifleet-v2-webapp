@@ -19,18 +19,29 @@ class FakePriceStore:
 
 
 class FakeDiscountStore:
-    def get_all(self, fuel_type):
+    def get_all_with_exempt(self, fuel_type):
         data = {
-            "Biodiesel": {"Cleanfuel": 2.0},
-            "Unleaded": {"Cleanfuel": 3.5},
+            "Biodiesel": {"Cleanfuel": {"value": 2.0, "margin_exempt": True}},
+            "Unleaded": {"Cleanfuel": {"value": 3.5, "margin_exempt": True}},
         }
         return data.get(fuel_type, {})
+
+
+class FakeMarginStore:
+    def __init__(self, value=0.0):
+        self.value = value
+
+    def get(self):
+        return self.value
 
 
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setattr(main, "price_store", FakePriceStore())
     monkeypatch.setattr(main, "discount_store", FakeDiscountStore())
+    # REQ-profit-margin: 0% so this file's pre-existing assertions keep
+    # exercising raw values unchanged; margin-specific tests override.
+    monkeypatch.setattr(main, "margin_store", FakeMarginStore())
     main.app.config.update(TESTING=True)
     return main.app.test_client()
 
@@ -98,6 +109,41 @@ def test_discounts_unrecognized_fuel_type_falls_back_to_biodiesel(client):
     r = client.get("/api/v1/discounts?fuel_type=Regular")
     assert r.status_code == 200
     assert r.get_json()["discounts"] == {"Cleanfuel": 2.0}
+
+
+# ============================================================
+# REQ-profit-margin (R6): this public endpoint must never leak the raw
+# supplier discount — code-review finding, closed here.
+# ============================================================
+
+def test_discounts_returns_post_margin_value_for_non_exempt_station(client, monkeypatch):
+    monkeypatch.setattr(
+        main, "discount_store",
+        type("_D", (), {"get_all_with_exempt": staticmethod(
+            lambda fuel_type: {"Cleanfuel": {"value": 10.0, "margin_exempt": False}}
+        )})()
+    )
+    monkeypatch.setattr(main, "margin_store", FakeMarginStore(value=12.25))
+
+    r = client.get("/api/v1/discounts")
+
+    assert r.status_code == 200
+    assert r.get_json()["discounts"]["Cleanfuel"] == pytest.approx(8.775, abs=0.001)
+
+
+def test_discounts_returns_raw_value_for_exempt_station(client, monkeypatch):
+    monkeypatch.setattr(
+        main, "discount_store",
+        type("_D", (), {"get_all_with_exempt": staticmethod(
+            lambda fuel_type: {"Cleanfuel": {"value": 10.0, "margin_exempt": True}}
+        )})()
+    )
+    monkeypatch.setattr(main, "margin_store", FakeMarginStore(value=12.25))
+
+    r = client.get("/api/v1/discounts")
+
+    assert r.status_code == 200
+    assert r.get_json()["discounts"]["Cleanfuel"] == pytest.approx(10.0, abs=0.001)
 
 
 def test_price_preview_unrecognized_fuel_type_falls_back_to_biodiesel(client):

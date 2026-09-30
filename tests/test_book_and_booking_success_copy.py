@@ -55,6 +55,9 @@ class RepoStub:
 def env(tmp_path, monkeypatch):
     monkeypatch.setattr(data_paths, "CUSTOMERS_CSV", tmp_path / "customers.csv")
     monkeypatch.setattr(data_paths, "PRESETS_DIR", tmp_path)
+    # REQ-profit-margin: 0% so this file's discount/copy assertions keep
+    # exercising raw values unchanged.
+    monkeypatch.setattr(main.margin_store, "get", lambda: 0.0)
     main.app.config.update(TESTING=True)
     return tmp_path
 
@@ -120,8 +123,8 @@ def test_booking_success_shows_instapay_copy_and_qr(client, monkeypatch):
         lambda fuel_type: [{"id": "teststation", "name": "Test Station",
                              "price_php_per_liter": 60.0, "updated_at": 0}]
     )
-    monkeypatch.setattr(main.discount_store, "get_all", lambda fuel_type: {})
-    monkeypatch.setattr(main.discount_store, "get", lambda station, fuel_type: None)
+    monkeypatch.setattr(main.discount_store, "get_all_with_exempt", lambda fuel_type: {})
+    monkeypatch.setattr(main.discount_store, "get_with_exempt", lambda station, fuel_type: None)
 
     resp = client.post("/book", data={
         "account_code": "HARR",
@@ -201,8 +204,8 @@ def test_booking_success_shows_post_discount_amount_due(client, monkeypatch):
                              "price_php_per_liter": 60.0, "updated_at": 0}]
     )
     # price ₱60/L, discount ₱5/L; total ₱1200 -> 20L -> discount ₱100 -> pay ₱1,100.00
-    monkeypatch.setattr(main.discount_store, "get_all", lambda fuel_type: {"Test Station": 5.0})
-    monkeypatch.setattr(main.discount_store, "get", lambda station, fuel_type: 5.0)
+    monkeypatch.setattr(main.discount_store, "get_all_with_exempt", lambda fuel_type: {"Test Station": {"value": 5.0, "margin_exempt": True}})
+    monkeypatch.setattr(main.discount_store, "get_with_exempt", lambda station, fuel_type: {"value": 5.0, "margin_exempt": True})
 
     resp = client.post("/book", data={
         "account_code": "HARR",
@@ -239,8 +242,8 @@ def test_booking_rejected_when_discount_exceeds_fuel_amount(client, monkeypatch)
                              "price_php_per_liter": 60.0, "updated_at": 0}]
     )
     # discount (₱100/L) far exceeds price (₱60/L) — guarantees pay <= 0
-    monkeypatch.setattr(main.discount_store, "get_all", lambda fuel_type: {"Test Station": 100.0})
-    monkeypatch.setattr(main.discount_store, "get", lambda station, fuel_type: 100.0)
+    monkeypatch.setattr(main.discount_store, "get_all_with_exempt", lambda fuel_type: {"Test Station": {"value": 100.0, "margin_exempt": True}})
+    monkeypatch.setattr(main.discount_store, "get_with_exempt", lambda station, fuel_type: {"value": 100.0, "margin_exempt": True})
 
     resp = client.post("/book", data={
         "account_code": "HARR",

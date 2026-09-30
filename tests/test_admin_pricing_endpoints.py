@@ -322,3 +322,98 @@ def test_discounts_update_unauthenticated_redirects_to_login(client):
     })
     assert r.status_code == 302
     assert "/admin/login" in r.headers["Location"]
+
+
+# ============================================================
+# admin_margin_update (T4, REQ-profit-margin)
+# ============================================================
+
+class FakeMarginStore:
+    def __init__(self, value=0.0):
+        self.value = value
+        self.set_calls = []
+
+    def get(self):
+        return self.value
+
+    def set(self, value, actor="system", reason=""):
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            from margin_store import MarginValueError
+            raise MarginValueError("margin_pct must be a number (float).")
+        if v < 0 or v > 100:
+            from margin_store import MarginValueError
+            raise MarginValueError("margin_pct must be between 0 and 100.")
+        if round(v, 2) != v:
+            from margin_store import MarginValueError
+            raise MarginValueError("margin_pct accepts at most 2 decimal places.")
+        self.set_calls.append((v, actor, reason))
+        self.value = v
+
+
+@pytest.fixture
+def fake_margin_store(monkeypatch):
+    fms = FakeMarginStore()
+    monkeypatch.setattr(main, "margin_store", fms)
+    return fms
+
+
+def test_valid_margin_update_succeeds(client, fake_margin_store):
+    _login(client)
+    r = client.post("/admin/margin/update", json={"margin_pct": 12.25})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body == {"ok": True, "margin_pct": 12.25}
+    assert fake_margin_store.set_calls[0][0] == 12.25
+
+
+def test_margin_update_rejects_more_than_two_decimal_places(client, fake_margin_store):
+    _login(client)
+    r = client.post("/admin/margin/update", json={"margin_pct": 12.255})
+    assert r.status_code == 400
+    assert r.get_json()["field"] == "margin_pct"
+    assert fake_margin_store.set_calls == []
+
+
+def test_margin_update_rejects_negative_value(client, fake_margin_store):
+    _login(client)
+    r = client.post("/admin/margin/update", json={"margin_pct": -1})
+    assert r.status_code == 400
+    assert fake_margin_store.set_calls == []
+
+
+def test_margin_update_rejects_value_over_100(client, fake_margin_store):
+    _login(client)
+    r = client.post("/admin/margin/update", json={"margin_pct": 101})
+    assert r.status_code == 400
+    assert fake_margin_store.set_calls == []
+
+
+def test_margin_update_unauthenticated_returns_403(client, fake_margin_store):
+    r = client.post("/admin/margin/update", json={"margin_pct": 12.25})
+    assert r.status_code == 403
+    assert fake_margin_store.set_calls == []
+
+
+def test_admin_prices_context_includes_current_margin(client, fake_margin_store, monkeypatch):
+    _login(client)
+    fake_margin_store.value = 5.5
+    monkeypatch.setattr(main.price_store, "list_all_stations", lambda: [])
+    monkeypatch.setattr(main.price_store, "list_stations", lambda fuel_type, include_inactive=False: [])
+    monkeypatch.setattr(main.discount_store, "get_all_with_updated_at", lambda fuel_type: {})
+
+    captured = {}
+    real_render = main.render_template
+
+    def spy_render(template_name, **context):
+        if template_name == "admin_prices.html":
+            captured.update(context)
+        return real_render(template_name, **context)
+
+    monkeypatch.setattr(main, "render_template", spy_render)
+
+    r = client.get("/admin/prices")
+
+    assert r.status_code == 200
+    assert captured.get("margin_pct") == 5.5

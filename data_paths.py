@@ -126,6 +126,8 @@ def official_qr_png_path(voucher_id: str) -> Path:
     return QR_DIR / f"{voucher_id}_Official.png"
 
 
+
+
 # ---------------------------------------------------------------------------
 # Static assets (image-baked, read-only)
 # ---------------------------------------------------------------------------

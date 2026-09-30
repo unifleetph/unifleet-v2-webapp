@@ -2,9 +2,14 @@
 tests/test_customer_repo.py — unit tests for CSVRepo customer methods (CT1).
 
 Covers create_customer / get_customer / customer_exists over
-data/customers.csv. No Postgres required — CUSTOMERS_CSV is redirected
-to a temp file via monkeypatch (same data_paths module object that
-persistence.py holds a reference to).
+data/customers.csv. The CSVRepo tests need no Postgres — CUSTOMERS_CSV is
+redirected to a temp file via monkeypatch (same data_paths module object
+that persistence.py holds a reference to).
+
+The PostgresRepo.update_customer_email tests at the end of this file DO
+need a live database and use the schema_db fixture; they live here so the
+two implementations of one method are read side by side (T8,
+ARCH-brief-11-email-notifications).
 """
 
 import pytest
@@ -164,3 +169,145 @@ def test_list_customers_tolerates_blank_optional_fields(csv_repo):
     assert len(got) == 1
     assert got[0]["account_code"] == "BLNK"
     assert got[0]["fleet_size"] is None
+
+
+# ============================================================
+# T8 — update_customer_email (ARCH-brief-11-email-notifications)
+# ============================================================
+# Legacy customers registered before email became required have no address
+# on file, so their bookings produce skipped notifications that can never be
+# recovered. This is the method that closes that loop.
+
+def test_update_customer_email_sets_a_missing_address(csv_repo):
+    """GIVEN a customer with no email WHEN an admin sets one THEN it is
+    stored (verifies R9)."""
+    csv_repo.create_customer(dict(SAMPLE, email=""))
+
+    assert csv_repo.update_customer_email("HARR", "new@example.com") is True
+    assert csv_repo.get_customer("HARR")["email"] == "new@example.com"
+
+
+def test_update_customer_email_leaves_other_columns_alone(csv_repo):
+    """Only the address changes — this runs against live customer records."""
+    csv_repo.create_customer(dict(SAMPLE))
+
+    csv_repo.update_customer_email("HARR", "changed@example.com")
+    row = csv_repo.get_customer("HARR")
+
+    assert row["email"] == "changed@example.com"
+    assert row["contact_name"] == "Harry"
+    assert row["company_name"] == "Harrods"
+    assert row["contact_number"] == "0900-000-0000"
+    assert row["areas"] == "QC"
+
+
+def test_update_customer_email_does_not_disturb_other_customers(csv_repo):
+    """The CSV is rewritten wholesale, so the neighbouring rows are the thing
+    most at risk (guards ARCH backward-regression risk for customers.csv)."""
+    csv_repo.create_customer(dict(SAMPLE))
+    csv_repo.create_customer(dict(SAMPLE, account_code="JETI", contact_name="Jet",
+                                   email="jet@example.com"))
+
+    csv_repo.update_customer_email("HARR", "changed@example.com")
+
+    assert csv_repo.get_customer("JETI")["email"] == "jet@example.com"
+    assert csv_repo.get_customer("JETI")["contact_name"] == "Jet"
+    assert len(csv_repo.list_customers()) == 2
+
+
+def test_update_customer_email_is_case_insensitive_on_the_code(csv_repo):
+    csv_repo.create_customer(dict(SAMPLE))
+
+    assert csv_repo.update_customer_email("harr", "lower@example.com") is True
+    assert csv_repo.get_customer("HARR")["email"] == "lower@example.com"
+
+
+def test_update_customer_email_returns_false_for_an_unknown_code(csv_repo):
+    """An unknown code must be a no-op, not an accidental insert."""
+    csv_repo.create_customer(dict(SAMPLE))
+
+    assert csv_repo.update_customer_email("ZZZZ", "nobody@example.com") is False
+    assert len(csv_repo.list_customers()) == 1
+
+
+def test_update_customer_email_holds_the_lock_file(csv_repo, tmp_path, monkeypatch):
+    """The CSV is dual-written by /register's own append path, so a rewrite
+    that ignores the sidecar lock can lose rows (guards ARCH backward-
+    regression risk for customers.csv)."""
+    import persistence
+
+    locked = []
+    real_flock = persistence.fcntl.flock
+
+    def spy_flock(fd, op):
+        locked.append(op)
+        return real_flock(fd, op)
+
+    csv_repo.create_customer(dict(SAMPLE))
+    monkeypatch.setattr(persistence.fcntl, "flock", spy_flock)
+
+    csv_repo.update_customer_email("HARR", "locked@example.com")
+
+    assert locked, "update_customer_email must serialise on the sidecar lock"
+    assert (tmp_path / "customers.csv.lock").exists()
+
+
+# ============================================================
+# PostgresRepo.update_customer_email (T8)
+# ============================================================
+# These need a live database, unlike the CSVRepo tests above; they use the
+# session-scoped schema_db fixture from conftest.py.
+
+@pytest.fixture
+def pg_repo(schema_db):
+    import db.pool as pool_module
+    from db.postgres_repo import PostgresRepo
+
+    pool_module.reset_pool()
+    repo = PostgresRepo(dsn=schema_db)
+    yield repo
+    # Only the rows this fixture's tests create. It used to TRUNCATE
+    # notifications outright, which cleaned up after tests/test_notifications.py
+    # as a side effect and hid that file's missing teardown — and only worked
+    # because collection order is alphabetical (review finding F14).
+    with __import__("psycopg").connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM notifications WHERE account_code IN ('HARR', 'JETI')"
+            )
+            cur.execute("DELETE FROM customers WHERE account_code IN ('HARR', 'JETI')")
+        conn.commit()
+    pool_module.reset_pool()
+
+
+def test_pg_update_customer_email_sets_a_missing_address(pg_repo):
+    """GIVEN a Postgres customer with no email WHEN an admin sets one THEN it
+    is stored (verifies R9)."""
+    pg_repo.create_customer(dict(SAMPLE, email=""))
+
+    assert pg_repo.update_customer_email("HARR", "new@example.com") is True
+    assert pg_repo.get_customer("HARR")["email"] == "new@example.com"
+
+
+def test_pg_update_customer_email_leaves_other_columns_alone(pg_repo):
+    pg_repo.create_customer(dict(SAMPLE))
+
+    pg_repo.update_customer_email("HARR", "changed@example.com")
+    row = pg_repo.get_customer("HARR")
+
+    assert row["email"] == "changed@example.com"
+    assert row["contact_name"] == "Harry"
+    assert row["company_name"] == "Harrods"
+
+
+def test_pg_update_customer_email_returns_false_for_an_unknown_code(pg_repo):
+    pg_repo.create_customer(dict(SAMPLE))
+
+    assert pg_repo.update_customer_email("ZZZZ", "nobody@example.com") is False
+
+
+def test_pg_update_customer_email_is_case_insensitive_on_the_code(pg_repo):
+    pg_repo.create_customer(dict(SAMPLE))
+
+    assert pg_repo.update_customer_email("harr", "lower@example.com") is True
+    assert pg_repo.get_customer("HARR")["email"] == "lower@example.com"

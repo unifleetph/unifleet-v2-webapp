@@ -52,6 +52,13 @@ services:
       # F2.6: data-path root. Local dev bind-mounts the host's ./data
       # at /app/data; Railway mounts the persistent Volume at /data.
       UNIFLEET_DATA_DIR: ${UNIFLEET_DATA_DIR:-/app/data}
+      # Email notifications (ARCH-brief-11-email-notifications). Unset by
+      # default in dev: the worker starts, finds the mailer unconfigured,
+      # and leaves rows queued rather than sending anything.
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      MAIL_REPLY_TO: ${MAIL_REPLY_TO:-}
+      NOTIFICATIONS_ENABLED: ${NOTIFICATIONS_ENABLED:-true}
     ports:
       - "5000:5000"
     volumes:

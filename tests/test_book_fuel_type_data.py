@@ -61,6 +61,9 @@ def captured_templates(app):
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setattr(main, "repo", RepoStub())
+    # REQ-profit-margin: 0% so this file's assertions keep exercising
+    # pre-margin behavior unchanged.
+    monkeypatch.setattr(main.margin_store, "get", lambda: 0.0)
     main.app.config.update(TESTING=True)
     return main.app.test_client()
 
@@ -77,7 +80,8 @@ def _stub_price_store(monkeypatch):
         main.price_store, "list_stations",
         lambda fuel_type: [dict(s) for s in STATIONS_BY_FUEL.get(fuel_type, [])]
     )
-    monkeypatch.setattr(main.discount_store, "get_all", lambda fuel_type: {})
+    monkeypatch.setattr(main.discount_store, "get_all_with_exempt", lambda fuel_type: {})
+    monkeypatch.setattr(main.discount_store, "get_with_exempt", lambda station, fuel_type: None)
 
 
 # ============================================================

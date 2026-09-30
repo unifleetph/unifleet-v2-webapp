@@ -1,9 +1,36 @@
+# Build from the Dockerfile, not Nixpacks.
+#
+# Nixpacks installs into an environment it carries across builds, so a
+# `poetry install` there only *overlays* the locked versions on whatever the
+# previous build left behind. It overwrites files that exist in both versions
+# and leaves the rest. That produced two production outages in a row:
+#
+#   1. `poetry install --no-dev` (a flag Poetry 2.x removed) exited non-zero,
+#      the build step failed, and the image silently kept its old dependency
+#      set — so `requests` was never installed and all email went dark.
+#   2. With that fixed, the install downgraded charset-normalizer 4.x to the
+#      locked 3.4.3 but left 4.x's compiled `cd` extension behind. Python
+#      prefers the stale .so over the 3.4.3 `cd.py`, so `import requests`
+#      died with "module 'charset_normalizer.md' has no attribute 'CharInfo'"
+#      — and main.py's guarded import disabled notifications and recipient
+#      management together, again.
+#
+# The Dockerfile builds a fresh image every time from pyproject + poetry.lock,
+# so the installed set is exactly the lock and nothing survives between builds.
+# It also carries the freetype system library Pillow needs for the voucher
+# renderer, which is what the old [nix] packages block was for.
 [build]
-command = "poetry install --no-dev --no-interaction"
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
 
 [deploy]
 preDeployCommand = "python db/apply.py db/schema.sql db/seed_stations.sql db/seed_prices.sql"
 startCommand = 'sh -c "gunicorn --bind 0.0.0.0:$PORT --workers 1 main:app"'
 
-[nix]
-packages = ["freetype", "glibcLocales"]
+# NOTE: the daily supplier sheet is not scheduled here, and it has no
+# separate service. Railway's config-as-code has no cron table, and a cron
+# service that has to be created by hand is exactly what went missing. The web
+# service's own outbox worker checks once a minute whether today's report has
+# been queued and queues it, so it goes out at 00:00 Asia/Manila and catches up
+# after downtime. See docs/runbook.md ("The daily supplier report") for how it
+# works and how to check it.
