@@ -34,6 +34,13 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if not args.dsn:
+        print(
+            "error: no DSN — pass --dsn or set $DATABASE_URL",
+            file=sys.stderr,
+        )
+        return 1
+
     sql_text = "\n".join(path.read_text() for path in args.sql_files)
 
     with psycopg.connect(args.dsn, connect_timeout=5) as conn:

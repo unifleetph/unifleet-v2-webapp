@@ -58,6 +58,15 @@ The UniFleet v2 deployment on Railway consists of:
 | Volume | `unifleet-pgdata-backups` | Railway Volume | Mounted at `/backups` on `backup` |
 | Domain | `unifleet.asia` | DNS A/CNAME | Points at Railway's edge IP |
 
+> ⚠️ **If a third service named `cron` exists in the project, delete it.** An
+> earlier design planned a dedicated Railway cron service for the daily
+> supplier report; that design was rejected in favor of scheduling it from
+> inside `web`'s own worker thread (see "The daily supplier report" below) —
+> "no new service or variables to forget." A leftover `cron` service was never
+> given `DATABASE_URL`, so it crash-loops on every (re)start running the
+> default Dockerfile CMD (`db/apply.py` with no DSN). It is not part of this
+> topology and does nothing useful; removing it stops the crash loop.
+
 ### The daily supplier report
 
 The supplier sheet email goes out **every day at 00:00 Asia/Manila** (16:00 UTC;
