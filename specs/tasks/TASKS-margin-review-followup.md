@@ -120,7 +120,7 @@
 
 ## Task T3: Consolidate `discount_store.py`'s "all"-rows query methods
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** test-after
 > **Effort:** s
 > **Priority:** low
