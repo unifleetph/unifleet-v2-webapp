@@ -16,6 +16,7 @@ import pytest
 
 import data_paths
 import main
+from margin_store import MarginStore
 
 
 CUST = {
@@ -124,6 +125,66 @@ def test_get_book_zero_margin_is_noop_for_non_exempt_station(client, monkeypatch
     assert float(row["discount_per_liter"]) == pytest.approx(10.0, abs=0.001)
 
 
+def test_book_request_calls_margin_store_get_exactly_once(client, monkeypatch):
+    """Code-review finding: the old code called margin_store.get() once
+    for the flat "Biodiesel" table plus once per FUEL_TYPES entry inside
+    _margin_adjusted_discounts — 1 + len(FUEL_TYPES) round-trips for one
+    global scalar. A single request must now fetch it exactly once."""
+    _stub_station(monkeypatch, margin_pct=12.25, exempt=False, raw_discount=10.0)
+    calls = []
+
+    def counting_get():
+        calls.append(1)
+        return 12.25
+
+    monkeypatch.setattr(main.margin_store, "get", counting_get)
+    resp = client.post("/book", data={"account_code": "HARR"})
+    assert resp.status_code == 200
+    assert len(calls) == 1
+
+
+# ============================================================
+# _margin_adjusted_discounts contract (R2, code-review finding)
+# ============================================================
+
+def test_margin_adjusted_discounts_uses_explicit_margin_pct_without_fetching(monkeypatch):
+    """Passing margin_pct in directly must use it, and must NOT call
+    margin_store.get() internally."""
+    monkeypatch.setattr(
+        main.discount_store, "get_all_with_exempt",
+        lambda fuel_type: {"Test Station": {"value": 10.0, "margin_exempt": False}}
+    )
+    calls = []
+    monkeypatch.setattr(main.margin_store, "get", lambda: calls.append(1) or 999.0)
+
+    result = main._margin_adjusted_discounts("Biodiesel", margin_pct=12.25)
+
+    assert calls == []
+    assert result["Test Station"] == pytest.approx(8.775, abs=0.0001)
+
+
+def test_margin_adjusted_discounts_without_margin_pct_still_fetches_internally(monkeypatch):
+    """Back-compat: a caller that omits margin_pct (e.g. /api/v1/discounts,
+    main.py's _resolve_fuel_type_param call site) must keep working exactly
+    as before this change — fetching the margin itself."""
+    monkeypatch.setattr(
+        main.discount_store, "get_all_with_exempt",
+        lambda fuel_type: {"Test Station": {"value": 10.0, "margin_exempt": False}}
+    )
+    calls = []
+
+    def counting_get():
+        calls.append(1)
+        return 12.25
+
+    monkeypatch.setattr(main.margin_store, "get", counting_get)
+
+    result = main._margin_adjusted_discounts("Biodiesel")
+
+    assert len(calls) == 1
+    assert result["Test Station"] == pytest.approx(8.775, abs=0.0001)
+
+
 # ============================================================
 # Booking Snapshot (POST /book)
 # ============================================================
@@ -172,19 +233,82 @@ def test_post_book_stamps_margin_pct_at_booking_regardless_of_exempt_status(clie
     assert booked["discount_snapshot_php_per_liter"] == pytest.approx(10.0, abs=0.001)
 
 
-def test_margin_changed_after_booking_does_not_retroactively_change_stored_snapshot(client, monkeypatch):
-    booked = _post_booking(client, monkeypatch, margin_pct=12.25, exempt=False, raw_discount=10.0)
-    original_snapshot = booked["discount_snapshot_php_per_liter"]
-    original_margin = booked["margin_pct_at_booking"]
+class _ApproveFlowRepoStub:
+    """Minimal repo stub for driving ops_set_status's real Approve flow
+    (main.py:938), distinct from RepoStub above which only models the
+    POST /book snapshot step."""
 
-    # Simulate the admin raising the margin after this booking was made.
+    def __init__(self, voucher):
+        self._voucher = voucher
+        self.updated_fields = None
+
+    def get_voucher(self, voucher_id):
+        if self.updated_fields:
+            merged = dict(self._voucher)
+            merged.update(self.updated_fields)
+            return merged
+        return self._voucher
+
+    def update_voucher_fields(self, voucher_id, fields):
+        self.updated_fields = fields
+
+    def set_status(self, voucher_id, status, ts):
+        pass
+
+
+def test_margin_changed_after_booking_does_not_retroactively_change_approved_result(client, monkeypatch):
+    """Replaces a tautological test that re-read an untouched in-memory
+    dict and could not fail even if the real guarantee broke. This test
+    drives the actual non-zero-snap_disc branch of ops_set_status
+    (main.py:998) -- the one place the "never re-derive" guarantee
+    actually lives -- after the global margin has changed."""
+    # Booking-time margin A = 12.25 already applied to raw 10.0, frozen
+    # into the snapshot the way POST /book's own snapshot logic does.
+    frozen_dpl = MarginStore.apply(10.0, 12.25, exempt=False)
+    voucher = {
+        "voucher_id": "UF-TEST-RETRO-1",
+        "station": "EcoOil - Cainta",
+        "requested_amount_php": 1000.0,
+        "requested_total_php": 1000.0,
+        "price_snapshot_php_per_liter": 76.03,
+        "price_snapshot_updated_at": 0,
+        "discount_snapshot_php_per_liter": frozen_dpl,
+        "discount_snapshot_captured_at": 0,
+        "margin_pct_at_booking": 12.25,
+        "status": "Unverified",
+    }
+    # Sanity: the scenario must exercise the non-zero-snapshot branch,
+    # not the zero-snapshot live-fallback one covered by
+    # test_admin_approve_margin.py.
+    assert voucher["discount_snapshot_php_per_liter"] != 0
+
+    stub = _ApproveFlowRepoStub(voucher)
+    monkeypatch.setattr(main, "repo", stub)
+    monkeypatch.setattr(main, "generate_assets_for_row", lambda row: None)
+
+    # Simulate the admin raising the global margin to B after booking.
     monkeypatch.setattr(main.margin_store, "get", lambda: 20.0)
+    # If the non-zero-snapshot branch ever started re-deriving from the
+    # live discount instead of trusting the snapshot, this stub would
+    # make that visible: a different raw value than what produced A.
+    monkeypatch.setattr(
+        main.discount_store, "get_with_exempt",
+        lambda station, fuel_type: {"value": 10.0, "margin_exempt": False}
+    )
 
-    # The already-booked row is a plain dict now — re-reading it (as the
-    # Approve flow's snapshot-preference logic does) must see the
-    # original, frozen values, not anything derived from the new margin.
-    assert booked["discount_snapshot_php_per_liter"] == original_snapshot
-    assert booked["margin_pct_at_booking"] == original_margin
+    resp = client.get(f"/ops/voucher/{voucher['voucher_id']}/status/Unredeemed")
+
+    assert resp.status_code == 302
+    fields = stub.updated_fields
+    assert fields is not None
+    # Reflects margin A (frozen at booking), never margin B.
+    assert fields["discount_per_liter"] == pytest.approx(frozen_dpl, abs=0.0001)
+    liters_requested = round(1000.0 / 76.03, 2)
+    expected_discount_total = round(liters_requested * frozen_dpl, 2)
+    assert fields["discount_total_php"] == pytest.approx(expected_discount_total, abs=0.01)
+    # Explicitly rule out a result derived from margin B instead of A.
+    wrong_dpl_from_b = MarginStore.apply(10.0, 20.0, exempt=False)
+    assert fields["discount_per_liter"] != pytest.approx(wrong_dpl_from_b, abs=0.0001)
 
 
 def test_post_book_degrades_gracefully_when_margin_lookup_fails(client, monkeypatch):

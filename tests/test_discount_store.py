@@ -260,6 +260,35 @@ def test_get_all_with_exempt_returns_correct_flags_for_mixed_rows(store, test_st
     assert premium[test_station["name"]]["margin_exempt"] is True
 
 
+def test_three_all_variants_each_return_own_shape_from_shared_helper(store, test_station, schema_db):
+    """get_all/get_all_with_updated_at/get_all_with_exempt now share a
+    private _fetch_all() helper (code-review finding: the 3 methods were
+    near-identical copy-pasted SQL). This proves the consolidation didn't
+    cross-contaminate columns between the 3 wrapper methods — each still
+    returns exactly its own documented shape for the same row."""
+    store.set(test_station["name"], "Biodiesel", 5.5, actor="t", reason="r")
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE discounts SET margin_exempt = TRUE WHERE station_id = %s AND fuel_type = %s",
+                (test_station["id"], "Biodiesel"),
+            )
+        conn.commit()
+
+    bare = store.get_all("Biodiesel")
+    with_ts = store.get_all_with_updated_at("Biodiesel")
+    with_exempt = store.get_all_with_exempt("Biodiesel")
+    name = test_station["name"]
+
+    assert bare[name] == 5.5
+    assert set(with_ts[name].keys()) == {"value", "updated_at"}
+    assert with_ts[name]["value"] == 5.5
+    assert isinstance(with_ts[name]["updated_at"], int)
+    assert set(with_exempt[name].keys()) == {"value", "margin_exempt"}
+    assert with_exempt[name]["value"] == 5.5
+    assert with_exempt[name]["margin_exempt"] is True
+
+
 def test_get_with_exempt_returns_value_and_flag(store, test_station):
     store.set(test_station["name"], "Biodiesel", 1.0, actor="t", reason="r")
     result = store.get_with_exempt(test_station["name"], "Biodiesel")

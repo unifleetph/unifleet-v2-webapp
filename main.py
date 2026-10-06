@@ -1364,13 +1364,21 @@ def _validate_mobile_digits(raw_value):
     return digits, None
 
 
-def _margin_adjusted_discounts(fuel_type):
+def _margin_adjusted_discounts(fuel_type, margin_pct=None):
     """Customer-facing discounts for `fuel_type`: raw discount_store
     values run through the global margin, except for margin_exempt
     (grandfathered) rows, which pass through unchanged (REQ-profit-margin
     R4/R5/R6). Same {name: value} shape as discount_store.get_all(), so
-    callers built for that shape don't need to change."""
-    margin_pct = margin_store.get()
+    callers built for that shape don't need to change.
+
+    `margin_pct` lets a caller that already fetched the global margin
+    (e.g. book(), once per request) pass it in instead of this function
+    hitting the DB again (code-review finding: 4 round-trips per /book
+    page view for one global scalar). Omitting it (None) preserves the
+    original behavior of fetching it here, for callers that don't have
+    the value handy."""
+    if margin_pct is None:
+        margin_pct = margin_store.get()
     raw = discount_store.get_all_with_exempt(fuel_type) or {}
     return {
         name: MarginStore.apply(info["value"], margin_pct, info["margin_exempt"])
@@ -1452,6 +1460,17 @@ def book():
     station_table = []
     station_table_updated_at = ""
 
+    # Fetch the global margin once per request (code-review finding: each
+    # _margin_adjusted_discounts() call used to hit the DB for this on its
+    # own — 1 + len(FUEL_TYPES) round-trips for one global scalar). A
+    # failure here falls back to None, so each call site below falls
+    # through to its own original internal fetch (and that call's own
+    # existing error handling), unchanged from before this optimization.
+    try:
+        _request_margin_pct = margin_store.get()
+    except Exception:
+        _request_margin_pct = None
+
     try:
         # Pull from live price store so new stations auto-appear
         # TEMP (T2 bridge, F3.1): hardcoded "Biodiesel" until T3/T4/T6 wire up
@@ -1463,7 +1482,7 @@ def book():
         )
 
         # Build read-only station table with discounts
-        discounts = _margin_adjusted_discounts("Biodiesel")  # TEMP (T2 bridge, F3.1)
+        discounts = _margin_adjusted_discounts("Biodiesel", _request_margin_pct)  # TEMP (T2 bridge, F3.1)
 
         import re as _re
         def _norm_dashes(s: str) -> str:
@@ -1543,7 +1562,7 @@ def book():
     for _ft in FUEL_TYPES:
         try:
             ft_stations = price_store.list_stations(_ft)
-            ft_discounts = _margin_adjusted_discounts(_ft)
+            ft_discounts = _margin_adjusted_discounts(_ft, _request_margin_pct)
             station_table_by_fuel[_ft] = [
                 {
                     "id": s.get("id"),
@@ -2275,7 +2294,21 @@ def admin_margin_update():
     try:
         payload = request.get_json(force=True) or {}
         new_margin = payload.get("margin_pct")
-        margin_store.set(new_margin, actor="admin", reason="manual update")
+        reason = "manual update"
+        try:
+            old_margin = margin_store.get()
+        except Exception:
+            # Code-review finding: the audit-trail read must never block
+            # the write it's only logging context for. A transient pool
+            # failure here degrades to an "unknown" old value rather
+            # than 500ing a margin update that set() could still persist.
+            old_margin = "unknown"
+        margin_store.set(new_margin, actor="admin", reason=reason)
+        append_audit(
+            "margin_update", None,
+            from_status=str(old_margin), to_status=str(float(new_margin)),
+            note=reason,
+        )
         return jsonify({"ok": True, "margin_pct": float(new_margin)})
     except MarginValueError as e:
         return jsonify({"ok": False, "error": str(e), "field": "margin_pct"}), 400

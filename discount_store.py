@@ -82,6 +82,27 @@ class DiscountStore:
     # Public API
     # -------------------------
 
+    def _fetch_all(self, fuel_type: str, extra_cols: Tuple[str, ...] = ()) -> List[Dict[str, Any]]:
+        """Shared query behind get_all/get_all_with_updated_at/
+        get_all_with_exempt (code-review finding: those 3 methods were
+        near-identical copy-pasted SQL + row-mapping, differing only in
+        which columns are projected). `extra_cols` is a tuple of
+        `"<sql expr> AS <alias>"` fragments appended to the SELECT;
+        callers never pass user input through it (always literal
+        strings from this module). Returns raw dict_row rows — each
+        public method does its own shaping, so return shapes/types are
+        unchanged for every caller."""
+        extra_sql = "".join(f", {col}" for col in extra_cols)
+        pool = get_pool(dsn=self._dsn)
+        with pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(f"""
+                    SELECT s.display_name AS name, d.discount_per_liter AS value{extra_sql}
+                    FROM stations s
+                    JOIN discounts d ON d.station_id = s.id AND d.fuel_type = %s
+                """, (fuel_type,))
+                return cur.fetchall()
+
     def get_all(self, fuel_type: str) -> Dict[str, float]:
         """Return a copy of all station -> discount_per_liter mappings
         for `fuel_type`.
@@ -90,15 +111,7 @@ class DiscountStore:
         legacy JSON shape that call sites in main.py expect.
         Stations without a discount row for this fuel_type are omitted.
         """
-        pool = get_pool(dsn=self._dsn)
-        with pool.connection() as conn:
-            with conn.cursor(row_factory=dict_row) as cur:
-                cur.execute("""
-                    SELECT s.display_name AS name, d.discount_per_liter AS value
-                    FROM stations s
-                    JOIN discounts d ON d.station_id = s.id AND d.fuel_type = %s
-                """, (fuel_type,))
-                rows = cur.fetchall()
+        rows = self._fetch_all(fuel_type)
         return {r["name"]: float(r["value"]) for r in rows}
 
     def get_all_with_updated_at(self, fuel_type: str) -> Dict[str, Dict[str, Any]]:
@@ -106,16 +119,9 @@ class DiscountStore:
         epoch seconds, int) so callers can show a readable timestamp
         (T7, F3.1). Stations without a discount row for this fuel_type
         are omitted, same as get_all()."""
-        pool = get_pool(dsn=self._dsn)
-        with pool.connection() as conn:
-            with conn.cursor(row_factory=dict_row) as cur:
-                cur.execute("""
-                    SELECT s.display_name AS name, d.discount_per_liter AS value,
-                           EXTRACT(EPOCH FROM d.updated_at)::BIGINT AS updated_at
-                    FROM stations s
-                    JOIN discounts d ON d.station_id = s.id AND d.fuel_type = %s
-                """, (fuel_type,))
-                rows = cur.fetchall()
+        rows = self._fetch_all(
+            fuel_type, extra_cols=("EXTRACT(EPOCH FROM d.updated_at)::BIGINT AS updated_at",)
+        )
         return {
             r["name"]: {"value": float(r["value"]), "updated_at": int(r["updated_at"] or 0)}
             for r in rows
@@ -125,16 +131,7 @@ class DiscountStore:
         """Like get_all(), but each entry also carries margin_exempt
         (REQ-profit-margin T2), so callers can decide whether to run
         the value through the margin transform."""
-        pool = get_pool(dsn=self._dsn)
-        with pool.connection() as conn:
-            with conn.cursor(row_factory=dict_row) as cur:
-                cur.execute("""
-                    SELECT s.display_name AS name, d.discount_per_liter AS value,
-                           d.margin_exempt AS margin_exempt
-                    FROM stations s
-                    JOIN discounts d ON d.station_id = s.id AND d.fuel_type = %s
-                """, (fuel_type,))
-                rows = cur.fetchall()
+        rows = self._fetch_all(fuel_type, extra_cols=("d.margin_exempt AS margin_exempt",))
         return {
             r["name"]: {"value": float(r["value"]), "margin_exempt": bool(r["margin_exempt"])}
             for r in rows
