@@ -2295,7 +2295,14 @@ def admin_margin_update():
         payload = request.get_json(force=True) or {}
         new_margin = payload.get("margin_pct")
         reason = "manual update"
-        old_margin = margin_store.get()
+        try:
+            old_margin = margin_store.get()
+        except Exception:
+            # Code-review finding: the audit-trail read must never block
+            # the write it's only logging context for. A transient pool
+            # failure here degrades to an "unknown" old value rather
+            # than 500ing a margin update that set() could still persist.
+            old_margin = "unknown"
         margin_store.set(new_margin, actor="admin", reason=reason)
         append_audit(
             "margin_update", None,
