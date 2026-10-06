@@ -124,6 +124,66 @@ def test_get_book_zero_margin_is_noop_for_non_exempt_station(client, monkeypatch
     assert float(row["discount_per_liter"]) == pytest.approx(10.0, abs=0.001)
 
 
+def test_book_request_calls_margin_store_get_exactly_once(client, monkeypatch):
+    """Code-review finding: the old code called margin_store.get() once
+    for the flat "Biodiesel" table plus once per FUEL_TYPES entry inside
+    _margin_adjusted_discounts — 1 + len(FUEL_TYPES) round-trips for one
+    global scalar. A single request must now fetch it exactly once."""
+    _stub_station(monkeypatch, margin_pct=12.25, exempt=False, raw_discount=10.0)
+    calls = []
+
+    def counting_get():
+        calls.append(1)
+        return 12.25
+
+    monkeypatch.setattr(main.margin_store, "get", counting_get)
+    resp = client.post("/book", data={"account_code": "HARR"})
+    assert resp.status_code == 200
+    assert len(calls) == 1
+
+
+# ============================================================
+# _margin_adjusted_discounts contract (R2, code-review finding)
+# ============================================================
+
+def test_margin_adjusted_discounts_uses_explicit_margin_pct_without_fetching(monkeypatch):
+    """Passing margin_pct in directly must use it, and must NOT call
+    margin_store.get() internally."""
+    monkeypatch.setattr(
+        main.discount_store, "get_all_with_exempt",
+        lambda fuel_type: {"Test Station": {"value": 10.0, "margin_exempt": False}}
+    )
+    calls = []
+    monkeypatch.setattr(main.margin_store, "get", lambda: calls.append(1) or 999.0)
+
+    result = main._margin_adjusted_discounts("Biodiesel", margin_pct=12.25)
+
+    assert calls == []
+    assert result["Test Station"] == pytest.approx(8.775, abs=0.0001)
+
+
+def test_margin_adjusted_discounts_without_margin_pct_still_fetches_internally(monkeypatch):
+    """Back-compat: a caller that omits margin_pct (e.g. /api/v1/discounts,
+    main.py's _resolve_fuel_type_param call site) must keep working exactly
+    as before this change — fetching the margin itself."""
+    monkeypatch.setattr(
+        main.discount_store, "get_all_with_exempt",
+        lambda fuel_type: {"Test Station": {"value": 10.0, "margin_exempt": False}}
+    )
+    calls = []
+
+    def counting_get():
+        calls.append(1)
+        return 12.25
+
+    monkeypatch.setattr(main.margin_store, "get", counting_get)
+
+    result = main._margin_adjusted_discounts("Biodiesel")
+
+    assert len(calls) == 1
+    assert result["Test Station"] == pytest.approx(8.775, abs=0.0001)
+
+
 # ============================================================
 # Booking Snapshot (POST /book)
 # ============================================================

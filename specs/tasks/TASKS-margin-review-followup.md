@@ -59,7 +59,7 @@
 
 ## Task T2: Read global margin once per `/book` GET request
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** s
 > **Priority:** medium
