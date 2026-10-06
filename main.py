@@ -2275,7 +2275,14 @@ def admin_margin_update():
     try:
         payload = request.get_json(force=True) or {}
         new_margin = payload.get("margin_pct")
-        margin_store.set(new_margin, actor="admin", reason="manual update")
+        reason = "manual update"
+        old_margin = margin_store.get()
+        margin_store.set(new_margin, actor="admin", reason=reason)
+        append_audit(
+            "margin_update", None,
+            from_status=str(old_margin), to_status=str(float(new_margin)),
+            note=reason,
+        )
         return jsonify({"ok": True, "margin_pct": float(new_margin)})
     except MarginValueError as e:
         return jsonify({"ok": False, "error": str(e), "field": "margin_pct"}), 400

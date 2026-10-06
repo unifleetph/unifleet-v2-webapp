@@ -396,6 +396,39 @@ def test_margin_update_unauthenticated_returns_403(client, fake_margin_store):
     assert fake_margin_store.set_calls == []
 
 
+def test_valid_margin_update_logs_an_audit_entry(client, fake_margin_store, monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "append_audit", lambda *a, **kw: calls.append((a, kw)))
+    fake_margin_store.value = 10.0
+    _login(client)
+    r = client.post("/admin/margin/update", json={"margin_pct": 15})
+    assert r.status_code == 200
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[0] == "margin_update"
+    assert args[1] is None
+    assert kwargs.get("from_status") == "10.0"
+    assert kwargs.get("to_status") == "15.0"
+    assert kwargs.get("note") == "manual update"
+
+
+def test_rejected_margin_update_does_not_log_audit(client, fake_margin_store, monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "append_audit", lambda *a, **kw: calls.append((a, kw)))
+    _login(client)
+    r = client.post("/admin/margin/update", json={"margin_pct": 101})
+    assert r.status_code == 400
+    assert calls == []
+
+
+def test_unauthenticated_margin_update_does_not_log_audit(client, fake_margin_store, monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "append_audit", lambda *a, **kw: calls.append((a, kw)))
+    r = client.post("/admin/margin/update", json={"margin_pct": 12.25})
+    assert r.status_code == 403
+    assert calls == []
+
+
 def test_admin_prices_context_includes_current_margin(client, fake_margin_store, monkeypatch):
     _login(client)
     fake_margin_store.value = 5.5
