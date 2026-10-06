@@ -178,7 +178,7 @@
 
 ## Task T4: Replace tautological margin-retroactivity test
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** xs
 > **Priority:** medium
