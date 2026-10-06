@@ -503,6 +503,26 @@ def test_create_unverified_booking_with_account_code_round_trips(schema_db):
     assert fetched["account_code"] == "HARR"
 
 
+def test_create_unverified_booking_with_margin_pct_at_booking_round_trips(schema_db):
+    """margin_pct_at_booking is in VOUCHER_COLUMNS but was only ever
+    exercised via test_book_margin.py's RepoStub, which bypasses this
+    module's real column mapping entirely (code-review finding). Proves
+    the real INSERT/SELECT round-trip."""
+    repo = PostgresRepo(dsn=schema_db)
+    try:
+        result = repo.create_unverified_booking({
+            "driver_name": "Margin Round Trip Driver",
+            "vehicle_plate": "MGN123",
+            "margin_pct_at_booking": 12.25,
+        })
+        fetched = repo.get_voucher(result["voucher_id"])
+    finally:
+        repo.close()
+
+    assert result["margin_pct_at_booking"] == pytest.approx(12.25, abs=0.0001)
+    assert fetched["margin_pct_at_booking"] == pytest.approx(12.25, abs=0.0001)
+
+
 def test_create_unverified_booking_without_account_code_still_succeeds(schema_db):
     """A booking dict with no account_code key still succeeds, with a
     NULL account_code (nullable FK), no crash."""

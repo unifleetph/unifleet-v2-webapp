@@ -228,7 +228,7 @@
 
 ## Task T5: Repo-layer round-trip test for `margin_pct_at_booking`
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** tdd
 > **Effort:** xs
 > **Priority:** low
