@@ -88,7 +88,7 @@ Adds the new `excluded_from_supplier_report` column, the admin-gated toggle rout
 
 ## Task T2: Admin UI — toggle button on Redeemed rows
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** ui
 > **Effort:** xs
 > **Priority:** medium

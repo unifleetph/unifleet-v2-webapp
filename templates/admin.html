@@ -500,6 +500,13 @@
                 <td>
                     {% if row['status'] == 'Redeemed' %}
                         <button class="delete-order-button" disabled title="Cannot delete a redeemed order">Delete Order</button>
+                        <form method="POST" action="/admin/orders/{{ row['voucher_id'] }}/toggle-report-exclusion">
+                            {% if row['excluded_from_supplier_report'] %}
+                                <button type="submit" class="report-exclusion-button">Include in supplier report</button>
+                            {% else %}
+                                <button type="submit" class="report-exclusion-button">Exclude from supplier report</button>
+                            {% endif %}
+                        </form>
                     {% else %}
                         <form method="POST" action="/admin/orders/{{ row['voucher_id'] }}/delete" onsubmit="return confirm('Delete order “{{ row['voucher_id'] }}”? This cannot be undone from the dashboard.');">
                             <button type="submit" class="delete-order-button">Delete Order</button>

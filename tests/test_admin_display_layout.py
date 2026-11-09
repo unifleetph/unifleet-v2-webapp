@@ -226,6 +226,56 @@ def test_admin_dashboard_has_delete_order_column(client, monkeypatch):
     assert b"<th>Delete Order</th>" in r.data
 
 
+# ============================================================
+# Supplier-report exclusion toggle (T2, REQ-supplier-report-exclusion-flag)
+# ============================================================
+
+def test_redeemed_row_shows_exclude_toggle_when_flag_unset(client, monkeypatch):
+    rows = [{"voucher_id": "UF-R1", "driver_name": "Dave", "station": "Cleanfuel",
+             "status": "Redeemed", "fuel_type": "Premium",
+             "excluded_from_supplier_report": False}]
+    monkeypatch.setattr(main, "repo", RepoStub(rows))
+    _login(client)
+
+    r = client.get("/admin")
+    body = r.data.decode("utf-8")
+
+    assert 'title="Cannot delete a redeemed order"' in body
+    assert '/admin/orders/UF-R1/toggle-report-exclusion' in body
+    assert "Exclude from supplier report" in body
+    assert "Include in supplier report" not in body
+
+
+def test_redeemed_row_shows_include_toggle_when_flag_set(client, monkeypatch):
+    rows = [{"voucher_id": "UF-R2", "driver_name": "Dave", "station": "Cleanfuel",
+             "status": "Redeemed", "fuel_type": "Premium",
+             "excluded_from_supplier_report": True}]
+    monkeypatch.setattr(main, "repo", RepoStub(rows))
+    _login(client)
+
+    r = client.get("/admin")
+    body = r.data.decode("utf-8")
+
+    assert '/admin/orders/UF-R2/toggle-report-exclusion' in body
+    assert "Include in supplier report" in body
+    assert "Exclude from supplier report" not in body
+
+
+def test_non_redeemed_row_shows_no_report_exclusion_toggle(client, monkeypatch):
+    rows = [{"voucher_id": "UF-R3", "driver_name": "Dave", "station": "Cleanfuel",
+             "status": "Unredeemed", "fuel_type": "Premium",
+             "excluded_from_supplier_report": False}]
+    monkeypatch.setattr(main, "repo", RepoStub(rows))
+    _login(client)
+
+    r = client.get("/admin")
+    body = r.data.decode("utf-8")
+
+    assert "toggle-report-exclusion" not in body
+    assert "Exclude from supplier report" not in body
+    assert "Include in supplier report" not in body
+
+
 def test_admin_dashboard_wraps_table_in_scroll_container(client, monkeypatch):
     monkeypatch.setattr(main, "repo", RepoStub([]))
     _login(client)
