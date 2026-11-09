@@ -82,3 +82,20 @@ def test_supplier_csv_excludes_deleted_orders(client, monkeypatch):
     body = r.data.decode("utf-8")
     assert "UF-VISIBLE-2" in body
     assert "UF-DELETED-2" not in body
+
+
+def test_supplier_csv_excludes_report_excluded_redeemed_orders(client, monkeypatch):
+    """T1, REQ-supplier-report-exclusion-flag: a Redeemed order flagged
+    excluded_from_supplier_report must not appear in the CSV; a
+    non-flagged Redeemed order still does."""
+    monkeypatch.setattr(main, "repo", RepoStub([
+        _voucher("UF-VISIBLE-3", status="Redeemed"),
+        _voucher("UF-EXCLUDED-3", status="Redeemed", excluded_from_supplier_report=True),
+    ]))
+
+    r = client.get("/export_supplier_csv")
+
+    assert r.status_code == 200
+    body = r.data.decode("utf-8")
+    assert "UF-VISIBLE-3" in body
+    assert "UF-EXCLUDED-3" not in body

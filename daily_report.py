@@ -58,7 +58,11 @@ def _status(order: dict) -> str:
 
 
 def _is_live(order: dict) -> bool:
-    return not order.get("deleted_at") and _status(order) in LIVE_STATUSES
+    return (
+        not order.get("deleted_at")
+        and not order.get("excluded_from_supplier_report")
+        and _status(order) in LIVE_STATUSES
+    )
 
 
 def _oldest_first(order: dict) -> tuple:

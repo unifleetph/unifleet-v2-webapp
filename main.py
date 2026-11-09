@@ -344,6 +344,15 @@ def _exclude_deleted(vouchers):
     exclusion rule lives in one place (REQ-delete-order-button, R8)."""
     return [v for v in vouchers if not v.get("deleted_at")]
 
+def _exclude_from_supplier_report(vouchers):
+    """Filter out orders flagged excluded_from_supplier_report. Separate
+    from _exclude_deleted and from daily_report.py's own _is_live() --
+    this one is only used by the Supplier CSV export (REQ-supplier-report-
+    exclusion-flag, R3); the daily PDF path gets its own check inside
+    daily_report.py's _is_live() instead, keeping the two modules
+    independent (ARCH decision A4)."""
+    return [v for v in vouchers if not v.get("excluded_from_supplier_report")]
+
 @app.route('/admin')
 def admin():
     # Admin dashboard — gated by session login or legacy ?key= fallback.
@@ -831,6 +840,36 @@ def admin_orders_delete(voucher_id):
     _delete_voucher_pngs(voucher_id)
     append_audit("delete_order", voucher_id, from_status=status, to_status="Deleted")
     flash(f"Deleted order “{voucher_id}”.", "success")
+
+    return redirect(url_for('admin'))
+
+@app.route('/admin/orders/<voucher_id>/toggle-report-exclusion', methods=['POST'])
+def admin_orders_toggle_report_exclusion(voucher_id):
+    """Flip excluded_from_supplier_report for a Redeemed order
+    (REQ-supplier-report-exclusion-flag, R1/R4/R5). A separate, reversible
+    flag from deleted_at -- hides the order from the two supplier-facing
+    exports only, nothing else about it changes. No audit log entry
+    (ARCH decision A5) and no try/except around the write, matching
+    admin_orders_delete's existing pattern (ARCH decision A6)."""
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    row = repo.get_voucher(voucher_id)
+    if row is None:
+        flash(f"Order “{voucher_id}” was not found.", "error")
+        return redirect(url_for('admin'))
+
+    status = (row.get("status") or "").strip()
+    if status != "Redeemed":
+        flash(f"Cannot toggle supplier-report exclusion for “{voucher_id}”: only Redeemed orders can be flagged.", "error")
+        return redirect(url_for('admin'))
+
+    currently_excluded = bool(row.get("excluded_from_supplier_report"))
+    repo.update_voucher_fields(voucher_id, {"excluded_from_supplier_report": not currently_excluded})
+    if currently_excluded:
+        flash(f"Order “{voucher_id}” will now appear in the supplier report again.", "success")
+    else:
+        flash(f"Order “{voucher_id}” is now excluded from the supplier report.", "success")
 
     return redirect(url_for('admin'))
 
@@ -2032,7 +2071,7 @@ def export_supplier_csv():
       Driver, Plate, Status, Refuel Date
     """
     try:
-        rows = _exclude_deleted(repo.list_all_vouchers())
+        rows = _exclude_from_supplier_report(_exclude_deleted(repo.list_all_vouchers()))
         if not rows:
             return "<h2>No vouchers to export.</h2>", 200
 
