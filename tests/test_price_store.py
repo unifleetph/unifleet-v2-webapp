@@ -257,6 +257,106 @@ def test_set_station_active_unknown_id_raises_key_error():
 
 
 # ============================================================
+# archive_station / unarchive_station (T1, REQ-station-archive-instead-of-delete)
+# ============================================================
+
+def test_archive_station_sets_archived_at(test_station):
+    price_store.set_station_active(test_station, False)
+
+    result = price_store.archive_station(test_station)
+
+    assert result["archived_at"] is not None
+    assert result["is_active"] is False
+
+
+def test_archive_station_unknown_id_raises_key_error():
+    with pytest.raises(KeyError):
+        price_store.archive_station("does_not_exist_xyz")
+
+
+def test_unarchive_station_clears_archived_at(test_station):
+    price_store.set_station_active(test_station, False)
+    price_store.archive_station(test_station)
+
+    result = price_store.unarchive_station(test_station)
+
+    assert result["archived_at"] is None
+    assert result["is_active"] is False
+
+
+def test_unarchive_station_unknown_id_raises_key_error():
+    with pytest.raises(KeyError):
+        price_store.unarchive_station("does_not_exist_xyz")
+
+
+def test_list_archived_stations_returns_only_archived(test_station, schema_db):
+    price_store.set_station_active(test_station, False)
+    price_store.archive_station(test_station)
+
+    other_id = f"pytest_ps_other_{uuid.uuid4().hex[:8]}"
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO stations (id, brand, display_name, location) VALUES (%s, %s, %s, %s)",
+                (other_id, "Test", "Other Station", "Other Location"),
+            )
+        conn.commit()
+
+    try:
+        archived = price_store.list_archived_stations()
+        ids = {s["id"] for s in archived}
+        assert test_station in ids
+        assert other_id not in ids
+    finally:
+        with psycopg.connect(schema_db) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM stations WHERE id = %s", (other_id,))
+            conn.commit()
+
+
+def test_list_all_stations_excludes_archived_even_with_include_inactive(test_station):
+    price_store.set_station_active(test_station, False)
+    price_store.archive_station(test_station)
+
+    ids = {s["id"] for s in price_store.list_all_stations(include_inactive=True)}
+
+    assert test_station not in ids
+
+
+def test_list_stations_excludes_archived_even_with_include_inactive(test_station):
+    price_store.set_price(test_station, "Biodiesel", 60.0)
+    price_store.set_station_active(test_station, False)
+    price_store.archive_station(test_station)
+
+    ids = {s["id"] for s in price_store.list_stations("Biodiesel", include_inactive=True)}
+
+    assert test_station not in ids
+
+
+def test_get_station_returns_none_for_archived_station(test_station):
+    price_store.set_price(test_station, "Biodiesel", 60.0)
+    price_store.set_station_active(test_station, False)
+    price_store.archive_station(test_station)
+
+    assert price_store.get_station(test_station, "Biodiesel") is None
+
+
+def test_merely_deactivated_station_still_visible_with_include_inactive(test_station):
+    """Regression guard: a deactivated-but-not-archived station must still
+    appear with include_inactive=True, proving the new archived filter
+    doesn't over-exclude (the pricing page's existing grayed-out display
+    depends on this)."""
+    price_store.set_price(test_station, "Biodiesel", 60.0)
+    price_store.set_station_active(test_station, False)
+
+    all_ids = {s["id"] for s in price_store.list_all_stations(include_inactive=True)}
+    station_ids = {s["id"] for s in price_store.list_stations("Biodiesel", include_inactive=True)}
+
+    assert test_station in all_ids
+    assert test_station in station_ids
+
+
+# ============================================================
 # delete_station (T2, ARCH-booking-confirmation-note-and-station-delete)
 # ============================================================
 

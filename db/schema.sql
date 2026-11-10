@@ -32,9 +32,19 @@ CREATE TABLE IF NOT EXISTS stations (
     display_name  VARCHAR(200) NOT NULL,
     location      VARCHAR(200),
     is_active     BOOLEAN      NOT NULL DEFAULT TRUE,
+    archived_at   TIMESTAMPTZ,
     created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+-- REQ-station-archive-instead-of-delete: a station with existing orders
+-- can never be hard-deleted (vouchers.station_id REFERENCES stations(id),
+-- no cascade) -- archived_at replaces deletion entirely. NULL = not
+-- archived; a timestamp = archived (hidden from every normal read path
+-- regardless of is_active/include_inactive -- see price_store.py). Reached
+-- only from the deactivated state; archiving/unarchiving never touches
+-- is_active.
+ALTER TABLE stations ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
 
 -- ============================================================
 -- Customers: account_code is the primary key. The 4-char codes in

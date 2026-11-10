@@ -2235,9 +2235,13 @@ def admin_stations():
             flash(f"Failed to create station: {e}", "error")
         return _admin_stations_back()
 
-    stations = price_store.list_all_stations()
+    archived_view = request.args.get("view") == "archived"
+    if archived_view:
+        stations = price_store.list_archived_stations()
+    else:
+        stations = price_store.list_all_stations()
     stations = sorted(stations, key=lambda s: (s.get("brand") or "", s.get("name") or ""))
-    return render_template("admin_stations.html", stations=stations)
+    return render_template("admin_stations.html", stations=stations, archived_view=archived_view)
 
 def _station_has_bookings(station_name):
     """True if any voucher was recorded against this station name.
@@ -2298,8 +2302,13 @@ def admin_stations_reactivate(station_id):
     flash(f"Reactivated station “{station_id}”.", "success")
     return _admin_stations_back()
 
-@app.route("/admin/stations/<station_id>/delete", methods=["POST"])
-def admin_stations_delete(station_id):
+@app.route("/admin/stations/<station_id>/archive", methods=["POST"])
+def admin_stations_archive(station_id):
+    """Archive a station -- replaces hard-delete entirely
+    (REQ-station-archive-instead-of-delete, R1-R3). Unlike the old
+    delete route, this succeeds regardless of booking history (R2);
+    the row is never removed, so the vouchers.station_id FK is never
+    at risk."""
     if not require_admin(request):
         return redirect(url_for('admin_login', next=request.path))
 
@@ -2308,22 +2317,42 @@ def admin_stations_delete(station_id):
         abort(404)
 
     if existing.get("is_active"):
-        flash("Cannot delete: station must be deactivated first.", "error")
-        return _admin_stations_back()
-
-    if _station_has_bookings(existing["name"]):
-        flash("Cannot delete: station has existing bookings.", "error")
+        flash("Cannot archive: station must be deactivated first.", "error")
         return _admin_stations_back()
 
     try:
-        price_store.delete_station(station_id)
+        price_store.archive_station(station_id)
     except KeyError:
         abort(404)
     except Exception as e:
-        flash(f"Failed to delete station: {e}", "error")
+        flash(f"Failed to archive station: {e}", "error")
         return _admin_stations_back()
 
-    flash(f"Deleted station “{station_id}”.", "success")
+    append_audit("station_archive", None, note=f"station_id={station_id}")
+    flash(f"Archived station “{station_id}”.", "success")
+    return _admin_stations_back()
+
+@app.route("/admin/stations/<station_id>/unarchive", methods=["POST"])
+def admin_stations_unarchive(station_id):
+    """Reverse admin_stations_archive. Lands the station back on
+    "deactivated" (R5) -- an admin reactivates separately if wanted."""
+    if not require_admin(request):
+        return redirect(url_for('admin_login', next=request.path))
+
+    existing = next((s for s in price_store.list_archived_stations() if s["id"] == station_id), None)
+    if existing is None:
+        abort(404)
+
+    try:
+        price_store.unarchive_station(station_id)
+    except KeyError:
+        abort(404)
+    except Exception as e:
+        flash(f"Failed to unarchive station: {e}", "error")
+        return _admin_stations_back()
+
+    append_audit("station_unarchive", None, note=f"station_id={station_id}")
+    flash(f"Unarchived station “{station_id}”.", "success")
     return _admin_stations_back()
 
 @app.route("/admin/margin/update", methods=["POST"])
