@@ -44,6 +44,11 @@
 <body>
   <h1>Admin — Manage Stations</h1>
   <p class="muted">Create, edit, deactivate, and reactivate fuel stations. Deactivated stations stay visible here and on the pricing page, grayed out.</p>
+  {% if archived_view %}
+  <p class="muted"><a href="{{ '/admin/stations?key=' ~ (request.args.get('key') or '') }}">Back to Active Stations</a></p>
+  {% else %}
+  <p class="muted"><a href="{{ '/admin/stations?view=archived&key=' ~ (request.args.get('key') or '') }}">View Archived Stations</a></p>
+  {% endif %}
 
   <h2>Create Station</h2>
   <form class="create-form" method="POST" action="{{ '/admin/stations?key=' ~ (request.args.get('key') or '') }}">
@@ -72,6 +77,20 @@
     </thead>
     <tbody>
       {% for s in stations %}
+      {% if archived_view %}
+      <tr data-station-id="{{ s.id }}" class="inactive-row">
+        <td class="mono">{{ s.id }}</td>
+        <td>{{ s.brand }}</td>
+        <td>{{ s.name }}</td>
+        <td>{{ s.location or '' }}</td>
+        <td><span class="status-badge status-inactive">Archived</span></td>
+        <td class="row">
+          <form method="POST" action="{{ ('/admin/stations/' ~ s.id ~ '/unarchive?key=') ~ (request.args.get('key') or '') }}">
+            <button class="btn btn-reactivate" type="submit">Un-archive</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
       <tr data-station-id="{{ s.id }}" class="{{ 'inactive-row' if not s.is_active else '' }}">
         <td class="mono">{{ s.id }}</td>
         <form method="POST" action="{{ ('/admin/stations/' ~ s.id ~ '/edit?key=') ~ (request.args.get('key') or '') }}" class="row" style="display: contents;">
@@ -96,12 +115,13 @@
             <form method="POST" action="{{ ('/admin/stations/' ~ s.id ~ '/reactivate?key=') ~ (request.args.get('key') or '') }}">
               <button class="btn btn-reactivate" type="submit">Reactivate</button>
             </form>
-            <form method="POST" action="{{ ('/admin/stations/' ~ s.id ~ '/delete?key=') ~ (request.args.get('key') or '') }}" onsubmit="return confirm('Delete station “{{ s.name }}”? This cannot be undone.');">
-              <button class="btn btn-danger" type="submit">Delete</button>
+            <form method="POST" action="{{ ('/admin/stations/' ~ s.id ~ '/archive?key=') ~ (request.args.get('key') or '') }}" onsubmit="return confirm('Archive station “{{ s.name }}”? It will be hidden from this list and the pricing page until un-archived.');">
+              <button class="btn btn-danger" type="submit">Archive</button>
             </form>
             {% endif %}
           </td>
       </tr>
+      {% endif %}
       {% endfor %}
     </tbody>
   </table>

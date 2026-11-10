@@ -500,7 +500,7 @@ def test_get_admin_stations_renders_inactive_row_css_class(client, fake_price_st
     assert 'class="inactive-row"' in r.data.decode("utf-8")
 
 
-def test_get_admin_stations_delete_button_only_for_inactive_stations(client, fake_price_store):
+def test_get_admin_stations_archive_button_only_for_inactive_stations(client, fake_price_store):
     _login(client)
     fake_price_store.stations["active1"] = {
         "id": "active1", "brand": "A", "name": "Active One", "location": "X", "is_active": True,
@@ -513,11 +513,11 @@ def test_get_admin_stations_delete_button_only_for_inactive_stations(client, fak
 
     active_row = body.split('data-station-id="active1"')[1].split("</tr>")[0]
     inactive_row = body.split('data-station-id="inactive1"')[1].split("</tr>")[0]
-    assert "/admin/stations/active1/delete" not in active_row
-    assert "/admin/stations/inactive1/delete" in inactive_row
+    assert "/admin/stations/active1/archive" not in active_row
+    assert "/admin/stations/inactive1/archive" in inactive_row
 
 
-def test_get_admin_stations_delete_form_preserves_key_query_param(client, fake_price_store):
+def test_get_admin_stations_archive_form_preserves_key_query_param(client, fake_price_store):
     _login(client)
     fake_price_store.stations["inactive1"] = {
         "id": "inactive1", "brand": "B", "name": "Inactive One", "location": "Y", "is_active": False,
@@ -525,7 +525,60 @@ def test_get_admin_stations_delete_form_preserves_key_query_param(client, fake_p
 
     body = client.get("/admin/stations?key=testkey").data.decode("utf-8")
 
-    assert "/admin/stations/inactive1/delete?key=testkey" in body
+    assert "/admin/stations/inactive1/archive?key=testkey" in body
+
+
+# ============================================================
+# Archived-view rendering (T2, REQ-station-archive-instead-of-delete)
+# ============================================================
+
+def test_default_view_has_no_edit_form_or_delete_button_for_archived_stations(client, fake_price_store):
+    """Default view only ever lists non-archived stations (T1's
+    list_all_stations filter) -- this seam confirms the Archive button
+    itself renders correctly for a deactivated, non-archived row."""
+    _login(client)
+    fake_price_store.stations["inactive1"] = {
+        "id": "inactive1", "brand": "B", "name": "Inactive One", "location": "Y",
+        "is_active": False, "archived": False,
+    }
+
+    body = client.get("/admin/stations").data.decode("utf-8")
+
+    assert "View Archived Stations" in body
+    assert "/admin/stations/inactive1/archive" in body
+    assert ">Archive<" in body
+    assert ">Delete<" not in body
+
+
+def test_archived_view_renders_unarchive_only_no_edit_form(client, fake_price_store):
+    _login(client)
+    fake_price_store.stations["archived1"] = {
+        "id": "archived1", "brand": "Petron", "name": "Archived Station", "location": "EDSA",
+        "is_active": False, "archived": True,
+    }
+
+    body = client.get("/admin/stations?view=archived").data.decode("utf-8")
+
+    assert "Back to Active Stations" in body
+    assert "/admin/stations/archived1/unarchive" in body
+    assert ">Un-archive<" in body
+    row = body.split('data-station-id="archived1"')[1].split("</tr>")[0]
+    assert "<input" not in row
+    assert "Deactivate" not in row
+    assert "Reactivate" not in row
+
+
+def test_archived_view_with_no_archived_stations_renders_empty(client, fake_price_store):
+    _login(client)
+    fake_price_store.stations["active1"] = {
+        "id": "active1", "brand": "A", "name": "Active One", "location": "X",
+        "is_active": True, "archived": False,
+    }
+
+    r = client.get("/admin/stations?view=archived")
+
+    assert r.status_code == 200
+    assert "Active One" not in r.data.decode("utf-8")
 
 
 # ============================================================

@@ -98,7 +98,7 @@ Adds the `archived_at` column and the two store functions that flip it, wires th
 
 ## Task T2: Admin UI — Archive button, Un-archive button, archived view
 
-> **Status:** not started
+> **Status:** done
 > **Verification:** ui
 > **Effort:** s
 > **Priority:** medium
