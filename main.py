@@ -2314,6 +2314,16 @@ def admin_stations_archive(station_id):
 
     existing = next((s for s in price_store.list_all_stations() if s["id"] == station_id), None)
     if existing is None:
+        # Code-review finding: list_all_stations() unconditionally excludes
+        # archived stations (R4) -- so a station that's already archived
+        # would otherwise 404 here instead of the no-op the REQ's Edge
+        # Cases table calls for. Check the archived list before giving up.
+        already_archived = next(
+            (s for s in price_store.list_archived_stations() if s["id"] == station_id), None
+        )
+        if already_archived is not None:
+            flash(f"Station “{station_id}” is already archived.", "success")
+            return _admin_stations_back()
         abort(404)
 
     if existing.get("is_active"):

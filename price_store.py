@@ -280,7 +280,11 @@ def set_price(station_id: str, fuel_type: str, new_price: float) -> Dict[str, An
                 (station_id, fuel_type),
             )
             old_row = cur.fetchone()
-            if old_row is None and not _station_exists(cur, station_id):
+            # Code-review finding: this used to only check _station_exists
+            # when no prior price row existed, so a station that already
+            # had a price row before being archived could still get a
+            # silent write post-archive. Check unconditionally.
+            if not _station_exists(cur, station_id):
                 raise KeyError(f"Station '{station_id}' not found")
             old_price = old_row["price_php_per_liter"] if old_row else None
 
@@ -326,6 +330,11 @@ def upsert_station(st: Dict[str, Any]) -> Dict[str, Any]:
     pool = get_pool()
     with pool.connection() as conn:
         with conn.cursor() as cur:
+            # Code-review finding: the DO UPDATE branch didn't check
+            # archived_at, so a direct call (bypassing admin_stations_edit's
+            # own pre-check) could silently rewrite an archived station's
+            # identity. The WHERE clause makes that branch a no-op for an
+            # archived row instead.
             cur.execute("""
                 INSERT INTO stations (id, brand, display_name, location, is_active)
                 VALUES (%s, %s, %s, %s, TRUE)
@@ -334,6 +343,7 @@ def upsert_station(st: Dict[str, Any]) -> Dict[str, Any]:
                     display_name = EXCLUDED.display_name,
                     location = EXCLUDED.location,
                     updated_at = NOW()
+                WHERE stations.archived_at IS NULL
             """, (st["id"], st["brand"], st["name"], st.get("location")))
         conn.commit()
 
@@ -372,14 +382,19 @@ def generate_unique_station_id(brand: str, name: str) -> str:
 
 def set_station_active(station_id: str, is_active: bool) -> Dict[str, Any]:
     """Flip a station's `is_active` flag. Raises KeyError if the
-    station doesn't exist (ARCH-station-management A3/A4)."""
+    station doesn't exist (ARCH-station-management A3/A4), or if it's
+    archived -- an archived station must only come back via
+    unarchive_station, never directly via reactivate (code-review
+    finding: this write path didn't check archived_at, so a direct POST
+    to /reactivate could silently set is_active=TRUE on an archived row,
+    breaking REQ-station-archive-instead-of-delete's R5 guarantee)."""
     pool = get_pool()
     with pool.connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute("""
                 UPDATE stations
                 SET is_active = %s, updated_at = NOW()
-                WHERE id = %s
+                WHERE id = %s AND archived_at IS NULL
                 RETURNING id, brand, display_name AS name, location, is_active
             """, (is_active, station_id))
             r = cur.fetchone()
@@ -487,6 +502,10 @@ def _slug(s: str) -> str:
     return s.strip('_')
 
 def _station_exists(cur, station_id: str) -> bool:
-    """Return True if a station row exists with this id (cheap existence check)."""
-    cur.execute("SELECT 1 FROM stations WHERE id = %s", (station_id,))
+    """Return True if a non-archived station row exists with this id
+    (cheap existence check). Archived stations count as not-existing
+    for write purposes (code-review finding: write paths must respect
+    the same archived filter the read paths do -- see
+    REQ-station-archive-instead-of-delete)."""
+    cur.execute("SELECT 1 FROM stations WHERE id = %s AND archived_at IS NULL", (station_id,))
     return cur.fetchone() is not None

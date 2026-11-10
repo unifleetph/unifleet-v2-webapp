@@ -137,7 +137,7 @@ None — `price_store.delete_station` is left in place per the developer's call,
 
 ## Cross-Cutting Concerns
 
-- **Errors:** both new/renamed routes follow the existing station-route precedent exactly — flash message + redirect for expected failures (not found, wrong state), consistent with `admin_stations_delete`'s/`admin_stations_deactivate`'s current shape.
+- **Errors:** both new/renamed routes follow the existing station-route precedent exactly — flash message + redirect for expected failures (not found, wrong state). *(Code-review correction, 2026-11-10: this actually matches the old `admin_stations_delete`'s/`admin_stations_edit`'s broader shape — pre-check, then `except KeyError`, then a catch-all `except Exception` that flashes instead of 500ing — not `admin_stations_deactivate`'s/`admin_stations_reactivate`'s narrower `KeyError`-only handling. That asymmetry between the four station-lifecycle routes predates this change and isn't drift introduced here, but the original wording above overstated which sibling it matches.)*
 - **Logging & metrics:** two new `audit_log` action values, `station_archive` and `station_unarchive`, each with `voucher_id=None` and a `note` naming the station — matching the REQ's explicit decision that this (unlike REQ1's lighter toggle) deserves an audit trail.
 - **Auth / authz:** `require_admin`, identical check and mechanism to every other `/admin/stations/...` route.
 - **Performance:** negligible — one additional boolean-ish column check per existing station query, one additional single-row `UPDATE` per archive/unarchive action. Station counts are small (dozens, not thousands); no new index needed.

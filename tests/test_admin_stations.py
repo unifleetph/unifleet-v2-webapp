@@ -257,6 +257,10 @@ def test_post_admin_stations_archive_succeeds_no_booking_history(client, fake_pr
     assert r.status_code == 302
     assert fake_price_store.archive_calls == ["petron_makati"]
     assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[0] == "station_archive"
+    assert args[1] is None
+    assert "petron_makati" in kwargs.get("note", "")
 
 
 def test_post_admin_stations_archive_succeeds_with_booking_history(client, fake_price_store, fake_repo):
@@ -282,6 +286,27 @@ def test_post_admin_stations_archive_unknown_id_returns_404(client, fake_price_s
     r = client.post("/admin/stations/does_not_exist/archive")
 
     assert r.status_code == 404
+
+
+def test_post_admin_stations_archive_already_archived_is_noop(client, fake_price_store, fake_repo, monkeypatch):
+    """Code-review finding: re-archiving an already-archived station must
+    be a no-op success (REQ Edge Cases table), not a 404 -- the original
+    existence check only looked in list_all_stations(), which this same
+    task made unconditionally exclude archived stations."""
+    calls = []
+    monkeypatch.setattr(main, "append_audit", lambda *a, **kw: calls.append((a, kw)))
+    _login(client)
+    fake_price_store.stations["petron_makati"] = {
+        "id": "petron_makati", "brand": "Petron", "name": "Makati", "location": "EDSA",
+        "is_active": False, "archived": True,
+    }
+
+    r = client.post("/admin/stations/petron_makati/archive", follow_redirects=True)
+
+    assert r.status_code == 200
+    assert fake_price_store.archive_calls == []
+    assert calls == []
+    assert "already archived" in r.data.decode("utf-8").lower()
 
 
 def test_post_admin_stations_archive_preserves_key_query_param_on_redirect(client, fake_price_store, fake_repo):
@@ -355,6 +380,35 @@ def test_post_admin_stations_unarchive_succeeds(client, fake_price_store, fake_r
     assert r.status_code == 302
     assert fake_price_store.unarchive_calls == ["petron_makati"]
     assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[0] == "station_unarchive"
+    assert args[1] is None
+    assert "petron_makati" in kwargs.get("note", "")
+
+
+def test_unarchived_station_is_fully_editable_again(client, fake_price_store, fake_repo):
+    """Code-review finding (requirement-coverage, R5): no test previously
+    proved a station is "fully editable again exactly as any other
+    deactivated station" post-unarchive -- only that the archived row's
+    own display has no edit form. Un-archive, then drive the edit route
+    against the same station."""
+    _login(client)
+    fake_price_store.stations["petron_makati"] = {
+        "id": "petron_makati", "brand": "Petron", "name": "Makati", "location": "EDSA",
+        "is_active": False, "archived": True,
+    }
+
+    client.post("/admin/stations/petron_makati/unarchive")
+
+    r = client.post("/admin/stations/petron_makati/edit", data={
+        "brand": "Petron", "name": "Makati Renamed", "location": "New Location",
+    })
+
+    assert r.status_code == 302
+    assert len(fake_price_store.upsert_calls) == 1
+    updated = fake_price_store.upsert_calls[0]
+    assert updated["name"] == "Makati Renamed"
+    assert updated["location"] == "New Location"
 
 
 def test_post_admin_stations_unarchive_non_archived_returns_404(client, fake_price_store, fake_repo):
