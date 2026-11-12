@@ -389,7 +389,15 @@ class PostgresRepo:
         # Build the SET clause. Only columns present in the schema are
         # accepted; unknown columns are silently ignored (CSVRepo would
         # have added them as new columns, but in Postgres we reject).
-        schema_cols = set(_VOUCHER_INSERT_COLUMNS) | {"updated_at"}
+        #
+        # excluded_from_supplier_report (REQ-supplier-report-exclusion-flag)
+        # is deliberately NOT in VOUCHER_COLUMNS/_VOUCHER_INSERT_COLUMNS --
+        # it's NOT NULL DEFAULT FALSE, and create_unverified_booking's
+        # {c: None for c in VOUCHER_COLUMNS} shape would explicitly INSERT
+        # NULL for it, violating that constraint. It must still be
+        # writable via this update path (the admin toggle route's only
+        # way to set it), so it's allowlisted here specifically instead.
+        schema_cols = set(_VOUCHER_INSERT_COLUMNS) | {"updated_at", "excluded_from_supplier_report"}
         set_clauses = []
         params: List = []
         for col, val in fields.items():

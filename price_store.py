@@ -168,6 +168,10 @@ def list_stations(fuel_type: str, include_inactive: bool = False) -> List[Dict[s
       entirely (availability is price-gated — see ARCH R7/R9).
     - Deactivated stations (`is_active = FALSE`) are excluded unless
       `include_inactive=True` (ARCH-station-management A4).
+    - Archived stations (`archived_at` set) are excluded unconditionally,
+      regardless of `include_inactive` -- there is no escape hatch for
+      this one (REQ-station-archive-instead-of-delete, R4). The only way
+      to see one is `list_archived_stations()`.
     """
     pool = get_pool()
     with pool.connection() as conn:
@@ -182,7 +186,7 @@ def list_stations(fuel_type: str, include_inactive: bool = False) -> List[Dict[s
                     COALESCE(EXTRACT(EPOCH FROM p.updated_at)::BIGINT, 0) AS updated_at
                 FROM stations s
                 JOIN prices p ON p.station_id = s.id AND p.fuel_type = %s
-                WHERE (%s OR s.is_active)
+                WHERE (%s OR s.is_active) AND s.archived_at IS NULL
                 ORDER BY s.brand, s.display_name
             """, (fuel_type, include_inactive))
             rows = cur.fetchall()
@@ -205,6 +209,10 @@ def list_all_stations(include_inactive: bool = True) -> List[Dict[str, Any]]:
     admin_prices()'s per-fuel-type overlay (ARCH-station-management A5).
 
     Each row: {id, brand, name, location, is_active}
+
+    Archived stations (`archived_at` set) are excluded unconditionally,
+    regardless of `include_inactive` (REQ-station-archive-instead-of-delete,
+    R4). Use `list_archived_stations()` to see them.
     """
     pool = get_pool()
     with pool.connection() as conn:
@@ -212,7 +220,7 @@ def list_all_stations(include_inactive: bool = True) -> List[Dict[str, Any]]:
             cur.execute("""
                 SELECT id, brand, display_name AS name, location, is_active
                 FROM stations
-                WHERE (%s OR is_active)
+                WHERE (%s OR is_active) AND archived_at IS NULL
                 ORDER BY brand, display_name
             """, (include_inactive,))
             rows = cur.fetchall()
@@ -235,7 +243,7 @@ def get_station(station_id: str, fuel_type: str) -> Optional[Dict[str, Any]]:
                     COALESCE(EXTRACT(EPOCH FROM p.updated_at)::BIGINT, 0) AS updated_at
                 FROM stations s
                 JOIN prices p ON p.station_id = s.id AND p.fuel_type = %s
-                WHERE s.id = %s
+                WHERE s.id = %s AND s.archived_at IS NULL
             """, (fuel_type, station_id))
             r = cur.fetchone()
     if r is None:
@@ -272,7 +280,11 @@ def set_price(station_id: str, fuel_type: str, new_price: float) -> Dict[str, An
                 (station_id, fuel_type),
             )
             old_row = cur.fetchone()
-            if old_row is None and not _station_exists(cur, station_id):
+            # Code-review finding: this used to only check _station_exists
+            # when no prior price row existed, so a station that already
+            # had a price row before being archived could still get a
+            # silent write post-archive. Check unconditionally.
+            if not _station_exists(cur, station_id):
                 raise KeyError(f"Station '{station_id}' not found")
             old_price = old_row["price_php_per_liter"] if old_row else None
 
@@ -318,6 +330,11 @@ def upsert_station(st: Dict[str, Any]) -> Dict[str, Any]:
     pool = get_pool()
     with pool.connection() as conn:
         with conn.cursor() as cur:
+            # Code-review finding: the DO UPDATE branch didn't check
+            # archived_at, so a direct call (bypassing admin_stations_edit's
+            # own pre-check) could silently rewrite an archived station's
+            # identity. The WHERE clause makes that branch a no-op for an
+            # archived row instead.
             cur.execute("""
                 INSERT INTO stations (id, brand, display_name, location, is_active)
                 VALUES (%s, %s, %s, %s, TRUE)
@@ -326,6 +343,7 @@ def upsert_station(st: Dict[str, Any]) -> Dict[str, Any]:
                     display_name = EXCLUDED.display_name,
                     location = EXCLUDED.location,
                     updated_at = NOW()
+                WHERE stations.archived_at IS NULL
             """, (st["id"], st["brand"], st["name"], st.get("location")))
         conn.commit()
 
@@ -364,14 +382,19 @@ def generate_unique_station_id(brand: str, name: str) -> str:
 
 def set_station_active(station_id: str, is_active: bool) -> Dict[str, Any]:
     """Flip a station's `is_active` flag. Raises KeyError if the
-    station doesn't exist (ARCH-station-management A3/A4)."""
+    station doesn't exist (ARCH-station-management A3/A4), or if it's
+    archived -- an archived station must only come back via
+    unarchive_station, never directly via reactivate (code-review
+    finding: this write path didn't check archived_at, so a direct POST
+    to /reactivate could silently set is_active=TRUE on an archived row,
+    breaking REQ-station-archive-instead-of-delete's R5 guarantee)."""
     pool = get_pool()
     with pool.connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute("""
                 UPDATE stations
                 SET is_active = %s, updated_at = NOW()
-                WHERE id = %s
+                WHERE id = %s AND archived_at IS NULL
                 RETURNING id, brand, display_name AS name, location, is_active
             """, (is_active, station_id))
             r = cur.fetchone()
@@ -379,6 +402,66 @@ def set_station_active(station_id: str, is_active: bool) -> Dict[str, Any]:
     if r is None:
         raise KeyError(f"Station '{station_id}' not found")
     return dict(r)
+
+
+def archive_station(station_id: str) -> Dict[str, Any]:
+    """Archive a station (REQ-station-archive-instead-of-delete, R1/R2):
+    sets `archived_at`, hiding it from every normal read path. Does not
+    check `is_active` -- that's the caller's responsibility (main.py
+    enforces "must be deactivated first" before calling this, mirroring
+    how the old delete_station/route split worked). Raises KeyError if
+    the station doesn't exist."""
+    pool = get_pool()
+    with pool.connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("""
+                UPDATE stations
+                SET archived_at = NOW(), updated_at = NOW()
+                WHERE id = %s
+                RETURNING id, brand, display_name AS name, location, is_active, archived_at
+            """, (station_id,))
+            r = cur.fetchone()
+        conn.commit()
+    if r is None:
+        raise KeyError(f"Station '{station_id}' not found")
+    return dict(r)
+
+
+def unarchive_station(station_id: str) -> Dict[str, Any]:
+    """Reverse archive_station: clears `archived_at`. `is_active` is left
+    untouched (already FALSE), so the station lands back on "deactivated,"
+    not "active" (ARCH decision A2) -- the admin reactivates separately
+    if wanted. Raises KeyError if the station doesn't exist."""
+    pool = get_pool()
+    with pool.connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("""
+                UPDATE stations
+                SET archived_at = NULL, updated_at = NOW()
+                WHERE id = %s
+                RETURNING id, brand, display_name AS name, location, is_active, archived_at
+            """, (station_id,))
+            r = cur.fetchone()
+        conn.commit()
+    if r is None:
+        raise KeyError(f"Station '{station_id}' not found")
+    return dict(r)
+
+
+def list_archived_stations() -> List[Dict[str, Any]]:
+    """Return only archived stations, identity only -- the sole read path
+    that can see one (REQ-station-archive-instead-of-delete, R4)."""
+    pool = get_pool()
+    with pool.connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("""
+                SELECT id, brand, display_name AS name, location, is_active, archived_at
+                FROM stations
+                WHERE archived_at IS NOT NULL
+                ORDER BY brand, display_name
+            """)
+            rows = cur.fetchall()
+    return [dict(r) for r in rows]
 
 
 def delete_station(station_id: str) -> None:
@@ -419,6 +502,10 @@ def _slug(s: str) -> str:
     return s.strip('_')
 
 def _station_exists(cur, station_id: str) -> bool:
-    """Return True if a station row exists with this id (cheap existence check)."""
-    cur.execute("SELECT 1 FROM stations WHERE id = %s", (station_id,))
+    """Return True if a non-archived station row exists with this id
+    (cheap existence check). Archived stations count as not-existing
+    for write purposes (code-review finding: write paths must respect
+    the same archived filter the read paths do -- see
+    REQ-station-archive-instead-of-delete)."""
+    cur.execute("SELECT 1 FROM stations WHERE id = %s AND archived_at IS NULL", (station_id,))
     return cur.fetchone() is not None

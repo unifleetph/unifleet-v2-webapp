@@ -32,9 +32,19 @@ CREATE TABLE IF NOT EXISTS stations (
     display_name  VARCHAR(200) NOT NULL,
     location      VARCHAR(200),
     is_active     BOOLEAN      NOT NULL DEFAULT TRUE,
+    archived_at   TIMESTAMPTZ,
     created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+-- REQ-station-archive-instead-of-delete: a station with existing orders
+-- can never be hard-deleted (vouchers.station_id REFERENCES stations(id),
+-- no cascade) -- archived_at replaces deletion entirely. NULL = not
+-- archived; a timestamp = archived (hidden from every normal read path
+-- regardless of is_active/include_inactive -- see price_store.py). Reached
+-- only from the deactivated state; archiving/unarchiving never touches
+-- is_active.
+ALTER TABLE stations ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
 
 -- ============================================================
 -- Customers: account_code is the primary key. The 4-char codes in
@@ -100,7 +110,9 @@ CREATE TABLE IF NOT EXISTS vouchers (
     total_dispensed_php              NUMERIC(12,2),
     computed_at                      TIMESTAMPTZ,
 
-    deleted_at                       TIMESTAMPTZ
+    deleted_at                       TIMESTAMPTZ,
+
+    excluded_from_supplier_report    BOOLEAN      NOT NULL DEFAULT FALSE
 );
 
 CREATE INDEX IF NOT EXISTS idx_vouchers_status            ON vouchers(status);
@@ -128,6 +140,14 @@ ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS requested_total_php NUMERIC(12,2);
 -- row itself is retained — audit_log only captures a thin event trail,
 -- not a full row snapshot, so hard-deleting would lose data).
 ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+-- REQ-supplier-report-exclusion-flag: a separate, reversible flag (distinct
+-- from deleted_at) that hides a Redeemed order from the two supplier-facing
+-- exports (daily PDF, CSV) without soft-deleting it -- the order stays fully
+-- visible/functional everywhere else. Deliberately NOT in models.VOUCHER_COLUMNS
+-- (ARCH decision A3): it's only ever set later by an admin toggle, never at
+-- booking time, so every row -- existing and new -- gets it via this default.
+ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS excluded_from_supplier_report BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- Brief-8 (ARCH-brief-8 T3/T4): booking-time mobile number, collected
 -- alongside the New Driver fields. Digits only, leading zero preserved

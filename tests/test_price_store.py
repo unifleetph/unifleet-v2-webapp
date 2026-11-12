@@ -97,6 +97,46 @@ def test_set_price_upserts_without_affecting_other_fuel_types(test_station):
     assert premium["price_php_per_liter"] == 65.0
 
 
+def test_set_price_raises_key_error_for_archived_station_with_existing_price(test_station):
+    """Code-review finding: set_price only consulted _station_exists when
+    no prior price row existed for this fuel_type -- a station that
+    already had a price row before being archived could still get a
+    silent price write post-archive. Must raise KeyError regardless of
+    whether a price row already exists."""
+    price_store.set_price(test_station, "Biodiesel", 60.0)
+    price_store.set_station_active(test_station, False)
+    price_store.archive_station(test_station)
+
+    with pytest.raises(KeyError):
+        price_store.set_price(test_station, "Biodiesel", 70.0)
+
+
+def test_set_price_raises_key_error_for_archived_station_no_existing_price(test_station):
+    price_store.set_station_active(test_station, False)
+    price_store.archive_station(test_station)
+
+    with pytest.raises(KeyError):
+        price_store.set_price(test_station, "Premium", 70.0)
+
+
+def test_upsert_station_does_not_modify_an_archived_station(test_station):
+    """Code-review finding: the ON CONFLICT DO UPDATE branch didn't check
+    archived_at, so a direct upsert_station call (bypassing
+    admin_stations_edit's own pre-check) could silently rewrite an
+    archived station's identity. Must be a no-op for archived rows."""
+    price_store.set_station_active(test_station, False)
+    price_store.archive_station(test_station)
+
+    price_store.upsert_station({
+        "id": test_station, "brand": "Changed Brand", "name": "Changed Name",
+        "location": "Changed Location",
+    })
+
+    archived = next(s for s in price_store.list_archived_stations() if s["id"] == test_station)
+    assert archived["brand"] == "Test"
+    assert archived["name"] == "Test Station"
+
+
 def test_upsert_station_creates_identity_only(schema_db):
     station_id = f"pytest_ps_bare_{uuid.uuid4().hex[:8]}"
     try:
@@ -254,6 +294,166 @@ def test_set_station_active_deactivate_then_reactivate_round_trips(test_station)
 def test_set_station_active_unknown_id_raises_key_error():
     with pytest.raises(KeyError):
         price_store.set_station_active("does_not_exist_xyz", False)
+
+
+def test_set_station_active_raises_key_error_for_archived_station(test_station):
+    """Code-review finding: write paths didn't check archived_at, only
+    the read paths did. A direct POST to /reactivate on an archived
+    station could silently set is_active=TRUE while still archived --
+    a combination that should never occur (breaks R5's "unarchive
+    always lands on deactivated" guarantee)."""
+    price_store.set_station_active(test_station, False)
+    price_store.archive_station(test_station)
+
+    with pytest.raises(KeyError):
+        price_store.set_station_active(test_station, True)
+
+
+# ============================================================
+# archive_station / unarchive_station (T1, REQ-station-archive-instead-of-delete)
+# ============================================================
+
+def test_archive_station_sets_archived_at(test_station):
+    price_store.set_station_active(test_station, False)
+
+    result = price_store.archive_station(test_station)
+
+    assert result["archived_at"] is not None
+    assert result["is_active"] is False
+
+
+def test_archive_station_unknown_id_raises_key_error():
+    with pytest.raises(KeyError):
+        price_store.archive_station("does_not_exist_xyz")
+
+
+def test_archive_station_leaves_prices_and_discounts_unaffected(test_station, schema_db):
+    """Code-review finding (requirement-coverage, R3): existing tests only
+    proved the booking check was removed, never that archiving actually
+    leaves related price/discount rows intact -- the "row never removed,
+    nothing else affected" half of R3 had zero assertion."""
+    price_store.set_price(test_station, "Biodiesel", 60.0)
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO discounts (station_id, fuel_type, discount_per_liter, updated_at) "
+                "VALUES (%s, %s, %s, NOW())",
+                (test_station, "Biodiesel", 2.0),
+            )
+        conn.commit()
+    price_store.set_station_active(test_station, False)
+
+    try:
+        price_store.archive_station(test_station)
+
+        with psycopg.connect(schema_db) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT price_php_per_liter FROM prices WHERE station_id = %s AND fuel_type = %s",
+                    (test_station, "Biodiesel"),
+                )
+                price_row = cur.fetchone()
+                cur.execute(
+                    "SELECT discount_per_liter FROM discounts WHERE station_id = %s AND fuel_type = %s",
+                    (test_station, "Biodiesel"),
+                )
+                discount_row = cur.fetchone()
+                cur.execute("SELECT 1 FROM stations WHERE id = %s", (test_station,))
+                station_row = cur.fetchone()
+
+        assert station_row is not None
+        assert price_row is not None and float(price_row[0]) == 60.0
+        assert discount_row is not None and float(discount_row[0]) == 2.0
+    finally:
+        # The test_station fixture's own teardown deletes the stations row;
+        # the discounts row has no cascade, so it must go first or that
+        # teardown hits a foreign-key violation.
+        with psycopg.connect(schema_db) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM discounts WHERE station_id = %s", (test_station,))
+            conn.commit()
+
+
+def test_unarchive_station_clears_archived_at(test_station):
+    price_store.set_station_active(test_station, False)
+    price_store.archive_station(test_station)
+
+    result = price_store.unarchive_station(test_station)
+
+    assert result["archived_at"] is None
+    assert result["is_active"] is False
+
+
+def test_unarchive_station_unknown_id_raises_key_error():
+    with pytest.raises(KeyError):
+        price_store.unarchive_station("does_not_exist_xyz")
+
+
+def test_list_archived_stations_returns_only_archived(test_station, schema_db):
+    price_store.set_station_active(test_station, False)
+    price_store.archive_station(test_station)
+
+    other_id = f"pytest_ps_other_{uuid.uuid4().hex[:8]}"
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO stations (id, brand, display_name, location) VALUES (%s, %s, %s, %s)",
+                (other_id, "Test", "Other Station", "Other Location"),
+            )
+        conn.commit()
+
+    try:
+        archived = price_store.list_archived_stations()
+        ids = {s["id"] for s in archived}
+        assert test_station in ids
+        assert other_id not in ids
+    finally:
+        with psycopg.connect(schema_db) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM stations WHERE id = %s", (other_id,))
+            conn.commit()
+
+
+def test_list_all_stations_excludes_archived_even_with_include_inactive(test_station):
+    price_store.set_station_active(test_station, False)
+    price_store.archive_station(test_station)
+
+    ids = {s["id"] for s in price_store.list_all_stations(include_inactive=True)}
+
+    assert test_station not in ids
+
+
+def test_list_stations_excludes_archived_even_with_include_inactive(test_station):
+    price_store.set_price(test_station, "Biodiesel", 60.0)
+    price_store.set_station_active(test_station, False)
+    price_store.archive_station(test_station)
+
+    ids = {s["id"] for s in price_store.list_stations("Biodiesel", include_inactive=True)}
+
+    assert test_station not in ids
+
+
+def test_get_station_returns_none_for_archived_station(test_station):
+    price_store.set_price(test_station, "Biodiesel", 60.0)
+    price_store.set_station_active(test_station, False)
+    price_store.archive_station(test_station)
+
+    assert price_store.get_station(test_station, "Biodiesel") is None
+
+
+def test_merely_deactivated_station_still_visible_with_include_inactive(test_station):
+    """Regression guard: a deactivated-but-not-archived station must still
+    appear with include_inactive=True, proving the new archived filter
+    doesn't over-exclude (the pricing page's existing grayed-out display
+    depends on this)."""
+    price_store.set_price(test_station, "Biodiesel", 60.0)
+    price_store.set_station_active(test_station, False)
+
+    all_ids = {s["id"] for s in price_store.list_all_stations(include_inactive=True)}
+    station_ids = {s["id"] for s in price_store.list_stations("Biodiesel", include_inactive=True)}
+
+    assert test_station in all_ids
+    assert test_station in station_ids
 
 
 # ============================================================

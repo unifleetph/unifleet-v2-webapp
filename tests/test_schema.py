@@ -218,6 +218,19 @@ def test_vouchers_status_has_default_unverified(schema_db):
     )
 
 
+def test_vouchers_has_excluded_from_supplier_report_column(schema_db):
+    """New column (REQ-supplier-report-exclusion-flag, T1) -- deliberately
+    NOT in models.VOUCHER_COLUMNS (ARCH decision A3), so checked directly
+    here rather than via test_vouchers_has_all_voucher_columns."""
+    with psycopg.connect(schema_db) as conn:
+        with conn.cursor() as cur:
+            cols = _columns(cur, "vouchers")
+    assert "excluded_from_supplier_report" in cols
+    assert cols["excluded_from_supplier_report"]["data_type"] == "boolean"
+    assert cols["excluded_from_supplier_report"]["default"] is not None
+    assert "false" in cols["excluded_from_supplier_report"]["default"].lower()
+
+
 def test_vouchers_money_columns_are_numeric(schema_db):
     with psycopg.connect(schema_db) as conn:
         with conn.cursor() as cur:

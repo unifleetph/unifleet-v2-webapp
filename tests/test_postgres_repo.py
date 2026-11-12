@@ -561,6 +561,30 @@ def test_update_voucher_fields_single_field(schema_db):
     assert row["status"] == "Unverified"  # untouched
 
 
+def test_update_voucher_fields_writes_excluded_from_supplier_report(schema_db):
+    """Regression guard (T2, REQ-supplier-report-exclusion-flag): this
+    column is deliberately excluded from VOUCHER_COLUMNS (ARCH A3), which
+    update_voucher_fields' allowlist is built from -- it must still be
+    specifically allowlisted there, or the admin toggle route silently
+    no-ops against a real repo while FakeRepo-based route tests stay
+    green (exactly what happened before this test was added)."""
+    repo = PostgresRepo(dsn=schema_db)
+    try:
+        repo.append_vouchers([{
+            "voucher_id": "UF-20260605-EXCL01",
+            "status": "Redeemed",
+            "driver_name": "Excl Driver",
+        }])
+        repo.update_voucher_fields("UF-20260605-EXCL01", {
+            "excluded_from_supplier_report": True,
+        })
+        row = repo.get_voucher("UF-20260605-EXCL01")
+    finally:
+        repo.close()
+
+    assert row["excluded_from_supplier_report"] is True
+
+
 def test_update_voucher_fields_multiple_fields(schema_db):
     """Multiple fields in the dict are all updated."""
     repo = PostgresRepo(dsn=schema_db)

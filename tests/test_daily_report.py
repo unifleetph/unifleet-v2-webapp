@@ -45,6 +45,9 @@ VOUCHERS = [
     {"voucher_id": "V4", "status": "Unredeemed", "station": "Petron - Ortigas",
      "requested_amount_php": 900, "driver_name": "Gus", "vehicle_plate": "GHI-222",
      "deleted_at": "2026-09-01T10:00:00"},
+    {"voucher_id": "V5", "status": "Redeemed", "station": "Petron - Ortigas",
+     "requested_amount_php": 800, "driver_name": "Hal", "vehicle_plate": "JKL-333",
+     "excluded_from_supplier_report": True},
 ]
 
 
@@ -81,6 +84,7 @@ def test_the_send_time_builder_returns_a_dated_pdf_with_redeemed_orders(monkeypa
     assert "V3" in text and "Redeemed" in text          # a Redeemed order is in
     assert "V2" in text and "Unverified" in text        # so is an Unverified one
     assert "V4" not in text                             # a deleted one is not
+    assert "V5" not in text                             # excluded_from_supplier_report is not
     assert "Report for 2026-09-20" in text
 
 
